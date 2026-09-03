@@ -1,0 +1,125 @@
+---
+# A12：本檔所有 template 都**不加 validate:**。
+# nginx -t -c <片段> 會把片段當成完整主設定，沒有 events{} 就 emerg，
+# 好好的 vhost 永遠寫不進去。整體驗證交給 handler 與 verify.yml 的單一 nginx -t
+# （不帶 -c）。handler 的定義順序保證「驗證」先於「reload/重啟」。
+
+- name: 渲染 | 建立設定目錄
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ nginx_conf_d }}"
+    - "{{ nginx_snippets_dir }}"
+
+- name: 渲染 | 建立 vhost 目錄（只在 sites-enabled 佈局時）
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ nginx_sites_available }}"
+    - "{{ nginx_sites_enabled }}"
+  when: nginx_use_sites_enabled | bool
+
+# A5 的另一半：certbot 之後要用 webroot 驗證，vhost 的 /.well-known/acme-challenge/
+# 必須現在就指得到一個真的存在的目錄。
+- name: 渲染 | 建立 ACME webroot
+  ansible.builtin.file:
+    path: "{{ certbot_webroot }}/.well-known/acme-challenge"
+    state: directory
+    owner: "{{ web_user }}"
+    group: "{{ web_group }}"
+    mode: "0755"
+  when: tls_enable | bool
+
+# A14：安全標頭集中成一個 snippet。nginx 的繼承規則是「當前層只要有任何 add_header
+# 就完全不繼承上層」，所以任何自己加 Cache-Control 的 location（/storage/、/_nuxt/）
+# 都必須再 include 一次這個檔案。
+- name: 渲染 | 安全標頭 snippet（A14）
+  ansible.builtin.template:
+    src: snippet-security-headers.conf.j2
+    dest: "{{ nginx_snippet_security_headers }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload
+
+- name: 渲染 | fastcgi snippet（Laravel public 入口）
+  ansible.builtin.template:
+    src: snippet-fastcgi-php.conf.j2
+    dest: "{{ nginx_snippet_fastcgi }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload
+
+- name: 渲染 | 前端 proxy snippet（ssr / spa 才需要）
+  ansible.builtin.template:
+    src: snippet-proxy-frontend.conf.j2
+    dest: "{{ nginx_snippet_proxy }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: nginx_frontend_proxied | bool
+  notify: nginx reload
+
+# http 層（upstream / limit_req zone / gzip / real_ip / map）。
+# upstream 與 limit_req_zone 只能在 http context，所以獨立成 conf.d 的檔案。
+- name: 渲染 | http 層設定
+  ansible.builtin.template:
+    src: nginx-http-tuning.conf.j2
+    dest: "{{ nginx_conf_d }}/00-{{ app_slug }}-http.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload
+
+# A13 / A14 / A16 都在這個模板裡：
+#   A13 Laravel public 的實體檔案優先（try_files $uri @frontend），
+#   A14 加了 add_header 的 location 必須重新 include 安全標頭 snippet，
+#   A16 client_max_body_size 直接用 nginx_client_max_body_size，不另外再算一次。
+- name: 渲染 | vhost（A12：不加 validate）
+  ansible.builtin.template:
+    src: vhost.conf.j2
+    dest: "{{ nginx_vhost_path_eff }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: nginx reload
+
+- name: 渲染 | 啟用 vhost（sites-enabled symlink）
+  ansible.builtin.file:
+    src: "{{ nginx_vhost_path_eff }}"
+    dest: "{{ nginx_vhost_link_eff }}"
+    state: link
+    force: true
+  when: nginx_vhost_link_eff | length > 0
+  notify: nginx reload
+
+# 全 role 唯一的刪除動作，三重 gate：
+#   (1) nginx_disable_default_site；(2) 必須真的存在且是 symlink；
+#   (3) 路徑必須落在 /etc/nginx/sites-enabled/ 底下。
+# 永遠只動 sites-enabled 的 symlink，不碰 sites-available 的原檔。
+- name: 渲染 | 檢查發行版預設站台 symlink
+  ansible.builtin.stat:
+    path: "{{ nginx_default_site_link }}"
+  register: nginx_default_link_stat
+  when: nginx_disable_default_site | bool
+
+- name: 渲染 | 停用發行版預設站台
+  ansible.builtin.file:
+    path: "{{ nginx_default_site_link }}"
+    state: absent
+  when:
+    - nginx_disable_default_site | bool
+    - nginx_default_link_stat.stat.exists | default(false)
+    - nginx_default_link_stat.stat.islnk | default(false)
+    - nginx_default_site_link is match('^/etc/nginx/sites-enabled/[^/]+$')
+  notify: nginx reload

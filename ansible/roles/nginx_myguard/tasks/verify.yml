@@ -1,0 +1,180 @@
+---
+# 本檔在 main.yml 的 flush_handlers 之後執行，所以此時跑的是「已經套用的」設定。
+
+- name: 驗證 | 基準 URL
+  ansible.builtin.set_fact:
+    nginx_verify_base: "{{ 'https://127.0.0.1' if (tls_enable | bool) else 'http://127.0.0.1' }}"
+
+# A12：整體驗證只用這一個 nginx -t，不帶 -c。
+- name: 驗證 | nginx -t（完整主設定 + 所有 include）
+  ansible.builtin.command:
+    argv:
+      - "{{ nginx_binary }}"
+      - "-t"
+  register: nginx_verify_t
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: 驗證 | nginx -t 失敗時給可行動訊息
+  ansible.builtin.assert:
+    that:
+      - (nginx_verify_t.rc | int) == 0
+    quiet: true
+    fail_msg: >-
+      nginx -t 失敗：{{ (nginx_verify_t.stderr | default('')) | trim }}
+      對照表：unknown directive "{{ waf_directive_prefix_eff | default('modsecurity') }}"
+      → 模組沒載入，檢查 {{ nginx_modules_enabled_dir }} 與 nginx.conf 的 include；
+      cannot load certificate → A5 憑證路徑（本輪用的是 {{ nginx_tls_cert | default('未設定') }}）；
+      rules / ctl 相關錯誤 → {{ waf_main_rules_file }} 的載入順序，或某條 ctl: 誤用分號
+      （多個 ctl: 之間必須是逗號）。
+
+- name: 驗證 | nginx 服務狀態
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ nginx_service }}"
+  register: nginx_verify_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: 驗證 | 服務未在執行
+  ansible.builtin.assert:
+    that:
+      - (nginx_verify_active.stdout | trim) == 'active'
+    quiet: true
+    fail_msg: >-
+      nginx 服務狀態是 {{ nginx_verify_active.stdout | default('unknown') | trim }}。
+      設定本身通過 nginx -t，所以問題多半在啟動階段：
+      journalctl -u {{ nginx_service }} -n 50 --no-pager
+      （動態模組換版必須 restart 而不是 reload —— reload 不會重新載入 load_module）。
+
+# nginx -T 會把所有 include 進來的設定原樣印出，dynamic module 不會出現在 nginx -V，
+# 所以用 -T 同時證明「模組被載入」與「vhost 真的啟用了 WAF」。
+- name: 驗證 | WAF 模組載入且在 vhost 啟用
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ nginx_binary }} -T 2>/dev/null
+      | grep -cE '^[[:space:]]*(load_module[^;]*(modsecurity|coraza)|{{ waf_directive_prefix_eff }}[[:space:]]+on;)'
+      || true
+    executable: /bin/bash
+  register: nginx_waf_loaded
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: waf_enabled | bool
+
+- name: 驗證 | WAF 沒有真的生效
+  ansible.builtin.assert:
+    that:
+      - (nginx_waf_loaded.stdout | default('0') | trim | int) >= 2
+    quiet: true
+    fail_msg: >-
+      nginx -T 的輸出裡找不到「load_module ...(modsecurity|coraza)」
+      與「{{ waf_directive_prefix_eff }} on;」兩者（實際命中 {{ nginx_waf_loaded.stdout | default('0') | trim }} 行）。
+      模組檔：{{ waf_module_path | default('未偵測到') }}；
+      模組設定：{{ nginx_modules_enabled_dir }}/50-mod-{{ app_slug }}-waf.conf。
+      若指令名不同（Coraza 連接器），請設 waf_directive_prefix_override 後重跑。
+  when: waf_enabled | bool
+
+- name: 驗證 | HTTP 存活檢查
+  ansible.builtin.uri:
+    url: "{{ nginx_verify_base }}/"
+    headers:
+      Host: "{{ app_domain }}"
+    validate_certs: false
+    follow_redirects: none
+    status_code: [200, 301, 302, 401, 403, 404, 502, 503]
+    timeout: 15
+  register: nginx_http_probe
+  changed_when: false
+  when: nginx_verify_http_check | bool
+
+- name: 驗證 | 應用回應 /up（deploy 跑完後再打開 nginx_verify_app_response）
+  ansible.builtin.uri:
+    url: "{{ nginx_verify_base }}/up"
+    headers:
+      Host: "{{ app_domain }}"
+    validate_certs: false
+    follow_redirects: none
+    status_code: [200, 301, 302, 404, 500, 502, 503]
+    timeout: 20
+  register: nginx_up_probe
+  changed_when: false
+  when: nginx_verify_app_response | bool
+
+- name: 驗證 | /up 沒有回 200
+  ansible.builtin.assert:
+    that:
+      - (nginx_up_probe.status | int) == 200
+    quiet: true
+    fail_msg: >-
+      GET {{ nginx_verify_base }}/up 回 {{ nginx_up_probe.status | default('無回應') }}。
+      502 → PHP-FPM socket（{{ php_fpm_socket }}，目前
+      {{ '存在' if nginx_php_socket_present | bool else '不存在' }}）；
+      404 → vhost 的 /up 沒有落到 php-fpm 那個 location；
+      500 → Laravel 端的錯誤，看 {{ backend_current_path }}/storage/logs。
+  when: nginx_verify_app_response | bool
+
+# A14 的回歸測試：安全標頭在 server 層 include，任何自己加 add_header 的 location
+# 都必須再 include 一次，而且要帶 always（否則非 2xx/3xx 回應不會輸出）。
+- name: 驗證 | A14：安全標頭沒有被 location 層的 add_header 蓋掉
+  ansible.builtin.assert:
+    that:
+      - (nginx_up_probe.x_frame_options | default('')) | length > 0
+    quiet: true
+    fail_msg: >-
+      /up 的回應沒有 X-Frame-Options。A14：location 只要自己有任何 add_header，
+      就完全不繼承 server 層的標頭 —— /storage/ 與 /_nuxt/ 這類加了 Cache-Control 的
+      location 必須重新 include {{ nginx_snippet_security_headers }}，且加 always。
+  when: nginx_verify_app_response | bool
+
+# 真的送一個帶攻擊特徵的請求，證明 WAF 在擋。刻意打 /（不是 /up）——
+# exclusions-before 的 10014 已經把 /up 設成 DetectionOnly，用 /up 測必定測不出來。
+- name: 驗證 | WAF 阻擋測試
+  ansible.builtin.uri:
+    url: "{{ nginx_verify_base }}/"
+    headers:
+      Host: "{{ app_domain }}"
+      User-Agent: "{{ waf_block_test_user_agent }}"
+    validate_certs: false
+    follow_redirects: none
+    status_code: [200, 301, 302, 403, 404, 502, 503]
+    timeout: 15
+  register: nginx_waf_block
+  changed_when: false
+  when:
+    - waf_enabled | bool
+    - waf_verify_block_test | bool
+    - waf_rule_engine == 'On'
+
+- name: 驗證 | WAF 沒有擋下攻擊特徵請求
+  ansible.builtin.assert:
+    that:
+      - (nginx_waf_block.status | int) == 403
+    quiet: true
+    fail_msg: >-
+      帶 User-Agent: {{ waf_block_test_user_agent }} 的請求回
+      {{ nginx_waf_block.status | default('無回應') }}，預期 403。
+      CRS 913100 沒有生效，可能原因：CRS 沒被載入（{{ waf_crs_mode_eff | default('未偵測') }}，
+      rules_dir={{ waf_crs_rules_dir | default('') }}、load_file={{ waf_crs_load_file | default('') }}）；
+      或 tx.inbound_anomaly_score_threshold 被調得太高；
+      或 exclusions-before 的排除範圍過寬。
+      查驗：tail -n 50 {{ waf_audit_log }}
+  when:
+    - waf_enabled | bool
+    - waf_verify_block_test | bool
+    - waf_rule_engine == 'On'
+
+- name: 驗證 | 摘要
+  ansible.builtin.debug:
+    msg: >-
+      nginx {{ nginx_version_detected }}（http2 寫法：{{ nginx_http2_style }}）／
+      vhost {{ nginx_vhost_path_eff }}／TLS {{ nginx_tls_cert }}
+      （{{ '正式' if nginx_tls_is_real | bool else 'snakeoil' }}）／
+      WAF {{ waf_rule_engine if waf_enabled | bool else '停用' }}
+      指令前綴 {{ waf_directive_prefix_eff | default('n/a') }}／
+      前端 {{ frontend_mode }}{{ '（埠 ' ~ (nginx_frontend_ports | join(',')) ~ '）' if nginx_frontend_proxied | bool else '（靜態）' }}

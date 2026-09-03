@@ -45,8 +45,8 @@
 | 1 | 更名 `~/PSYOP_DutyManager` → `~/pm`；`cx` 骨架；備份；刪除舊紀錄 | ✅ 完成 |
 | 2 | `docker/` 三模式 + 多階段 Dockerfile + 新 `docker-compose.yml` | ⏳ **交由另一對話驗證**，見 [`docs/docker-verification.md`](docs/docker-verification.md) |
 | 3 | 重建前後端 + 三 Git 初始化 + 推送 | ✅ 完成（原生方式，未用 Docker） |
-| 4 | DevSecOps 工具鏈 + `cx scan` | ⏳ |
-| 5 | Ansible roles + playbook | ⏳ |
+| 4 | DevSecOps 工具鏈 + `cx scan` | ✅ 三道可跑，SAST/DAST 需 Docker |
+| 5 | Ansible roles + playbook | ✅ 產出完成（11 role + certbot，152 檔），❌ **完全未驗證** |
 | 6 | `README.md`、`ansible/README.md` | ⏳ |
 
 ### 已完成的清理（2026-09-03）
@@ -801,22 +801,39 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 | ④ WAF 攔截率對照 | ❌ **從未執行** | `_scan_dast_compare()` 的 python 比對邏輯完全未測 |
 | gitleaks | ✅ 已驗證（含「歷史中的洩漏抓得到、dir 模式漏掉」的對照實驗） | |
 
-### 12.5 Phase 5 — Ansible（完全未驗證）
+### 12.5 Phase 5 — Ansible（產出完成，完全未驗證）
 
-**連 `ansible-playbook --syntax-check` 都跑不了**（ansible 裝不了）。
-只能做 YAML 剖析與靜態規則檢查（`bin/cmd/lint.sh`）。
+**連 `ansible-playbook --syntax-check` 都跑不了**（ansible 裝不了：無 pip、sudo 需密碼）。
+目前只能用 `cx lint` 做替代性靜態檢查：**114 個 YAML 全部剖析成功，
+無語法錯誤、無 `git push`、無未 gate 的破壞性操作、無 Jinja 括號錯誤**。
+這不等於 `--syntax-check`，更不等於真的跑得起來。
+
+產出：12 個 role（preflight / common / hardening / php / composer / mysql /
+nodejs_pm2 / nginx_myguard / certbot / deploy_backend / deploy_frontend / healthcheck）
++ site.yml + inventory + playbooks，共 152 個檔案。
 
 | 項目 | 阻擋原因 | 解除後怎麼驗 |
 |---|---|---|
-| 全部 playbook 語法 | ansible 未安裝 | `ansible-playbook site.yml --syntax-check` |
-| 全部 role 邏輯 | 無目標主機 | `--check --diff` 對 staging 跑 |
-| **MyGuard 套件名歧異** | 未在真實 Ubuntu/Debian 上探測 | 真的加了 repo 後 `apt-cache policy` |
-| **MySQL 8.4 from Oracle repo** | 未驗證 | 真機安裝 |
-| **PHP 8.5 from ondrej PPA** | 未驗證（本機的 8.5 是 Ubuntu 26.04 內建） | 真機安裝 |
-| **certbot snakeoil bootstrap** | 未驗證 | 全新機第一次部署 |
-| **PM2 fork mode 跑 Nuxt `.output`** | pm2 未安裝 | 真機或本機裝 pm2 後試跑 |
-| **CRS 排除規則載入順序** | 未驗證 | 用 Livewire/Filament 請求實測是否被 941xxx/942xxx 誤擋 |
-| **release prune 不刪 current** | 未驗證 | 部署三次 + rollback 後再部署一次 |
+| 全部 playbook 語法 | ansible 未安裝 | `cd ansible && ansible-playbook site.yml --syntax-check` |
+| 全部 role 邏輯 | 無目標主機 | `ansible-playbook site.yml -l staging --check --diff` |
+| ansible-lint 規則 | 未安裝 | `ansible-lint ansible/`，與 `cx lint` 的結果對帳 |
+| **MyGuard 套件名歧異** | 未在真實 Ubuntu/Debian 上探測 | `packages.yml` 會用 `apt-cache policy` 逐一探測並在全落空時 fail 並附上 `apt-cache search` 的實際輸出 —— 這段邏輯本身也沒跑過 |
+| **MySQL 8.4 from Oracle repo** | 未驗證 | 真機安裝；Debian 的 `default-mysql-server` 是 MariaDB |
+| **PHP 8.5 from ondrej PPA / sury** | 未驗證（本機的 8.5 是 Ubuntu 26.04 內建） | 真機安裝 |
+| **certbot snakeoil bootstrap（A5）** | 未驗證 | 全新機第一次部署，觀察 vhost 是否從 snakeoil 正確切換到真憑證 |
+| **CRS 排除規則載入順序（A11）** | 未驗證 | 用 Livewire/Filament 請求實測是否被 941xxx/942xxx 誤擋 |
+| **A14 安全標頭在 location 內的繼承** | 未驗證 | `curl -I` 打 `/storage/x` 與 `/_nuxt/x`，確認 HSTS/nosniff 等標頭仍在 |
+| **PM2 fork 跑 Nuxt `.output`** | pm2 未安裝 | 真機或本機裝 pm2 後試跑 |
+| **release prune 不刪 current（A1）** | 未驗證 | 部署三次 + rollback 後再部署一次 |
+| **兩個 agent 的 template 檔名調和** | 見下 | 見下 |
+
+#### 已知的整合風險
+
+`nginx_myguard` 的 tasks 與 templates 由兩個平行的 agent 產出，
+一度使用了**不相容的檔名與架構**（tasks 用 snippet 拆分，templates 用單一 vhost 內嵌）。
+已由第三個 agent 調和成 snippet 架構。
+**這代表該 role 的 template 與 task 之間的對應關係是「事後拼接」而非一體設計，
+第一次真的跑起來時要特別注意變數名稱是否對得上。**
 
 ### 12.6 補正流程
 

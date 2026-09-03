@@ -1,0 +1,118 @@
+---
+# ── 為什麼是 webroot 而不是 standalone / --nginx ────────────────────────────
+#   standalone → 自己起一個臨時 HTTP server 綁 :80，跟已經在跑的 nginx 撞埠。
+#   --nginx    → 需要 python3-certbot-nginx，而且它會「直接改寫我們自己產生的
+#                vhost」，下一次跑 nginx role 又被 template 蓋回去，兩邊互相打架。
+#   webroot    → 只寫檔案到 {{ certbot_webroot }}，完全不碰 nginx 設定。
+#                vhost 由 nginx_myguard 單獨負責，職責乾淨。
+
+- name: certbot | 組出 certonly 參數
+  ansible.builtin.set_fact:
+    certbot_certonly_argv: >-
+      {{ [certbot_binary, 'certonly', '--non-interactive',
+          '--webroot', '-w', certbot_webroot,
+          '--cert-name', certbot_cert_name,
+          '--email', certbot_email,
+          '--key-type', certbot_key_type,
+          '--deploy-hook', certbot_renew_hook]
+         + (['--agree-tos'] if (certbot_agree_tos | bool) else [])
+         + (['--no-eff-email'] if not (certbot_eff_email | bool) else [])
+         + (['--elliptic-curve', certbot_elliptic_curve]
+            if certbot_key_type == 'ecdsa'
+            else ['--rsa-key-size', certbot_rsa_key_size | string])
+         + (['--staging'] if (certbot_staging | bool) else [])
+         + (['--force-renewal'] if (certbot_force_renewal | bool)
+            else ['--keep-until-expiring', '--expand'])
+         + (['-d'] | product(certbot_domains) | flatten) }}
+  when: certbot_need_issue | bool
+
+# --keep-until-expiring 與 --force-renewal 互斥（同時給會 error out），
+# 所以上面是 if/else 而不是兩個都加。
+# --expand：網域清單變多時才會重簽，清單沒變就不動 —— 這是冪等的第二層保險。
+- name: certbot | 申請 / 更新憑證（webroot）
+  ansible.builtin.command:
+    argv: "{{ certbot_certonly_argv }}"
+  register: certbot_certonly
+  # certbot 對「還沒到期、不需要動作」也回 rc=0，所以不能用 rc 判斷 changed。
+  changed_when:
+    - (certbot_certonly.rc | default(1)) == 0
+    - "'not yet due for renewal' not in (certbot_certonly.stdout | default(''))"
+    - "'no action taken' not in (certbot_certonly.stdout | default(''))"
+  # 失敗不在這裡爆，下一個 task 會把 rc != 0 轉成「有指示的錯誤訊息」。
+  failed_when: false
+  when: certbot_need_issue | bool
+  notify: certbot cert changed
+
+- name: certbot | 簽發失敗 —— 三種常見原因
+  ansible.builtin.fail:
+    msg: >-
+      certbot certonly 失敗（rc={{ certbot_certonly.rc }}）。
+      指令：{{ certbot_certonly_argv | join(' ') }}
+      ──────────────────────────────────────────────
+      {{ _out | trim }}
+      ──────────────────────────────────────────────
+      三種最常見的原因（★ = 從上面的輸出判斷命中）：
+
+      {{ '★' if _dns else '·' }} [1] DNS 沒有指過來。
+          Let's Encrypt 是從「它自己的伺服器」解析 {{ certbot_domains | join(', ') }}
+          再連過來的，不是從你這台機器。DNS 還沒生效（或 A 記錄指到別台）就一定失敗。
+          檢查：dig +short A {{ app_domain }}   ← 必須等於這台機器的公網 IP
+                curl -s https://dns.google/resolve?name={{ app_domain }}"&"type=A
+          剛改完 DNS 的話等 TTL 過去再重跑，不要連續重試（會消耗失敗額度）。
+
+      {{ '★' if _http else '·' }} [2] 80 埠不通，或 webroot 對不上。
+          HTTP-01 驗證固定走 http://<網域>/.well-known/acme-challenge/<token>，
+          而且只走 80 埠（改成 443 也不行，LE 不接受）。
+          檢查：從「外部」curl -I http://{{ app_domain }}/
+                雲端安全群組 / ufw 是否放行 80（ufw allow 80/tcp）
+                nginx 是否真的服務這個路徑：
+                  {{ nginx_binary }} -T | grep -A3 'acme-challenge'
+                  ↑ root 必須是 {{ certbot_webroot }}
+          注意：vhost 若把所有 HTTP 無條件 301 到 HTTPS，acme-challenge 這個
+          location 必須排在轉址之前（LE 會跟隨轉址，但目標端的憑證此刻還是
+          snakeoil，轉到 https 反而更容易失敗）。
+
+      {{ '★' if _rate else '·' }} [3] 撞到 Let's Encrypt 的速率限制。
+          正式端點：同一組網域每 7 天 5 張憑證；驗證失敗每帳號每小時 5 次。
+          解法：先用 staging 端點把流程跑通（不吃正式額度）——
+                ansible-playbook -i inventory/hosts.yml site.yml --tags certbot
+                  -e certbot_staging=true
+                流程通了再換回 certbot_staging=false。
+                已經簽出來的憑證不要用 -e certbot_force_renewal=true 重簽，
+                那正是最容易把額度用完的動作。
+  vars:
+    _out: "{{ (certbot_certonly.stdout | default('')) ~ '\n' ~ (certbot_certonly.stderr | default('')) }}"
+    _dns: "{{ _out is search('(?i)(DNS problem|NXDOMAIN|SERVFAIL|no valid A records|could not be resolved|DNS query)') }}"
+    _http: "{{ _out is search('(?i)(Timeout during connect|Connection refused|connection reset|404|Invalid response|Fetching http|firewall|unauthorized)') }}"
+    _rate: "{{ _out is search('(?i)(too many certificates|rateLimited|rate limit|too many failed authorizations|urn:ietf:params:acme:error:rateLimited)') }}"
+  when:
+    - certbot_need_issue | bool
+    - certbot_certonly is not skipped
+    - (certbot_certonly.rc | default(0)) != 0
+
+- name: certbot | 確認憑證與私鑰都已就位
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: certbot_after
+  loop:
+    - "{{ tls_cert_fullchain }}"
+    - "{{ tls_cert_privkey }}"
+  when: not ansible_check_mode
+
+- name: certbot | certbot 宣稱成功但檔案不在預期路徑
+  ansible.builtin.assert:
+    that:
+      - certbot_after.results | selectattr('stat.exists') | list | length == 2
+    quiet: true
+    fail_msg: >-
+      certbot 回報成功，但 {{ tls_cert_dir }} 底下找不到 fullchain.pem / privkey.pem。
+      最可能的原因：既有 lineage 讓 certbot 自動改名成
+      {{ certbot_cert_name }}-0001（--cert-name 沒生效或被舊 renewal conf 蓋過）。
+      檢查：sudo {{ certbot_binary }} certificates
+      修正：刪掉多餘的 lineage（sudo {{ certbot_binary }} delete --cert-name <舊名>，
+      不可逆，本 role 不會替你刪），或把 certbot_cert_name 改成實際的 lineage 名稱。
+  when: not ansible_check_mode
+
+- name: certbot | 記錄本次是否為新憑證（給 verify 與 handler 用）
+  ansible.builtin.set_fact:
+    certbot_cert_newly_issued: "{{ certbot_certonly is defined and certbot_certonly is changed }}"

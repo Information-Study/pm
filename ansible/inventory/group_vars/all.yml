@@ -188,7 +188,10 @@ pm2_ecosystem_dir: "{{ app_shared_dir }}/pm2"
 pm2_ecosystem_path: "{{ pm2_ecosystem_dir }}/ecosystem.config.cjs"
 pm2_systemd_unit: "pm2-{{ deploy_user }}"
 nginx_binary: "/usr/sbin/nginx"
-nginx_service_name: "nginx"
+# role 的 tasks/handlers 讀的是 nginx_service；certbot 讀的是 nginx_service_name。
+# 兩個名字都保留並指向同一個值，避免其中一邊變成未定義。
+nginx_service: "nginx"
+nginx_service_name: "{{ nginx_service }}"
 # 這兩個 unit 由 deploy_backend role 產生；rollback 會在檔案存在時才動它們。
 backend_queue_service: "{{ app_slug }}-queue.service"
 backend_schedule_timer: "{{ app_slug }}-schedule.timer"
@@ -390,7 +393,20 @@ waf_crs_anomaly_threshold_outbound: 4
 #
 #   預設留空：真正需要排除哪幾條規則，必須從這台機器實際的 audit log 讀出來
 #   （先跑 DetectionOnly，再把命中的 rule id 填進來）。憑空猜 id 只會關掉不該關的規則。
-waf_exclusions_before: []
+# ⚠ 刻意「不」在這裡定義 waf_exclusions_before。
+#   inventory group_vars 的優先權高於 role defaults，一旦在這裡寫 []，
+#   roles/nginx_myguard/defaults/main.yml 裡針對 Livewire/Filament 研究過的
+#   5 條排除規則（10010–10014）就會被整組清掉。
+#   今天看不出來，只因為 waf_rule_engine 是 DetectionOnly；
+#   一旦改成 On，Filament 後台會被 941/942 擋死而且毫無線索。
+#
+#   要「加」站台專屬的排除規則，請在這裡改成
+#     直接編輯 roles/nginx_myguard/defaults/main.yml 的 waf_exclusions_before，
+#     把你的規則附加到既有的 5 條後面（role defaults 沒有另外提供
+#     「預設 + 額外」的合併機制，所以只能改同一份清單）。
+#   要「關掉」內建排除規則才在這裡寫 []（並想清楚為什麼）。
+#
+# waf_exclusions_before: []
 waf_exclusions_after: []
 
 # ──────────────────────────────────────────────────────────────────────────────

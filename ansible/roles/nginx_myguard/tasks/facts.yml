@@ -1,0 +1,199 @@
+---
+# A5：本 role 跑在 certbot 之前。vhost 若直接寫
+# /etc/letsencrypt/live/<domain>/fullchain.pem，第一次部署時該檔還不存在 →
+# nginx -t emerg（cannot load certificate）→ nginx 起不來 → certbot 的 webroot
+# 驗證永遠打不進來 → 憑證永遠簽不出來。
+# 解法：先裝 ssl-cert（提供 snakeoil），stat 真憑證，set_fact 決定這一輪用哪一張。
+# certbot 拿到憑證後再跑一次本 role，nginx_tls_is_real 會翻成 true，HSTS 也才開始輸出。
+
+- name: 事實 | 安裝 ssl-cert（A5：snakeoil 憑證的來源）
+  ansible.builtin.apt:
+    name: ssl-cert
+    state: present
+  register: nginx_sslcert_pkg
+  until: nginx_sslcert_pkg is succeeded
+  retries: "{{ nginx_apt_retries | int }}"
+  delay: "{{ nginx_apt_delay | int }}"
+  when: tls_enable | bool
+
+- name: 事實 | 缺 snakeoil 憑證時補產一份
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/make-ssl-cert
+      - generate-default-snakeoil
+    creates: "{{ nginx_snakeoil_cert }}"
+  register: nginx_snakeoil_gen
+  changed_when: (nginx_snakeoil_gen.rc | default(1) | int) == 0
+  when: tls_enable | bool
+
+- name: 事實 | A5：檢查 Let's Encrypt 真憑證是否已存在
+  ansible.builtin.stat:
+    path: "{{ nginx_letsencrypt_live_dir }}/{{ item }}"
+    follow: true
+  loop:
+    - fullchain.pem
+    - privkey.pem
+  register: nginx_le_stat
+
+- name: 事實 | A5：決定這一輪 vhost 要用的憑證
+  ansible.builtin.set_fact:
+    nginx_tls_is_real: "{{ _real | bool }}"
+    nginx_tls_cert: >-
+      {{ (nginx_letsencrypt_live_dir ~ '/fullchain.pem') if (_real | bool) else nginx_snakeoil_cert }}
+    nginx_tls_key: >-
+      {{ (nginx_letsencrypt_live_dir ~ '/privkey.pem') if (_real | bool) else nginx_snakeoil_key }}
+  vars:
+    _real: >-
+      {{ (nginx_le_stat.results | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists') | list | length) == 2 }}
+
+- name: 事實 | A5：確認選中的憑證與私鑰真的在磁碟上
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ nginx_tls_cert }}"
+    - "{{ nginx_tls_key }}"
+  register: nginx_tls_stat
+  when: tls_enable | bool
+
+- name: 事實 | 憑證不存在就 fail fast（否則 nginx -t 會 emerg）
+  ansible.builtin.assert:
+    that:
+      - (nginx_tls_stat.results | selectattr('stat.exists', 'defined') | selectattr('stat.exists') | list | length) == 2
+    quiet: true
+    fail_msg: >-
+      tls_enable=true 但 {{ nginx_tls_cert }} 或 {{ nginx_tls_key }} 不存在。
+      A5：vhost 引用不存在的憑證會讓 nginx -t 直接 emerg，certbot 也就再也沒機會跑。
+      請確認 ssl-cert 套件已安裝（提供 snakeoil），或先設 tls_enable=false 跑純 HTTP。
+  when: tls_enable | bool
+
+- name: 事實 | A5：本輪使用的憑證來源
+  ansible.builtin.debug:
+    msg: >-
+      TLS 憑證：{{ nginx_tls_cert }} —— {{ '正式憑證，HSTS 會輸出'
+      if nginx_tls_is_real | bool else
+      'snakeoil bootstrap；HSTS 不輸出，certbot 簽發後請再跑一次本 role' }}
+  when: tls_enable | bool
+
+- name: 事實 | 檢查 dhparam
+  ansible.builtin.stat:
+    path: "{{ nginx_ssl_dhparam_path }}"
+  register: nginx_dhparam_stat
+  when: nginx_ssl_dhparam_path | length > 0
+
+- name: 事實 | dhparam 只有真的存在才引用
+  ansible.builtin.set_fact:
+    nginx_dhparam_eff: >-
+      {{ nginx_ssl_dhparam_path if (nginx_dhparam_stat.stat.exists | default(false)) else '' }}
+
+- name: 事實 | 取得 nginx 版本
+  ansible.builtin.command:
+    argv:
+      - "{{ nginx_binary }}"
+      - "-v"
+  register: nginx_ver_raw
+  changed_when: false
+  check_mode: false
+
+# nginx -v 寫在 stderr。1.25.1 起 listen 的 http2 參數被廢棄，改用獨立的 http2 指令。
+- name: 事實 | 解析版本並決定 http2 的寫法
+  ansible.builtin.set_fact:
+    nginx_version_detected: "{{ _v }}"
+    nginx_http2_style: "{{ 'directive' if _v is version('1.25.1', '>=') else 'listen' }}"
+  vars:
+    _v: >-
+      {{ ((nginx_ver_raw.stderr | default('')) ~ (nginx_ver_raw.stdout | default('')))
+         | regex_search('[0-9]+[.][0-9]+[.][0-9]+') | default('0.0.0', true) }}
+
+- name: 事實 | nginx 版本下限
+  ansible.builtin.assert:
+    that:
+      - nginx_version_detected is version(nginx_min_version, '>=')
+    quiet: true
+    fail_msg: >-
+      nginx {{ nginx_version_detected }} 低於下限 {{ nginx_min_version }}。
+      若 MyGuard 來源沒生效，請檢查 apt pin（{{ nginx_myguard_pin_file }}）與
+      apt-cache policy nginx 顯示的實際來源。
+
+- name: 事實 | nginx.conf 是否 include sites-enabled
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -Eq
+      - '^[[:space:]]*include[[:space:]]+.*sites-enabled'
+      - "{{ nginx_conf_dir }}/nginx.conf"
+  register: nginx_sites_include
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# MyGuard 的打包佈局未知，不能假設一定有 sites-available/sites-enabled；
+# 沒有就退回 conf.d（Debian 系的 nginx.conf 一定 include conf.d）。
+- name: 事實 | 決定 vhost 落點
+  ansible.builtin.set_fact:
+    nginx_use_sites_enabled: "{{ _s | bool }}"
+    nginx_vhost_path_eff: >-
+      {{ nginx_vhost_path if (nginx_vhost_path | length > 0)
+         else ((nginx_sites_available ~ '/' ~ app_slug ~ '.conf') if (_s | bool)
+               else (nginx_conf_d ~ '/' ~ app_slug ~ '.conf')) }}
+    nginx_vhost_link_eff: >-
+      {{ nginx_vhost_link if (nginx_vhost_link | length > 0)
+         else ((nginx_sites_enabled ~ '/' ~ app_slug ~ '.conf') if (_s | bool) else '') }}
+  vars:
+    _s: "{{ (nginx_sites_include.rc | int) == 0 }}"
+
+- name: 事實 | 檢查 PHP-FPM socket
+  ansible.builtin.stat:
+    path: "{{ php_fpm_socket }}"
+  register: nginx_php_sock_stat
+
+- name: 事實 | fastcgi_pass 目標（php role 的 unix socket）
+  ansible.builtin.set_fact:
+    nginx_php_fastcgi_pass: "unix:{{ php_fpm_socket }}"
+    nginx_php_socket_present: "{{ nginx_php_sock_stat.stat.exists | default(false) }}"
+
+- name: 事實 | socket 尚未存在時提醒
+  ansible.builtin.debug:
+    msg: >-
+      {{ php_fpm_socket }} 還不存在。nginx -t 不檢查 unix socket，設定照樣寫得進去，
+      但在 php role 建好 pool（pool 名 {{ app_slug }}）之前 /admin 與 /api 會回 502。
+  when: not (nginx_php_socket_present | bool)
+
+# A10：PM2 一律 fork，N 個實例綁 frontend_port..frontend_port+N-1，
+# upstream 必須跟 nodejs_pm2 產生的 ecosystem.config.cjs 一一對應。
+- name: 事實 | 前端 upstream
+  ansible.builtin.set_fact:
+    nginx_frontend_proxied: "{{ frontend_mode in ['ssr', 'spa'] }}"
+    nginx_frontend_upstream: "{{ app_slug }}_frontend"
+    nginx_frontend_ports: >-
+      {{ range(frontend_port | int, (frontend_port | int) + (frontend_instances | int)) | list }}
+
+- name: 事實 | static 模式檢查前端產物
+  ansible.builtin.stat:
+    path: "{{ frontend_static_root }}"
+  register: nginx_front_static_stat
+  when: frontend_mode == 'static'
+
+- name: 事實 | static 產物尚未部署時提醒
+  ansible.builtin.debug:
+    msg: >-
+      frontend_mode=static 但 {{ frontend_static_root }} 不存在。
+      vhost 照樣會寫入（nginx -t 不檢查 root 目錄），deploy_frontend 跑完就會生效。
+  when:
+    - frontend_mode == 'static'
+    - not (nginx_front_static_stat.stat.exists | default(false))
+
+# snippet 路徑集中在這裡，render.yml 與模板共用同一組事實，避免兩邊各寫一次字面路徑。
+# waf_directive_prefix_eff：Coraza 連接器宣稱 libmodsecurity-compatible，但指令名
+# 無法從這裡確認，所以用 defaults 的對照表推導，並允許 override。
+- name: 事實 | snippet 路徑與 WAF 指令前綴
+  ansible.builtin.set_fact:
+    nginx_snippet_security_headers: "{{ nginx_snippets_dir }}/{{ app_slug }}-security-headers.conf"
+    nginx_snippet_fastcgi: "{{ nginx_snippets_dir }}/{{ app_slug }}-fastcgi-php.conf"
+    nginx_snippet_proxy: "{{ nginx_snippets_dir }}/{{ app_slug }}-proxy-frontend.conf"
+    waf_directive_prefix_eff: >-
+      {{ waf_directive_prefix_override if (waf_directive_prefix_override | length > 0)
+         else ((waf_pkg_resolved | default([]))
+               | select('in', waf_directive_prefix_map.keys() | list)
+               | map('extract', waf_directive_prefix_map) | list
+               | first | default(waf_directive_prefix_default)) }}

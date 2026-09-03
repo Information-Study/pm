@@ -1,0 +1,159 @@
+---
+# 驗證是「重新讀一次憑證檔」，不是相信 certbot 的 rc。
+# 這些檢查放在 flush_handlers 之後，所以 nginx 已經換成正式憑證了。
+
+- name: certbot | 重新讀出憑證資訊
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -noout
+      - -subject
+      - -issuer
+      - -enddate
+      - -ext
+      - subjectAltName
+      - -in
+      - "{{ tls_cert_fullchain }}"
+  register: certbot_verify_info
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: certbot | 憑證必須存在、未過期、且涵蓋所有網域
+  ansible.builtin.assert:
+    that:
+      - (certbot_verify_info.rc | default(1)) == 0
+      - (certbot_domains | difference(_sans)) | length == 0
+    quiet: true
+    fail_msg: >-
+      憑證驗證失敗。
+      openssl rc={{ certbot_verify_info.rc | default('n/a') }}；
+      憑證涵蓋 {{ _sans | join(', ') | default('（讀不到）', true) }}；
+      需要但缺少：{{ certbot_domains | difference(_sans) | join(', ') }}。
+      少了網域的話，訪客用該名稱連進來會看到 NET::ERR_CERT_COMMON_NAME_INVALID。
+      修正：確認 nginx_server_aliases 已包含所有要服務的名稱，然後
+      ansible-playbook -i inventory/hosts.yml site.yml --tags certbot
+      （certbot 會用 --expand 把缺的網域加進同一張憑證）。
+  vars:
+    _sans: "{{ certbot_verify_info.stdout | default('') | regex_findall('DNS:([^,\\s]+)') }}"
+  when: not ansible_check_mode
+
+- name: certbot | 憑證是否仍在有效期內（-checkend 0）
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -checkend
+      - "0"
+      - -noout
+      - -in
+      - "{{ tls_cert_fullchain }}"
+  register: certbot_verify_notexpired
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: certbot | 憑證已過期
+  ansible.builtin.assert:
+    that:
+      - (certbot_verify_notexpired.rc | default(1)) == 0
+    quiet: true
+    fail_msg: >-
+      {{ tls_cert_fullchain }} 已經過期。自動續期顯然沒有在運作。
+      檢查：systemctl list-timers '*certbot*'
+            journalctl -u {{ certbot_active_timer | default('certbot.timer') | regex_replace('\.timer$', '.service') }} -n 50
+            sudo {{ certbot_binary }} renew --dry-run
+  when: not ansible_check_mode
+
+- name: certbot | 續期 timer 必須是 enabled + active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ certbot_active_timer | default('certbot.timer') }}"
+  register: certbot_timer_enabled
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: certbot_renew_manage | bool
+
+- name: certbot | timer 沒啟用 = 90 天後網站憑證會過期而沒有人知道
+  ansible.builtin.assert:
+    that:
+      - (certbot_timer_enabled.stdout | default('') | trim) in ['enabled', 'enabled-runtime', 'static']
+    quiet: true
+    fail_msg: >-
+      {{ certbot_active_timer | default('certbot.timer') }} 的狀態是
+      「{{ certbot_timer_enabled.stdout | default('') | trim }}」，不是 enabled。
+      Let's Encrypt 憑證只有 90 天 —— 沒有 timer 就等於「三個月後網站掛掉」。
+      檢查：systemctl status {{ certbot_active_timer | default('certbot.timer') }}
+            systemctl list-timers '*certbot*'
+      修正：sudo systemctl enable --now {{ certbot_active_timer | default('certbot.timer') }}
+  when:
+    - certbot_renew_manage | bool
+    - not ansible_check_mode
+
+# A5 的收尾：nginx 是不是真的已經在用這張憑證。
+# 用 nginx -T（dump 實際載入的設定，不加 -c）判斷，不依賴 vhost 檔名。
+- name: certbot | dump nginx 實際載入的設定
+  ansible.builtin.command:
+    argv:
+      - "{{ nginx_binary }}"
+      - "-T"
+  register: certbot_nginx_dump
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: certbot | nginx 仍在用 snakeoil（A5：手動再跑一次 --tags nginx）
+  ansible.builtin.debug:
+    msg: >-
+      注意：{{ tls_cert_fullchain }} 已經存在，但 nginx 目前載入的設定裡沒有引用它
+      —— 也就是還在用 snakeoil 自簽憑證，瀏覽器會顯示憑證錯誤。
+      本 role 的 handler 會在「憑證本次真的變更」時自動重新渲染 vhost；
+      憑證是上一次跑就簽好的（本次沒有變更）就不會觸發，於是停在這個狀態。
+      修正：cd ansible && ansible-playbook -i inventory/hosts.yml site.yml --tags nginx
+      （nginx_myguard 會 stat 到正式憑證、切換過去、nginx -t 後 reload。）
+  when:
+    - (certbot_nginx_dump.rc | default(1)) == 0
+    - tls_cert_fullchain not in (certbot_nginx_dump.stdout | default(''))
+
+# 真的跑一次完整的續期流程（對 staging 端點，不影響正式憑證與正式額度）。
+# 預設關：它會產生對外請求，不適合每次部署都做。上線前建議手動跑一次。
+- name: certbot | 續期演練（certbot renew --dry-run）
+  ansible.builtin.command:
+    argv:
+      - "{{ certbot_binary }}"
+      - renew
+      - --dry-run
+      - --non-interactive
+      - --cert-name
+      - "{{ certbot_cert_name }}"
+  register: certbot_dry_run
+  changed_when: false
+  failed_when: false
+  when: certbot_renew_dry_run | bool
+
+- name: certbot | 續期演練失敗
+  ansible.builtin.fail:
+    msg: >-
+      certbot renew --dry-run 失敗（rc={{ certbot_dry_run.rc }}）。
+      目前的憑證還是有效的，但「三個月後會續不到」。
+      輸出：{{ (certbot_dry_run.stdout | default('')) ~ (certbot_dry_run.stderr | default('')) }}
+      最常見原因跟首次簽發一樣：DNS 改掉了、80 埠被後來加的防火牆規則擋了、
+      或 nginx 的 acme-challenge location 在改版 vhost 時掉了。
+  when:
+    - certbot_renew_dry_run | bool
+    - (certbot_dry_run.rc | default(0)) != 0
+
+- name: certbot | 完成
+  ansible.builtin.debug:
+    msg:
+      - "憑證      : {{ tls_cert_fullchain }}"
+      - "端點      : {{ 'staging（測試，瀏覽器不信任）' if (certbot_staging | bool) else '正式（Let''s Encrypt production）' }}"
+      - "網域      : {{ certbot_domains | join(', ') }}"
+      - "資訊      : {{ certbot_verify_info.stdout | default('') | regex_findall('notAfter=(.*)') | first | default('n/a') | trim }}"
+      - "續期      : {{ certbot_active_timer | default('certbot.timer') }}（systemd timer；到期通知寄到 {{ certbot_email }}）"
+      - "deploy hook: {{ certbot_deploy_hook_path if (certbot_deploy_hook_manage | bool) else certbot_renew_hook }}"
+      - "本次是否新簽發: {{ certbot_cert_newly_issued | default(false) }}"

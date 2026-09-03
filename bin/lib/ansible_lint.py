@@ -145,6 +145,19 @@ for f in yml_files:
         walk(d)
 
 # ── E6 變數引用 ────────────────────────────────────────────────────
+# 模板裡的 {% set x = ... %} 是區域別名，不是未定義的變數。
+# 不收集的話，一個用了 10 個別名的模板就會產生 10 筆假警報。
+for f in yml_files + j2_files:
+    t = f.read_text()
+    defined |= set(re.findall(r'\{%-?\s*set\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=', t))
+    # {% for a, b in ... %} 的迴圈變數
+    for m in re.finditer(r'\{%-?\s*for\s+([a-zA-Z_][a-zA-Z0-9_,\s]*?)\s+in\s', t):
+        defined |= {v.strip() for v in m.group(1).split(',') if v.strip()}
+    # {% macro name(a, b) %} 的「名稱」與「參數」都要收
+    for m in re.finditer(r'\{%-?\s*macro\s+(\w+)\(([^)]*)\)', t):
+        defined.add(m.group(1))
+        defined |= {v.split('=')[0].strip() for v in m.group(2).split(',') if v.strip()}
+
 used = set()
 VAR_RE = re.compile(r'\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)')
 for f in yml_files + j2_files:

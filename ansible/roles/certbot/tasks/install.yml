@@ -1,0 +1,90 @@
+---
+- name: certbot | 安裝 certbot
+  ansible.builtin.apt:
+    name: "{{ certbot_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  register: certbot_apt
+  retries: 30
+  delay: 10
+  until: certbot_apt is succeeded
+
+- name: certbot | 確認 certbot 執行檔存在
+  ansible.builtin.stat:
+    path: "{{ certbot_binary }}"
+  register: certbot_bin_stat
+
+- name: certbot | certbot 執行檔不在預期位置
+  ansible.builtin.assert:
+    that:
+      - certbot_bin_stat.stat.exists | default(false)
+    quiet: true
+    fail_msg: >-
+      {{ certbot_binary }} 不存在，但 apt 宣稱 {{ certbot_packages | join(', ') }} 已安裝。
+      可能是 snap 版（/snap/bin/certbot）或 pip 版（/usr/local/bin/certbot）。
+      修正：-e certbot_binary=$(command -v certbot 的實際結果)。
+  when: not ansible_check_mode
+
+# ACME webroot。nginx 的 location /.well-known/acme-challenge/ root 到這裡。
+# 目錄本身要 root 擁有、755 —— certbot 以 root 寫入，nginx（www-data）只要讀得到。
+- name: certbot | 建立 ACME webroot
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ web_group }}"
+    mode: "{{ certbot_webroot_mode }}"
+  loop:
+    - "{{ certbot_webroot }}"
+    - "{{ certbot_webroot }}/.well-known"
+    - "{{ certbot_webroot }}/.well-known/acme-challenge"
+
+- name: certbot | 建立 renewal-hooks/deploy 目錄
+  ansible.builtin.file:
+    path: "{{ certbot_config_dir }}/renewal-hooks/deploy"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# deploy hook 只在憑證「真的換了」之後跑一次；而且 reload 之前一定先 nginx -t
+#（A12：不加 -c）。設定壞掉時寧可讓 nginx 帶著舊憑證繼續服務，
+# 也不要 reload 成一個起不來的狀態。
+- name: certbot | 放置 deploy hook（續期後重載 nginx）
+  ansible.builtin.template:
+    src: deploy-hook-reload-nginx.sh.j2
+    dest: "{{ certbot_deploy_hook_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: certbot_deploy_hook_manage | bool
+
+# webroot 模式的前提：nginx 已經在服務 :80。
+# 這也是本 role 必須排在 nginx_myguard 之後的原因。
+- name: certbot | 檢查 nginx 是否正在執行
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - "{{ nginx_service_name }}"
+  register: certbot_nginx_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: certbot | nginx 沒在跑就不可能通過 HTTP-01 驗證
+  ansible.builtin.assert:
+    that:
+      - (certbot_nginx_active.rc | default(1)) == 0
+    quiet: true
+    fail_msg: >-
+      systemctl is-active {{ nginx_service_name }} 回報
+      「{{ certbot_nginx_active.stdout | default('') | trim }}」。
+      本 role 用 webroot 模式（--webroot -w {{ certbot_webroot }}），
+      靠「已經在跑的 nginx」把 /.well-known/acme-challenge/ 送出去。
+      刻意不用 standalone —— 那會自己起一個臨時 HTTP server 綁 :80，
+      跟 nginx 撞埠而失敗（Could not bind to IPv4 or IPv6）。
+      修正：先讓 nginx 起來（{{ nginx_binary }} -t 看設定錯在哪、
+      journalctl -u {{ nginx_service_name }} -n 50 看啟動失敗原因），
+      再重跑 --tags nginx,certbot。

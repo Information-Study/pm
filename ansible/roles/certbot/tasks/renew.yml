@@ -1,0 +1,80 @@
+---
+# ── 為什麼是 systemd timer 而不是 cron ──────────────────────────────────────
+#   * timer 有 Persistent=true：機器關機錯過的那次執行，開機後會補跑。
+#     cron 錯過就是錯過 —— 週末關機兩天剛好跨過續期窗口就直接過期。
+#   * RandomizedDelaySec 讓所有機器不會在同一秒打 LE（他們明文要求要抖動）。
+#   * systemctl list-timers / journalctl -u 能直接看到上次執行結果，
+#     cron 的輸出預設丟給 MAILTO，在沒有 MTA 的機器上等於進黑洞。
+#
+# Debian/Ubuntu 的 certbot 套件自帶 certbot.timer（每天兩次 + 隨機延遲），
+# 而且它附的 /etc/cron.d/certbot 開頭就有
+#   `test -d /run/systemd/system && exit 0`
+# —— 在 systemd 機器上那個 cron 本來就不會跑，所以不需要刪它（本 role 不做任何刪除）。
+
+- name: certbot | 檢查發行版是否提供 {{ certbot_packaged_timer }}
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - list-unit-files
+      - "{{ certbot_packaged_timer }}"
+  register: certbot_packaged_timer_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: certbot | 決定用哪一個 timer
+  ansible.builtin.set_fact:
+    certbot_use_packaged_timer: >-
+      {{ certbot_packaged_timer in (certbot_packaged_timer_check.stdout | default('')) }}
+    certbot_active_timer: >-
+      {{ certbot_packaged_timer
+         if certbot_packaged_timer in (certbot_packaged_timer_check.stdout | default(''))
+         else (certbot_fallback_timer_name ~ '.timer') }}
+
+- name: certbot | 啟用套件自帶的 certbot.timer
+  ansible.builtin.systemd_service:
+    name: "{{ certbot_packaged_timer }}"
+    enabled: true
+    state: started
+  when: certbot_use_packaged_timer | bool
+
+- name: certbot | 沒有套件 timer 時，安裝本 role 的 fallback unit
+  ansible.builtin.template:
+    src: "certbot-renew.{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ certbot_fallback_timer_name }}.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  when: not (certbot_use_packaged_timer | bool)
+
+- name: certbot | 啟用 fallback timer（daemon-reload 後 enable + start）
+  ansible.builtin.systemd_service:
+    name: "{{ certbot_fallback_timer_name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not (certbot_use_packaged_timer | bool)
+
+# --deploy-hook 只有在「本次真的簽發」時才會被寫進 renewal conf。憑證早就存在、
+# 本次沒動作的情況下（例如憑證是人工簽的、或 hook 被後來的手動指令覆寫掉），
+# conf 裡可能沒有 renew_hook —— 那就會變成「續期成功但 nginx 還抓著舊憑證的
+# 檔案描述子」，症狀是憑證明明更新了、瀏覽器看到的還是舊的直到下次重啟。
+# 這裡補寫。檔案不存在時（首次簽發前）整段跳過。
+- name: certbot | renewal conf 是否存在
+  ansible.builtin.stat:
+    path: "{{ certbot_renewal_conf }}"
+  register: certbot_renewal_conf_stat
+
+- name: certbot | 確認 renewal conf 已含 deploy hook
+  ansible.builtin.lineinfile:
+    path: "{{ certbot_renewal_conf }}"
+    regexp: '^renew_hook\s*='
+    line: "renew_hook = {{ certbot_renew_hook }}"
+    insertafter: '^\[renewalparams\]'
+    owner: root
+    group: root
+    mode: "0644"
+  when: certbot_renewal_conf_stat.stat.exists | default(false)

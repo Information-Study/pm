@@ -1,0 +1,214 @@
+---
+# A7：套件名防禦性解析。
+# MyGuard 打包內容無法從這裡驗證，Ubuntu/Debian 各版名稱也不一致
+# （noble 是 libmodsecurity3t64、部分發行版把 CRS 改名 coreruleset、
+#  MyGuard 站台描述的是 Coraza 連接器）。
+# 所以對 waf_packages 的每個「角色」逐一用 apt-cache policy 真的探測，
+# 主要名稱不存在就依 waf_packages_alternates 往下試，全部落空才 fail，
+# 且 fail 訊息附上這台機器 apt-cache search 的實際輸出。
+# 這裡沒有任何 when: false 的示意任務；每個 register 都會被後面真的讀到。
+
+- name: 套件 | 更新 APT 快取（探測前必須有最新的候選版本資訊）
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  register: nginx_pkg_cache
+  until: nginx_pkg_cache is succeeded
+  retries: "{{ nginx_apt_retries | int }}"
+  delay: "{{ nginx_apt_delay | int }}"
+
+- name: 套件 | 安裝 nginx
+  ansible.builtin.apt:
+    name: "{{ nginx_packages }}"
+    state: present
+  register: nginx_pkg_install
+  until: nginx_pkg_install is succeeded
+  retries: "{{ nginx_apt_retries | int }}"
+  delay: "{{ nginx_apt_delay | int }}"
+
+# 剛裝好時設定還是發行版預設值（必定 valid），此時 enable+start 最安全；
+# 之後的設定變更一律走 handler（先 nginx -t 再 reload/restart）。
+- name: 套件 | 啟用並啟動 nginx 服務
+  ansible.builtin.systemd_service:
+    name: "{{ nginx_service }}"
+    state: started
+    enabled: true
+
+- name: 套件 | WAF 套件解析與安裝
+  when: waf_enabled | bool
+  block:
+
+    # 累加式 set_fact 會保留到 play 結束；同一次執行若重複套用本 role 會累積重複值。
+    - name: 套件 | 歸零上一輪的解析結果
+      ansible.builtin.set_fact:
+        waf_pkg_resolved: []
+        waf_pkg_missing: []
+
+    - name: 套件 | 展開候選清單（主要名稱 + 備選名稱 + 可選套件）
+      ansible.builtin.set_fact:
+        waf_pkg_candidates: >-
+          {{ (waf_packages
+              + (waf_packages_alternates | dict2items
+                 | selectattr('key', 'in', waf_packages)
+                 | map(attribute='value') | flatten | list)
+              + waf_packages_optional) | unique | list }}
+
+    - name: 套件 | 逐一用 apt-cache policy 探測候選套件
+      ansible.builtin.command:
+        argv:
+          - apt-cache
+          - policy
+          - "{{ item }}"
+      loop: "{{ waf_pkg_candidates }}"
+      register: waf_pkg_policy
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    # 不存在的套件 apt-cache policy 不會印 Candidate:；
+    # 只在本機裝過、來源已消失的套件會印 Candidate: (none) —— 兩種都不能拿來安裝。
+    - name: 套件 | 算出「APT 真的有候選版本」的套件
+      ansible.builtin.set_fact:
+        waf_pkg_available: >-
+          {{ waf_pkg_policy.results
+             | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0)
+             | selectattr('stdout', 'search', 'Candidate:')
+             | rejectattr('stdout', 'search', 'Candidate: [(]none[)]')
+             | map(attribute='item') | list }}
+
+    - name: 套件 | 依偏好順序決定每個角色實際要裝的名稱
+      ansible.builtin.set_fact:
+        waf_pkg_resolved: "{{ waf_pkg_resolved + _hit[:1] }}"
+        waf_pkg_missing: "{{ waf_pkg_missing + ([item] if (_hit | length) == 0 else []) }}"
+      loop: "{{ waf_packages }}"
+      vars:
+        _cands: "{{ [item] + (waf_packages_alternates[item] | default([])) }}"
+        _hit: "{{ _cands | select('in', waf_pkg_available) | list }}"
+
+    - name: 套件 | 可選套件中實際存在的部分（找不到就靜靜略過）
+      ansible.builtin.set_fact:
+        waf_pkg_optional_present: "{{ waf_packages_optional | select('in', waf_pkg_available) | list }}"
+
+    - name: 套件 | 解析失敗時列出這台機器真的搜得到的候選
+      ansible.builtin.shell:
+        cmd: "set -o pipefail; apt-cache search --names-only '{{ waf_search_regex }}' | sort"
+        executable: /bin/bash
+      register: waf_pkg_search
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: waf_pkg_missing | length > 0
+
+    - name: 套件 | 完全找不到必要的 WAF 套件就 fail fast
+      ansible.builtin.fail:
+        msg: |-
+          找不到任何可用名稱的 WAF 套件角色：{{ waf_pkg_missing | join(', ') }}
+          已探測過的候選：{{ waf_pkg_candidates | join(', ') }}
+          apt-cache search --names-only '{{ waf_search_regex }}' 的實際輸出：
+          {{ waf_pkg_search.stdout | default('（沒有任何輸出）') }}
+          三個可行選項：
+          (1) 從上面的搜尋結果挑出正確名稱，覆寫 waf_packages / waf_packages_alternates；
+          (2) MyGuard 沒有提供 → 設 nginx_myguard_repo_manage=false 改用發行版套件
+              （noble universe 有 libnginx-mod-http-modsecurity 與 modsecurity-crs）；
+          (3) 暫時設 waf_enabled=false 先讓 nginx 上線，之後再補 WAF。
+      when: waf_pkg_missing | length > 0
+
+    - name: 套件 | 安裝解析出來的 WAF 套件
+      ansible.builtin.apt:
+        name: "{{ waf_pkg_resolved + waf_pkg_optional_present }}"
+        state: present
+      register: waf_pkg_install
+      until: waf_pkg_install is succeeded
+      retries: "{{ nginx_apt_retries | int }}"
+      delay: "{{ nginx_apt_delay | int }}"
+      notify: nginx restart
+
+    - name: 套件 | 顯示解析結果
+      ansible.builtin.debug:
+        msg: >-
+          WAF 套件解析結果：{{ waf_pkg_resolved | join(', ') }}
+          {{ '（可選：' ~ (waf_pkg_optional_present | join(', ')) ~ '）'
+             if waf_pkg_optional_present | length > 0 else '' }}
+
+    # 動態模組：不同打包放的位置與檔名都不同，掃 defaults 列的搜尋路徑。
+    - name: 套件 | 尋找 WAF 動態模組 .so
+      ansible.builtin.find:
+        paths: "{{ nginx_module_search_paths }}"
+        patterns: "{{ nginx_waf_module_patterns }}"
+        file_type: any
+      register: waf_module_find
+
+    - name: 套件 | 記下模組路徑
+      ansible.builtin.set_fact:
+        waf_module_path: >-
+          {{ (waf_module_find.files | map(attribute='path') | sort | first) | default('', true) }}
+
+    - name: 套件 | 找不到模組就 fail fast
+      ansible.builtin.assert:
+        that:
+          - waf_module_path | length > 0
+        quiet: true
+        fail_msg: >-
+          已安裝 {{ waf_pkg_resolved | join(', ') }}，但在
+          {{ nginx_module_search_paths | join(', ') }} 底下找不到符合
+          {{ nginx_waf_module_patterns | join(', ') }} 的動態模組。
+          請用 dpkg -L {{ waf_pkg_resolved | first }} 找出實際的 .so 路徑，
+          再把該目錄加進 nginx_module_search_paths（或把檔名加進 nginx_waf_module_patterns）。
+
+    - name: 套件 | 確保 modules-enabled 目錄存在
+      ansible.builtin.file:
+        path: "{{ nginx_modules_enabled_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # 同一個模組被 load_module 兩次，nginx 會直接 emerg，所以先看有沒有人載過。
+    - name: 套件 | 檢查現有設定是否已經載入這個模組
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          grep -RIl -e 'load_module[^;]*{{ waf_module_path | basename }}'
+          {{ nginx_conf_dir }}/nginx.conf {{ nginx_modules_enabled_dir }} 2>/dev/null
+          | head -n 1 || true
+        executable: /bin/bash
+      register: waf_module_loaded_by
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: 套件 | 沒有人載入時自己寫一份 load_module 設定
+      ansible.builtin.copy:
+        dest: "{{ nginx_modules_enabled_dir }}/50-mod-{{ app_slug }}-waf.conf"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # {{ ansible_managed }}
+          load_module {{ waf_module_path }};
+      when: (waf_module_loaded_by.stdout | default('') | trim) | length == 0
+      notify: nginx restart
+
+    - name: 套件 | 確認 nginx.conf 有 include modules-enabled
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - '^[[:space:]]*include[[:space:]]+.*modules-enabled'
+          - "{{ nginx_conf_dir }}/nginx.conf"
+      register: nginx_modules_include
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: 套件 | modules-enabled 沒被 include 就 fail fast
+      ansible.builtin.assert:
+        that:
+          - (nginx_modules_include.rc | int) == 0 or (waf_module_loaded_by.stdout | default('')) == (nginx_conf_dir ~ '/nginx.conf')
+        quiet: true
+        fail_msg: >-
+          {{ nginx_conf_dir }}/nginx.conf 沒有 include modules-enabled/*.conf，
+          放在 {{ nginx_modules_enabled_dir }} 的 load_module 完全不會生效，
+          WAF 指令會在 nginx -t 時報 unknown directive。
+          請在 nginx.conf 的最上層（http 區塊之外）加一行
+          include {{ nginx_modules_enabled_dir }}/*.conf;  再重跑。

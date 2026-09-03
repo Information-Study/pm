@@ -1,0 +1,107 @@
+# {{ ansible_managed }}
+# ============================================================================
+# {{ app_name }} —— http{} 層設定。
+#
+# 落點 {{ nginx_conf_d }}/00-{{ app_slug }}-http.conf。
+# 檔名的 00- 前綴是刻意的：nginx.conf 的 include conf.d/*.conf 會照字典序展開，
+# 而 log_format 是**解析期**查名的（access_log 引用未定義的格式 → nginx -t 直接失敗），
+# upstream / limit_req_zone / map 也必須在被引用之前就宣告完成。
+# Debian 系的 nginx.conf 是先 include conf.d 再 include sites-enabled，
+# 就算 vhost 退回 conf.d（facts.yml 的 nginx_vhost_path_eff），
+# 「00-{{ app_slug }}-http.conf」在字典序上也還是排在「{{ app_slug }}.conf」之前。
+#
+# 這裡放的都是 http context 專屬指令：
+#   upstream / map / limit_req_zone / limit_conn_zone / log_format
+# 它們**不能**寫在 server{} 裡，這正是本檔與 vhost.conf.j2 分家的原因。
+#
+# ⚠ 本檔是 http 層，同機其他 vhost 也吃得到 gzip 與 client_max_body_size。
+#   zone / map / upstream 名稱一律以 app_slug（{{ app_slug }}）前綴避免撞名。
+# ============================================================================
+{% set var = app_slug | replace('-', '_') %}
+{% set is_proxy = nginx_frontend_proxied | default(frontend_mode in ['ssr', 'spa']) | bool %}
+{% set fe_upstream = nginx_frontend_upstream | default(nginx_frontend_upstream_name | default(var ~ '_frontend')) %}
+{% set fe_ports = range(frontend_port | int, (frontend_port | int) + (frontend_instances | int)) | list %}
+{% set log_fmt = nginx_access_log_format | default(var ~ '_main') %}
+
+# ---- log_format ------------------------------------------------------------
+# vhost 的 access_log 引用這個名字。$upstream_* 讓 SSR 變慢時能一眼看出
+# 是 Nitro 還是 php-fpm 拖住的。
+log_format {{ log_fmt }} '$remote_addr - $remote_user [$time_local] '
+                         '"$request" $status $body_bytes_sent '
+                         '"$http_referer" "$http_user_agent" "$http_x_forwarded_for" '
+                         'rt=$request_time uct="$upstream_connect_time" '
+                         'uht="$upstream_header_time" urt="$upstream_response_time"';
+
+# ---- A16：上傳上限 ---------------------------------------------------------
+# 唯一來源是 app_max_upload_mb（{{ app_max_upload_mb }}MB），這裡只引用推導好的值，
+# 不重算。鏈：app_max_upload_mb → php_upload/php_post → nginx_client_max_body_size
+#           → waf_request_body_limit（必須最大）。
+# vhost 的 server{} 會再寫一次同一個變數（server 覆蓋 http），兩邊同源不會漂移。
+client_max_body_size {{ nginx_client_max_body_size }};
+client_body_timeout 60s;
+client_body_buffer_size 128k;
+{% if nginx_gzip_enabled | bool %}
+
+# ---- gzip ------------------------------------------------------------------
+gzip on;
+gzip_vary on;
+gzip_proxied any;
+gzip_comp_level 5;
+gzip_min_length 256;
+gzip_types {{ nginx_gzip_types | join(' ') }};
+{% endif %}
+
+# ---- map -------------------------------------------------------------------
+# fastcgi 的 HTTPS 參數：只有 https 時才送，讓 Laravel 的 isSecure() 正確。
+# （fastcgi_param HTTPS ... if_not_empty 在 snippet-fastcgi-php.conf 裡引用）
+map $scheme ${{ var }}_https {
+    default "";
+    https   on;
+}
+{% if is_proxy %}
+
+# WebSocket / SSE 用。值為空字串時 nginx 會整個拿掉 Connection 標頭，
+# 上游 keepalive 才有效（寫成 close 會讓每個請求都重開連線）。
+map $http_upgrade ${{ var }}_conn_upgrade {
+    default upgrade;
+    ""      "";
+}
+{% endif %}
+{% if nginx_login_rate_limit_enabled | bool %}
+
+# 登入端點的嚴格限流。用 map 產生 key 而不是另開一個 location ——
+# key 是空字串時 nginx 會跳過該 zone，所以不必為了限流破壞 A13 的 location 順序。
+map $uri ${{ var }}_login_key {
+    default "";
+    "~{{ nginx_login_paths_regex }}" $binary_remote_addr;
+}
+{% endif %}
+
+# ---- 限流 / 限連線 ---------------------------------------------------------
+limit_req_zone $binary_remote_addr zone={{ var }}_general:{{ nginx_limit_req_zone_size }} rate={{ nginx_limit_req_rate }};
+{% if nginx_login_rate_limit_enabled | bool %}
+limit_req_zone ${{ var }}_login_key zone={{ var }}_login:{{ nginx_limit_req_zone_size }} rate={{ nginx_limit_req_login_rate }};
+{% endif %}
+limit_conn_zone $binary_remote_addr zone={{ var }}_conn:{{ nginx_limit_req_zone_size }};
+limit_req_status 429;
+limit_conn_status 429;
+{% if is_proxy %}
+
+# ---- 前端 upstream（A10）---------------------------------------------------
+# upstream 只能宣告在 http context —— 這就是它不能待在 vhost 的 server{} 裡的原因。
+# PM2 一律 fork，第 i 個 fork 綁 {{ frontend_port }}+i，共 {{ frontend_instances }} 個實例。
+# 這組埠必須與 facts.yml 的 nginx_frontend_ports
+#（{{ fe_ports | join(', ') }}）以及 nodejs_pm2 產生的 ecosystem.config.cjs 一一對應。
+# 多個 fork 時用 least_conn：各 fork 的請求耗時差異大，round-robin 會塞住。
+upstream {{ fe_upstream }} {
+    {{ nginx_upstream_balancer | default('least_conn') }};
+{% for p in fe_ports %}
+    server {{ frontend_host }}:{{ p }} max_fails=3 fail_timeout=10s;
+{% endfor %}
+    keepalive {{ nginx_upstream_keepalive }};
+}
+{% else %}
+
+# frontend_mode={{ frontend_mode }}：沒有 PM2、沒有 upstream，
+# vhost 直接 root 到 {{ frontend_static_root | default(frontend_current_path ~ '/.output/public') }}。
+{% endif %}

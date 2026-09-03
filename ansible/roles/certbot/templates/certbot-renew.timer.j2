@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Twice-daily renewal check for {{ app_domain }} (Let's Encrypt)
+
+[Timer]
+OnCalendar={{ certbot_renew_oncalendar }}
+# Let's Encrypt 明文要求續期時間要抖動，不要整點準時打他們的 API。
+RandomizedDelaySec={{ certbot_renew_randomized_delay_sec }}
+# 關機期間錯過的那次執行，開機後補跑 —— cron 做不到這件事，
+# 而「週末關機兩天剛好跨過續期窗口」是憑證過期最常見的劇本。
+Persistent=true
+Unit={{ certbot_fallback_timer_name }}.service
+
+[Install]
+WantedBy=timers.target

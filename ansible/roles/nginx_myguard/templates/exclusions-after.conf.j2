@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+# ============================================================================
+# A11：CRS 載入「之後」才能執行的調整 —— 由 waf_exclusions_after 產生。
+#
+# SecRuleUpdateTargetById 是**載入期**指令：它會去改一條已經存在的規則，
+# 所以規則必須先被 Include 進來，這個檔才會有東西可改。放到 exclusions-before
+# 只會得到一個「規則不存在」的載入錯誤，nginx 直接起不來。
+#
+# ⚠ 同理，引用一個 CRS 裡不存在的規則 ID（版本差異、規則被上游移除）也會在
+#   載入期就報錯。waf.yml 應該先 grep 實際安裝的 CRS 檔案確認 ID 存在，
+#   只寫出確實存在的那幾條。
+#
+# 每一筆的欄位：id（必填）、targets（必填，list）、comment
+# 範例：
+#   waf_exclusions_after:
+#     - id: 942440
+#       comment: "Laravel 的 CSRF token 與 session cookie 裡本來就會出現 -- 序列"
+#       targets:
+#         - "!ARGS:_token"
+#         - "!REQUEST_COOKIES:/^(XSRF-TOKEN|laravel_session)$/"
+#   →  SecRuleUpdateTargetById 942440 "!ARGS:_token|!REQUEST_COOKIES:/^(XSRF-TOKEN|laravel_session)$/"
+#      多個 target 之間用「|」，不是逗號也不是分號。
+# ============================================================================
+{% if (waf_exclusions_after | default([])) | length == 0 %}
+
+# waf_exclusions_after 是空的 —— 目前沒有任何 target 調整。
+# 這是刻意的預設：憑空猜 CRS 規則 ID 會在載入期就把 nginx 弄掛。
+# 先跑 DetectionOnly 收 audit log（{{ waf_audit_log }}），
+# 確認真正誤判的規則 ID 之後再填。
+{% endif %}
+{% for e in waf_exclusions_after | default([]) %}
+
+{% for cl in (e.comment | default('') | trim | wordwrap(86)).split('\n') if (cl | trim | length) > 0 %}
+# {{ cl }}
+{% endfor %}
+SecRuleUpdateTargetById {{ e.id }} "{{ e.targets | join('|') }}"
+{% endfor %}

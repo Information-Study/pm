@@ -1,0 +1,48 @@
+# {{ ansible_managed }}
+# ============================================================================
+# FastCGI snippet —— Laravel public/index.php 的唯一執行入口。
+#
+# 由 vhost 在 **location 內**（location ~ ^/index\.php(/|$)）include，
+# 不可在 server 層 include：裡面有 fastcgi_pass 與 try_files。
+#
+# 為什麼 /api、/admin… 那些前綴的 location 不直接 include 本檔：
+#   那些路徑的 $fastcgi_script_name 是 /api/xxx（磁碟上不存在），
+#   直接 fastcgi_pass 會讓 PHP 收到不存在的 SCRIPT_FILENAME。
+#   正確做法是前綴 location 只寫 try_files $uri /index.php$is_args$args;
+#   由 nginx 內部轉址到 /index.php 這個 location，再由本檔接手。
+#
+# 本檔引用的 limit_req zone 定義在 {{ nginx_conf_d }}/00-{{ app_slug }}-http.conf
+#（zone 只能在 http context 宣告），該檔的 include 順序在 vhost 之前。
+# ============================================================================
+{% set var = app_slug | replace('-', '_') %}
+{% set fcgi_pass = nginx_php_fastcgi_pass | default(nginx_fastcgi_pass | default('unix:' ~ php_fpm_socket)) %}
+fastcgi_split_path_info ^(.+\.php)(/.*)$;
+# try_files 會清掉 $fastcgi_path_info，所以要先接下來。
+set ${{ var }}_path_info $fastcgi_path_info;
+try_files $fastcgi_script_name =404;
+
+include {{ nginx_conf_dir }}/fastcgi_params;
+fastcgi_pass {{ fcgi_pass }};
+fastcgi_index index.php;
+fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+fastcgi_param DOCUMENT_ROOT $document_root;
+fastcgi_param PATH_INFO ${{ var }}_path_info;
+# $ {{ var }}_https 由 http 層的 map $scheme 產生；只有 https 才送，
+# Laravel 的 Request::isSecure() 才會正確。
+fastcgi_param HTTPS ${{ var }}_https if_not_empty;
+# httpoxy（CVE-2016-5385）：不要把 Proxy 標頭洩進 CGI 環境。
+fastcgi_param HTTP_PROXY "";
+# 必須 > php-fpm 的 request_terminate_timeout（60s），否則 nginx 先斷、
+# 錯誤訊息只會是 502 而看不到 PHP 真正的逾時原因。
+fastcgi_read_timeout {{ nginx_fastcgi_read_timeout }};
+fastcgi_buffer_size 32k;
+fastcgi_buffers 16 32k;
+fastcgi_busy_buffers_size 64k;
+fastcgi_hide_header X-Powered-By;
+
+limit_req zone={{ var }}_general burst={{ nginx_limit_req_burst }} nodelay;
+{% if nginx_login_rate_limit_enabled | bool %}
+# 登入端點的嚴格限流。key 是 http 層的 map 產生的 —— 非登入路徑 key 為空字串，
+# nginx 會直接跳過該 zone，所以不必為了限流破壞 A13 的 location 順序。
+limit_req zone={{ var }}_login burst={{ nginx_limit_req_login_burst }} nodelay;
+{% endif %}

@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: certbot
+  author: pm
+  description: >-
+    Let's Encrypt 憑證（webroot 模式）與 systemd timer 自動續期。
+    必須排在 nginx_myguard 之後 —— webroot 需要 nginx 已經在服務 :80。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [certbot, letsencrypt, tls, acme]
+
+# 刻意不宣告 dependencies：與 nginx_myguard 的先後由 site.yml 的 roles 清單決定。
+# 寫成 dependencies 會讓 --tags 過濾時 nginx_myguard 被重複執行一次。
+#（handlers/main.yml 確實會 include_role nginx_myguard，但那是「憑證真的換了」
+#   才觸發的單一 tasks_from，不是整個 role。）
+dependencies: []

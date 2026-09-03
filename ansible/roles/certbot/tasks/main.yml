@@ -1,0 +1,63 @@
+---
+# 順序是刻意的：
+#   assert  → 變數不變式（email / 網域 / webroot），5 秒內失敗
+#   install → 裝 certbot、建 webroot、放 deploy hook、確認 nginx 真的在服務 :80
+#   detect  → 冪等判斷（stat + openssl x509 -checkend + SAN 比對）+ 連通性預檢
+#   issue   → 只有 detect 說要簽才呼叫 certbot；失敗時給三種常見原因
+#   renew   → systemd timer（不是 cron）
+#   flush   → 憑證換了就重新渲染 vhost + nginx -t + reload（A5 後半段）
+#   verify  → 讀回憑證確認網域涵蓋、到期日、timer 已啟用
+#
+# tls_enable 為 false 時：每個 import 的 when 都會下推到底下每一個 task，
+# 全部乾淨地 skip（ansible.cfg 已設 display_skipped_hosts=False，不會洗版）。
+# 這不是失敗 —— 純內網、沒有公開網域的環境本來就不該申請憑證。
+
+- name: certbot | TLS 未啟用，本 role 不做任何事
+  ansible.builtin.debug:
+    msg: >-
+      tls_enable=false —— 不申請 Let's Encrypt 憑證。
+      nginx 會維持 ssl-cert 套件的 snakeoil 自簽憑證（瀏覽器會顯示憑證錯誤，
+      但 443 起得來），或依 vhost 設定只服務 HTTP。
+      要啟用：在 group_vars 設 tls_enable: true 並填 certbot_email。
+  when: not (tls_enable | bool)
+  tags: [certbot, tls]
+
+- name: 前置斷言（email 必填、網域、webroot）
+  ansible.builtin.import_tasks: assert.yml
+  when: tls_enable | bool
+  tags: [certbot, tls, certbot_assert]
+
+- name: 安裝 certbot、建立 ACME webroot 與 deploy hook
+  ansible.builtin.import_tasks: install.yml
+  when: tls_enable | bool
+  tags: [certbot, tls, certbot_install]
+
+- name: 冪等判斷與連通性預檢
+  ansible.builtin.import_tasks: detect.yml
+  when: tls_enable | bool
+  tags: [certbot, tls, certbot_issue]
+
+- name: 簽發 / 續期
+  ansible.builtin.import_tasks: issue.yml
+  when: tls_enable | bool
+  tags: [certbot, tls, certbot_issue]
+
+- name: 自動續期（systemd timer）
+  ansible.builtin.import_tasks: renew.yml
+  when:
+    - tls_enable | bool
+    - certbot_renew_manage | bool
+  tags: [certbot, tls, certbot_renew]
+
+- name: 立即套用（重新渲染 vhost → nginx -t → reload）
+  # verify 要讀 nginx 實際載入的設定，所以離開 role 之前必須先把 handler 沖掉。
+  # 沒有 notify 過就是 no-op，tls_enable=false 時同樣安全。
+  ansible.builtin.meta: flush_handlers
+  tags: [certbot, tls]
+
+- name: 驗證
+  ansible.builtin.import_tasks: verify.yml
+  when:
+    - tls_enable | bool
+    - certbot_verify | bool
+  tags: [certbot, tls, certbot_verify]

@@ -1,0 +1,323 @@
+# {{ ansible_managed }}
+# ============================================================================
+# {{ app_name }} vhost —— Laravel（後端，實體檔案優先）+ Nuxt（前端，catch-all）
+#
+# 本檔是「片段」，由 nginx.conf 在 http{} 內 include（sites-enabled 或 conf.d，
+# 由 facts.yml 的 nginx_vhost_path_eff 決定）。
+#
+# A12：render.yml 渲染本檔時**絕對不可**加 validate。-c 會把片段當成完整主設定，
+#      沒有 events{} 就 emerg，好好的 vhost 永遠寫不進去。驗證一律交給 handler
+#      與 verify.yml 那個不帶 -c 的 nginx -t。
+#
+# 三個 snippet 由 render.yml 另外渲染，本檔只 include：
+#   {{ nginx_snippet_security_headers | default('（安全標頭）') }}
+#   {{ nginx_snippet_fastcgi | default('（fastcgi）') }}
+#   {{ nginx_snippet_proxy | default('（前端 proxy）') }}
+# http 層（upstream / map / limit_*_zone / log_format）在
+#   {{ nginx_conf_d }}/00-{{ app_slug }}-http.conf
+#
+# 本檔使用的 facts（facts.yml 的 set_fact）：
+#   nginx_tls_is_real / nginx_tls_cert / nginx_tls_key   A5：這一輪用哪張憑證
+#   nginx_http2_style                                    listen | directive
+#   nginx_frontend_proxied                               ssr,spa=true / static=false
+#   nginx_frontend_upstream                              upstream 名稱
+#   waf_directive_prefix_eff                             modsecurity | coraza 指令前綴
+# ============================================================================
+{% set var = app_slug | replace('-', '_') %}
+{% set doc_root = nginx_backend_public_root | default(backend_current_path ~ '/public') %}
+{% set fe_static_root = frontend_static_root | default(frontend_current_path ~ '/.output/public') %}
+{% set is_proxy = nginx_frontend_proxied | default(frontend_mode in ['ssr', 'spa']) | bool %}
+{% set fe_upstream = nginx_frontend_upstream | default(nginx_frontend_upstream_name | default(var ~ '_frontend')) %}
+{% set tls_on = tls_enable | bool %}
+{% set tls_real = nginx_tls_is_real | default(false) | bool %}
+{% set le_dir = nginx_letsencrypt_live_dir | default('/etc/letsencrypt/live/' ~ app_domain) %}
+{% set snake_cert = nginx_snakeoil_cert | default('/etc/ssl/certs/ssl-cert-snakeoil.pem') %}
+{% set snake_key = nginx_snakeoil_key | default('/etc/ssl/private/ssl-cert-snakeoil.key') %}
+{% set tls_cert = nginx_tls_cert | default((le_dir ~ '/fullchain.pem') if tls_real else snake_cert) %}
+{% set tls_key = nginx_tls_key | default((le_dir ~ '/privkey.pem') if tls_real else snake_key) %}
+{% set hdr_snippet = nginx_snippet_security_headers | default(nginx_security_headers_snippet | default(nginx_snippets_dir ~ '/' ~ app_slug ~ '-security-headers.conf')) %}
+{% set fcgi_snippet = nginx_snippet_fastcgi | default(nginx_snippets_dir ~ '/' ~ app_slug ~ '-fastcgi-php.conf') %}
+{% set proxy_snippet = nginx_snippet_proxy | default(nginx_snippets_dir ~ '/' ~ app_slug ~ '-proxy-frontend.conf') %}
+{% set waf_on = waf_enabled | bool %}
+{% set waf_d = waf_directive_prefix_eff | default((waf_directive_prefix_override | default('')) or (waf_directive_prefix_default | default('modsecurity'))) %}
+{% set waf_bypass = waf_on and (waf_static_bypass | default(true) | bool) %}
+{% set _nver = nginx_version_detected | default('0.0.0') | string %}
+{% set http2_new = ((nginx_http2_style | default('')) == 'directive')
+                   or ((nginx_http2_style is not defined) and (_nver is version('1.25.1', '>='))) %}
+{% set server_names = ((nginx_server_names | default([app_domain])) + (nginx_server_aliases | default([]))) | unique | list %}
+{% set php_prefixes = nginx_php_prefixes | default(['/api', '/admin', '/livewire', '/up', '/filament', '/sanctum', '/broadcasting', '/storage']) %}
+{% set php_regex = '^/(' ~ (php_prefixes | map('regex_replace', '^/', '') | join('|')) ~ ')(/|$)' %}
+{% set _u = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800, 'M': 2592000, 'y': 31536000} %}
+{% set _sv = nginx_storage_expires | default('7d') | string %}
+{% set storage_max_age = ((_sv[:-1] | int) * _u[_sv[-1]]) if (_sv[-1] in _u) else (_sv | int) %}
+{% set nuxt_cache_control = nginx_static_cache_control | default('public, max-age=31536000, immutable') %}
+{% set acc_log = nginx_access_log | default(nginx_log_dir ~ '/' ~ app_slug ~ '.access.log') %}
+{% set err_log = nginx_error_log | default(nginx_log_dir ~ '/' ~ app_slug ~ '.error.log') %}
+{% set log_fmt = nginx_access_log_format | default(var ~ '_main') %}
+{# ---- 以下 macro 讓 HTTP-only 與 HTTPS 兩種 server 共用同一份 location ---- #}
+{% macro acme_location() %}
+    # A5：ACME 必須排在轉址之前，否則 certbot 的 http-01 會被 301 到還沒起來的 443。
+    # ^~ 前綴比任何 regex location 優先，所以位置不受下面的 A13 順序影響。
+    # 目錄由 render.yml 先建好（{{ certbot_webroot }}/.well-known/acme-challenge）。
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ certbot_webroot }};
+        default_type "text/plain";
+        try_files $uri =404;
+        access_log off;
+{% if waf_on %}
+        {{ waf_d }} off;
+{% endif %}
+    }
+{% endmacro %}
+{% macro site_locations() %}
+    # ---- A13：Laravel public/ 的實體檔案必須贏過前端 catch-all -------------
+    # Filament 產生的是 asset('images/xxx.png')，不是 /images/filament/xxx.png，
+    # 所以這裡不能寫成 ^/(css|js|images)/filament/ —— 那樣 /images/xxx.png 會被
+    # 代理到 Nitro 變成 404 破圖。先 try_files 打實體檔，沒有才交給前端。
+    #
+    # 注意：本區塊用的是 expires，不是 add_header。expires 走的是另一條路徑，
+    # 不會觸發 A14 的「有 add_header 就不繼承上層」規則，所以不必重新 include
+    # 安全標頭 snippet。真正需要重新 include 的是下面 /_nuxt/ 與 /storage/。
+    location ~ ^/(css|js|fonts|images)/ {
+        try_files $uri @frontend;
+        expires {{ nginx_static_expires }};
+        access_log off;
+{% if waf_bypass %}
+        {{ waf_d }} off;
+{% endif %}
+    }
+
+    # Laravel Vite（public/build）與 vendor:publish 出來的資產，同樣要實體檔優先。
+    location ~ ^/(build|vendor)/ {
+        try_files $uri @frontend;
+        expires {{ nginx_static_expires }};
+        access_log off;
+{% if waf_bypass %}
+        {{ waf_d }} off;
+{% endif %}
+    }
+
+    location = /favicon.ico {
+        try_files $uri @frontend;
+        access_log off;
+        log_not_found off;
+{% if waf_bypass %}
+        {{ waf_d }} off;
+{% endif %}
+    }
+
+    location = /robots.txt {
+        try_files $uri @frontend;
+        access_log off;
+        log_not_found off;
+{% if waf_bypass %}
+        {{ waf_d }} off;
+{% endif %}
+    }
+
+    # ---- Nuxt 產生的雜湊資產（nginx_static_prefixes 的 /_nuxt）------------
+    location ~ ^/_nuxt/ {
+        # A14（1/2）：本層一旦出現 add_header，server 層的安全標頭就**整組不繼承**，
+        #             所以必須把 snippet 重新 include 回來。
+        add_header Cache-Control "{{ nuxt_cache_control }}" always;
+        include {{ hdr_snippet }};
+        try_files $uri @frontend;
+        access_log off;
+{% if waf_bypass %}
+        {{ waf_d }} off;
+{% endif %}
+    }
+
+    # ---- 使用者上傳（nginx_static_prefixes 的 /storage）--------------------
+    # 先擋掉可執行副檔名：這個 regex 必須定義在下面的 /storage/ 之前才會先命中
+    #（nginx 的 regex location 依「定義順序」比對，第一個命中就停）。
+    location ~ ^/storage/.+\.(?:php[0-9]?|phtml|phar)$ {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location ~ ^/storage/ {
+        # A14（2/2）：同上，自己加了 Cache-Control 就要把安全標頭 include 回來，
+        #             否則使用者上傳的檔案會少了 X-Content-Type-Options: nosniff。
+        add_header Cache-Control "public, max-age={{ storage_max_age }}" always;
+        include {{ hdr_snippet }};
+        try_files $uri =404;
+        access_log off;
+{% if waf_bypass %}
+        {{ waf_d }} off;
+{% endif %}
+    }
+
+    # ---- 後端（Laravel / Filament / Livewire / Sanctum / 健康檢查）--------
+    # 前綴清單來自 nginx_php_prefixes；實體檔存在就直送，否則內部轉址到 index.php。
+    # 這裡刻意**不**直接 include fastcgi snippet：/api/xxx 的 $fastcgi_script_name
+    # 在磁碟上不存在，直接 fastcgi_pass 會送出錯的 SCRIPT_FILENAME。
+    # 真正的 fastcgi 交給下面 ^/index\.php 那個 location（它 include snippet）。
+    location ~ {{ php_regex }} {
+        try_files $uri /index.php$is_args$args;
+    }
+
+    # 只有 index.php 可以執行；public/ 底下其他 .php 一律 404。
+    location ~ ^/index\.php(/|$) {
+        include {{ fcgi_snippet }};
+    }
+
+    location ~ \.php$ {
+        return 404;
+    }
+
+    # ---- 前端 catch-all ---------------------------------------------------
+{% if is_proxy %}
+    # frontend_mode={{ frontend_mode }}：Nitro 由 PM2 fork 起在
+    # upstream {{ fe_upstream }}（見 {{ nginx_conf_d }}/00-{{ app_slug }}-http.conf）。
+    location / {
+        try_files $uri @frontend;
+        limit_req zone={{ var }}_general burst={{ nginx_limit_req_burst }} nodelay;
+    }
+
+    location @frontend {
+        include {{ proxy_snippet }};
+    }
+{% else %}
+    # frontend_mode=static：沒有 PM2，直接 root 到 Nuxt 的 .output/public。
+    location / {
+        root {{ fe_static_root }};
+        try_files $uri $uri.html $uri/index.html /index.html;
+        limit_req zone={{ var }}_general burst={{ nginx_limit_req_burst }} nodelay;
+    }
+
+    location @frontend {
+        root {{ fe_static_root }};
+        try_files $uri $uri/index.html =404;
+    }
+{% endif %}
+
+    # 隱藏檔一律擋掉（.env、.git 之類），但放行 /.well-known。
+    location ~ /\.(?!well-known/) {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+{% if nginx_stub_status_enabled | bool %}
+
+    location = /nginx_status {
+        stub_status;
+        access_log off;
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+    }
+{% endif %}
+{% endmacro %}
+{% macro server_common() %}
+    server_name {{ server_names | join(' ') }};
+    root {{ doc_root }};
+    index {{ nginx_index }};
+    charset utf-8;
+    server_tokens {{ nginx_server_tokens | default('off') }};
+
+    access_log {{ acc_log }} {{ log_fmt }};
+    error_log {{ err_log }} warn;
+
+    # A16：唯一來源是 app_max_upload_mb（{{ app_max_upload_mb }}MB），
+    #      這裡不重算，只引用推導好的值（http 層也設了同一個變數）。
+    #      WAF 的 SecRequestBodyLimit 必須比它大。
+    client_max_body_size {{ nginx_client_max_body_size }};
+    client_body_timeout 60s;
+
+    limit_conn {{ var }}_conn {{ nginx_limit_conn }};
+
+    # A14：安全標頭在 server 層 include 一次；任何自己加 add_header 的 location
+    #      都必須再 include 一次（本檔是 /_nuxt/ 與 /storage/）。
+    include {{ hdr_snippet }};
+{% if (nginx_real_ip_from | default([])) | length > 0 %}
+
+{% for cidr in nginx_real_ip_from | default([]) %}
+    set_real_ip_from {{ cidr }};
+{% endfor %}
+    real_ip_header {{ nginx_real_ip_header }};
+    real_ip_recursive on;
+{% endif %}
+{% if waf_on %}
+
+    {{ waf_d }} on;
+    {{ waf_d }}_rules_file {{ waf_main_rules_file }};
+{% endif %}
+{% endmacro %}
+{% if tls_on %}
+# ---------------------------------------------------------------------------
+# :80 —— 只負責 ACME 與轉址
+# ---------------------------------------------------------------------------
+server {
+    listen 80{{ ' default_server' if nginx_default_server | bool else '' }};
+{% if nginx_listen_ipv6 | bool %}
+    listen [::]:80{{ ' default_server' if nginx_default_server | bool else '' }};
+{% endif %}
+    server_name {{ server_names | join(' ') }};
+    server_tokens {{ nginx_server_tokens | default('off') }};
+    access_log {{ acc_log }} {{ log_fmt }};
+    error_log {{ err_log }} warn;
+
+{{ acme_location() }}
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ---------------------------------------------------------------------------
+# :443
+#
+# A5：先有雞先有蛋 —— 本 role 跑在 certbot 之前，真憑證這時可能還不存在。
+#     facts.yml 用 stat 判斷 {{ le_dir }}/fullchain.pem 是否存在，沒有就退回
+#     ssl-cert 套件的 snakeoil，讓 nginx -t 過得去、certbot 的 webroot 才跑得到。
+#     本次渲染採用的是：{{ '正式憑證' if tls_real else 'snakeoil（暫時）' }}
+# ---------------------------------------------------------------------------
+server {
+    listen 443 ssl{{ '' if http2_new else ' http2' }}{{ ' default_server' if nginx_default_server | bool else '' }};
+{% if nginx_listen_ipv6 | bool %}
+    listen [::]:443 ssl{{ '' if http2_new else ' http2' }}{{ ' default_server' if nginx_default_server | bool else '' }};
+{% endif %}
+{% if http2_new %}
+    # nginx >= 1.25.1（偵測到 {{ _nver }}）：listen 的 http2 參數已棄用，改用獨立指令。
+    http2 on;
+{% endif %}
+
+    ssl_certificate {{ tls_cert }};
+    ssl_certificate_key {{ tls_key }};
+    ssl_protocols {{ nginx_ssl_protocols }};
+    ssl_ciphers {{ nginx_ssl_ciphers }};
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:{{ var }}_ssl:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+{% if (nginx_dhparam_eff | default(nginx_ssl_dhparam_path | default(''))) | length > 0 %}
+    ssl_dhparam {{ nginx_dhparam_eff | default(nginx_ssl_dhparam_path) }};
+{% endif %}
+{% if tls_real %}
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    ssl_trusted_certificate {{ le_dir }}/chain.pem;
+{% else %}
+    # snakeoil 沒有 OCSP responder，也不送 HSTS（見 security headers snippet）——
+    # 否則使用者會被釘死在一張不受信任的憑證上。拿到正式憑證後重跑 --tags nginx。
+{% endif %}
+
+{{ server_common() }}
+{{ acme_location() }}
+{{ site_locations() }}
+}
+{% else %}
+# ---------------------------------------------------------------------------
+# tls_enable=false —— 全部走 :80
+# ---------------------------------------------------------------------------
+server {
+    listen 80{{ ' default_server' if nginx_default_server | bool else '' }};
+{% if nginx_listen_ipv6 | bool %}
+    listen [::]:80{{ ' default_server' if nginx_default_server | bool else '' }};
+{% endif %}
+{{ server_common() }}
+{{ acme_location() }}
+{{ site_locations() }}
+}
+{% endif %}

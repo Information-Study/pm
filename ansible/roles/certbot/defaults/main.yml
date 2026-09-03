@@ -1,0 +1,116 @@
+---
+# ============================================================================
+# roles/certbot/defaults/main.yml
+#
+# Let's Encrypt 憑證簽發與續期。**webroot 模式**（不是 standalone）——
+# 本 role 在 site.yml 排在 nginx_myguard 之後，nginx 已經在服務 :80，
+# standalone 會直接撞埠 "Could not bind to IPv4 or IPv6"。
+#
+# 命名一律沿用既有正本，本檔只是鏡像（讓 `--tags certbot` 能單獨跑）：
+#   inventory/group_vars/all.yml   → tls_enable / certbot_email / certbot_staging
+#                                    certbot_agree_tos / certbot_key_type / certbot_domains
+#                                    certbot_renew_hook / tls_cert_dir / tls_cert_fullchain
+#                                    tls_cert_privkey / nginx_service_name / nginx_binary
+#   roles/nginx_myguard/defaults   → certbot_webroot（ACME webroot，兩邊必須同值，
+#                                    assert.yml 會比對 nginx 的 vhost 是否真的服務它）
+# ============================================================================
+
+app_slug: "pm"
+app_domain: ""
+web_group: "www-data"
+
+# 總開關。false = 整個 role 乾淨地跳過（不是失敗）。
+tls_enable: true
+
+# ---- 帳號與端點 ------------------------------------------------------------
+# ★ 必填。Let's Encrypt 用它寄「憑證即將到期 / 續期失敗」通知，
+#   沒有它就等於自動續期一旦壞掉也沒有人會知道，直到網站憑證過期。
+#   site.yml 的 preflight play 會先擋一次，assert.yml 再擋一次。
+certbot_email: ""
+certbot_agree_tos: true
+# true = 用 staging 端點：憑證不被瀏覽器信任，但不吃正式的速率限制
+#（同一組網域每週 5 張）。第一次跑通流程建議先 true。
+certbot_staging: false
+# EFF 的訂閱詢問在 --non-interactive 下會變成警告，直接關掉。
+certbot_eff_email: false
+
+# ---- 網域 ------------------------------------------------------------------
+nginx_server_aliases: []
+certbot_domains: "{{ [app_domain] + nginx_server_aliases }}"
+# lineage 名稱寫死成 app_domain。不指定 --cert-name 的話，certbot 遇到既有
+# lineage 會自動改名成 <domain>-0001，tls_cert_dir 從此對不上，
+# site.yml 的 A5 收尾檢查會永遠誤報「還在用 snakeoil」。
+certbot_cert_name: "{{ app_domain }}"
+
+# ---- 金鑰 ------------------------------------------------------------------
+certbot_key_type: "ecdsa"            # ecdsa | rsa
+certbot_elliptic_curve: "secp384r1"
+certbot_rsa_key_size: 4096
+
+# ---- 路徑 ------------------------------------------------------------------
+certbot_packages:
+  - certbot
+certbot_binary: "/usr/bin/certbot"
+certbot_config_dir: "/etc/letsencrypt"
+certbot_renewal_conf: "{{ certbot_config_dir }}/renewal/{{ certbot_cert_name }}.conf"
+
+# ★ 必須等於 roles/nginx_myguard/defaults/main.yml 的同名變數 —— nginx 的
+#   location /.well-known/acme-challenge/ 就是 root 到它。
+certbot_webroot: "/var/www/letsencrypt"
+certbot_webroot_mode: "0755"
+
+tls_cert_dir: "/etc/letsencrypt/live/{{ certbot_cert_name }}"
+tls_cert_fullchain: "{{ tls_cert_dir }}/fullchain.pem"
+tls_cert_privkey: "{{ tls_cert_dir }}/privkey.pem"
+
+nginx_service_name: "nginx"
+nginx_binary: "/usr/sbin/nginx"
+
+# ---- 冪等窗口 --------------------------------------------------------------
+# 憑證剩餘效期 > 這個天數，就完全不呼叫 certbot（連 `certbot renew` 都不跑）。
+# LE 憑證 90 天、官方在剩 30 天時才續期，所以 30 是「該續的時候真的會續、
+# 不該續的時候一次網路請求都不發」的分界。
+certbot_renew_before_days: 30
+
+# ---- 自動續期（systemd timer，不是 cron）----------------------------------
+certbot_renew_manage: true
+# Debian/Ubuntu 的 certbot 套件自帶 certbot.timer（每天兩次 + 隨機延遲）。
+# 有它就用它；沒有（pip / snap 安裝）才落到本 role 的 fallback unit。
+certbot_packaged_timer: "certbot.timer"
+certbot_fallback_timer_name: "{{ app_slug }}-certbot-renew"
+certbot_renew_oncalendar: "*-*-* 03,15:00:00"
+certbot_renew_randomized_delay_sec: 3600
+
+# --deploy-hook：只有在憑證「真的換了」之後才執行一次（不是每次 renew 都跑）。
+certbot_renew_hook: "/usr/bin/systemctl reload {{ nginx_service_name }}"
+# renewal-hooks/deploy/ 底下的腳本對「所有」lineage 生效，而且會在 reload 前先
+# nginx -t。比只靠 --deploy-hook 保險：--deploy-hook 只寫進本 lineage 的
+# renewal conf，手動 `certbot certonly` 重簽時可能被覆寫掉。
+certbot_deploy_hook_manage: true
+certbot_deploy_hook_path: "/etc/letsencrypt/renewal-hooks/deploy/10-{{ app_slug }}-reload-nginx.sh"
+
+# ---- 簽發前連通性預檢 ------------------------------------------------------
+# 自己放一個 challenge 檔再從目標機用 HTTP 取回來。DNS 沒指過來 / 80 埠被擋 /
+# webroot 對不上，三種錯在這裡就現形，不必先燒掉一次 rate limit 才知道。
+certbot_preflight_probe: true
+certbot_preflight_probe_timeout: 15
+# 預設「只警告不中止」：伺服器在 NAT 後面時，從機器內部連自己的公網 IP
+# 可能因為沒有 hairpin NAT 而失敗，那是誤報。確定沒有這個問題再打開。
+certbot_preflight_probe_fatal: false
+
+# ---- 危險旋鈕（預設全關）--------------------------------------------------
+# --force-renewal 會無視「尚未到期」直接重簽，也就是無視 rate limit。
+# 只有在 staging ↔ 正式互換時才需要（見 detect.yml 的說明）。
+certbot_force_renewal: false
+# `certbot renew --dry-run` 會真的對 staging 端點跑一次完整驗證流程。
+# 很有用，但會產生對外請求，所以預設關。
+certbot_renew_dry_run: false
+
+# ---- A5 後半段 -------------------------------------------------------------
+# 憑證首次簽發成功後，nginx 的 vhost 還指著 snakeoil。
+# handler 會重新跑 nginx_myguard 的 facts.yml + render.yml 把它換成正式憑證。
+# 單獨跑 `--tags certbot`（nginx role 完全沒跑過）時請設 false，
+# 改用 `--tags nginx` 重新渲染 —— 理由見 handlers/main.yml。
+certbot_rerender_nginx_vhost: true
+
+certbot_verify: true

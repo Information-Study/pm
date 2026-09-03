@@ -1,0 +1,41 @@
+# {{ ansible_managed }}
+# ============================================================================
+# A11：CRS 排除規則（在 CRS 之前載入）—— 由 waf_exclusions_before 產生。
+#
+# 兩個致命細節：
+#
+#  1. ctl:ruleRemoveById 只影響「同一個 phase 中尚未執行」的規則。
+#     920xxx（協定強制）是 phase 1，941/942xxx（XSS/SQLi）是 phase 2。
+#     用一條 phase:2 的規則去移除 920273 完全無效 —— 那條規則早就跑完了。
+#     所以每一筆排除都必須明確指定 phase，並且拆成 1 / 2 兩組。
+#
+#  2. 多個 ctl: 之間是**逗號**，不是分號。
+#       "id:10010,phase:1,pass,nolog,ctl:ruleRemoveById=920273,ctl:ruleRemoveById=920274"
+#                                                            ↑ 逗號
+#     分號會讓 ModSecurity 拒絕載入整份設定、nginx 以 emerg 起不來，
+#     而錯誤訊息只會說 "Rules error"，看不出是哪個字元的問題。
+#     例外：ctl:ruleRemoveTargetById=942440;ARGS:foo 本身內含分號，那是
+#     「id;target」的分隔，跟 action 之間的逗號是兩回事 —— 這種請用 extra_actions 傳。
+#
+# 每一筆的欄位：
+#   id / phase / condition（必填）、comment、remove_ids、remove_tags、extra_actions
+# ============================================================================
+{% if (waf_exclusions_before | default([])) | length == 0 %}
+
+# waf_exclusions_before 是空的 —— 目前沒有任何排除規則。
+# 注意 inventory/group_vars/all.yml 若把它設成 []，會覆蓋 role defaults 裡
+# 那組 Livewire / Filament 排除規則，Filament 後台會被 941/942 誤判擋掉。
+{% endif %}
+{% for e in waf_exclusions_before | default([]) %}
+{% set acts = ['id:' ~ e.id, 'phase:' ~ e.phase, 'pass', 'nolog']
+   + (e.remove_ids | default([]) | map('string') | map('regex_replace', '^', 'ctl:ruleRemoveById=') | list)
+   + (e.remove_tags | default([]) | map('string') | map('regex_replace', '^', 'ctl:ruleRemoveByTag=') | list)
+   + (e.extra_actions | default([]) | list) %}
+
+# --- {{ e.id }}（phase {{ e.phase }}）---
+{% for cl in (e.comment | default('') | trim | wordwrap(86)).split('\n') if (cl | trim | length) > 0 %}
+# {{ cl }}
+{% endfor %}
+SecRule {{ e.condition }} \
+    "{{ acts | join(',') }}"
+{% endfor %}

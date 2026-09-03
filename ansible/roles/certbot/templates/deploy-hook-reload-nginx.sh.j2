@@ -1,0 +1,29 @@
+#!/bin/sh
+# {{ ansible_managed }}
+#
+# certbot renewal deploy hook。
+# 只有在憑證「真的被換掉」之後才會執行一次（不是每次 certbot renew 都跑）。
+# certbot 會傳入：
+#   RENEWED_LINEAGE = /etc/letsencrypt/live/<cert-name>
+#   RENEWED_DOMAINS = 以空白分隔的網域清單
+set -eu
+
+# 這台機器上可能不只一組 lineage。只處理我們自己的那一組，
+# 別人的憑證換了不該由我們去 reload（可能根本是另一個服務的）。
+case "${RENEWED_LINEAGE:-}" in
+  "")                        ;;  # 手動執行、沒有環境變數 → 照做
+  */{{ certbot_cert_name }}) ;;  # 我們的 lineage → 照做
+  *) exit 0 ;;                   # 別人的 → 什麼都不做
+esac
+
+# reload 之前一定先 nginx -t（不加 -c，A12）。
+# 設定壞掉時寧可讓 nginx 帶著舊憑證繼續服務 —— 憑證過期是「瀏覽器警告」，
+# reload 成一個起不來的設定是「整站 502」，後者嚴重得多。
+if ! {{ nginx_binary }} -t >/dev/null 2>&1; then
+    echo "certbot deploy-hook: {{ nginx_binary }} -t 失敗，略過 reload。" >&2
+    echo "  新憑證已經寫入 {{ tls_cert_dir }}，但 nginx 還在用舊的。" >&2
+    echo "  請執行 {{ nginx_binary }} -t 看設定錯在哪，修好後 systemctl reload {{ nginx_service_name }}。" >&2
+    exit 1
+fi
+
+exec /usr/bin/systemctl reload {{ nginx_service_name }}

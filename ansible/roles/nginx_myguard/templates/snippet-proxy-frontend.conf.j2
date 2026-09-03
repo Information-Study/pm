@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+# ============================================================================
+# 前端 proxy snippet —— Nuxt（Nitro）的反向代理設定。
+#
+# 由 vhost 在 **location 內**（location @frontend）include。
+# 只有 frontend_mode 是 ssr / spa 時才會被 render.yml 渲染出來
+#（when: nginx_frontend_proxied），static 模式沒有 PM2、也沒有 upstream。
+#
+# upstream「{{ nginx_frontend_upstream | default(nginx_frontend_upstream_name | default((app_slug | replace('-', '_')) ~ '_frontend')) }}」
+# 與 map ${{ app_slug | replace('-', '_') }}_conn_upgrade 都定義在
+# {{ nginx_conf_d }}/00-{{ app_slug }}-http.conf（upstream / map 只能在 http context）。
+#
+# ⚠ A14：本檔刻意**不含任何 add_header**。一旦這裡加了 add_header，
+#   include 本檔的 location 就會整組不繼承 server 層的安全標頭。
+# ============================================================================
+{% set var = app_slug | replace('-', '_') %}
+{% set fe_upstream = nginx_frontend_upstream | default(nginx_frontend_upstream_name | default(var ~ '_frontend')) %}
+proxy_pass http://{{ fe_upstream }};
+proxy_http_version 1.1;
+# WebSocket / SSE。Connection 由 map 產生：非 upgrade 的請求會得到空字串，
+# nginx 會整個拿掉該標頭，上游 keepalive 才有效（寫死 close 會讓每個請求重開連線）。
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection ${{ var }}_conn_upgrade;
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+proxy_set_header X-Forwarded-Port $server_port;
+proxy_connect_timeout {{ nginx_proxy_connect_timeout }};
+proxy_read_timeout {{ nginx_proxy_read_timeout }};
+proxy_send_timeout {{ nginx_proxy_read_timeout }};
+proxy_buffer_size 16k;
+proxy_buffers 8 16k;
+proxy_busy_buffers_size 32k;
+# Nitro 自己會處理快取標頭；這裡不要用 proxy_hide_header 把它們拿掉。
+proxy_redirect off;

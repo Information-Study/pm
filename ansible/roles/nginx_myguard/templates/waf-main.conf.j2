@@ -1,0 +1,106 @@
+# {{ ansible_managed }}
+# ============================================================================
+# WAF 主規則檔 —— vhost 用 `{{ waf_directive_prefix | default(waf_directive_prefix_default) }}_rules_file {{ waf_main_rules_file }};` 引用。
+#
+# ⚠ A11：載入順序是這個檔案唯一重要的事，順序錯了排除規則就完全無效。
+#
+#   (1) 引擎設定（本檔前半段，inline）
+#   (2) crs-setup.conf          ← tx.* 變數，必須在 CRS 之前
+#   (3) exclusions-before/*.conf ← ctl:ruleRemoveById 放這裡
+#   (4) CRS 本體
+#   (5) exclusions-after/*.conf  ← SecRuleUpdateTargetById 放這裡
+#
+#   為什麼 (3) 一定要在 (4) 之前：ctl:ruleRemoveById 只影響「同一個 phase 中
+#   尚未執行」的規則。載在 CRS 之後等於什麼都沒做，而且不會有任何錯誤訊息。
+#   反過來，SecRuleUpdateTargetById 是**載入期**指令，引用的規則必須已經存在，
+#   所以只能放在 (5)。放到 (3) 會讓 nginx 直接起不來。
+# ============================================================================
+{% set crs_dir = waf_crs_rules_dir | default(waf_crs_rules_dir_found | default('')) %}
+{% set crs_load = waf_crs_load_file | default(waf_crs_load_file_found | default('')) %}
+{% set unicode_map = waf_unicode_mapping_file | default(waf_unicode_mapping_found | default('')) %}
+
+# ---- (1) 引擎 --------------------------------------------------------------
+SecRuleEngine {{ waf_rule_engine }}
+SecRequestBodyAccess {{ waf_request_body_access }}
+
+# A16：這個值必須**大於** nginx 的 client_max_body_size（{{ nginx_client_max_body_size }}）。
+# 順序寫反的話，接近上限的上傳會過了 nginx 和 PHP 才被 WAF 擋成 413，
+# 而錯誤訊息完全指不到真正的原因。單位是 bytes。
+SecRequestBodyLimit {{ waf_request_body_limit }}
+# 非 multipart（JSON/表單）的 body 上限。ModSecurity 的建議值 131072 對 Livewire
+# 太小 —— Filament 的表格/表單一次送的元件快照很容易破 1MB。
+SecRequestBodyNoFilesLimit {{ waf_request_body_no_files_limit }}
+SecRequestBodyLimitAction {{ waf_request_body_limit_action }}
+
+SecResponseBodyAccess {{ waf_response_body_access }}
+SecResponseBodyMimeType {{ waf_response_body_mime }}
+SecResponseBodyLimit {{ waf_response_body_limit }}
+SecResponseBodyLimitAction ProcessPartial
+
+SecTmpDir {{ waf_tmp_dir }}
+SecDataDir {{ waf_data_dir }}
+SecUploadDir {{ waf_upload_dir }}
+SecUploadKeepFiles Off
+SecUploadFileMode 0600
+
+SecPcreMatchLimit {{ waf_pcre_match_limit }}
+SecPcreMatchLimitRecursion {{ waf_pcre_match_limit }}
+
+# CRS 是異常計分制：預設動作必須是 pass，由 949110/959100 依累計分數決定阻擋。
+# 改成 deny 會讓每一條規則各自阻擋，paranoia level 的設計就整個失效。
+SecDefaultAction "phase:1,log,auditlog,pass"
+SecDefaultAction "phase:2,log,auditlog,pass"
+{% if (unicode_map | length) > 0 %}
+
+# 只有偵測到對應檔時才輸出（Coraza 不認得這個指令，偵測不到就自動略過）。
+SecUnicodeMapFile {{ unicode_map }} 20127
+{% endif %}
+
+# ---- 稽核 ------------------------------------------------------------------
+SecAuditEngine {{ waf_audit_engine }}
+SecAuditLogRelevantStatus "{{ waf_audit_relevant_status }}"
+SecAuditLogParts {{ waf_audit_log_parts }}
+SecAuditLogType {{ waf_audit_log_type | default('Serial') }}
+SecAuditLogFormat {{ waf_audit_log_format }}
+SecAuditLog {{ waf_audit_log }}
+
+SecDebugLog {{ waf_debug_log }}
+# 查誤判時把 waf_debug_log_level 暫時調到 9，查完一定要調回 0（會寫爆磁碟）。
+SecDebugLogLevel {{ waf_debug_log_level }}
+{% for d in waf_extra_directives | default([]) %}
+{% if loop.first %}
+
+# ---- waf_extra_directives（各引擎支援度不一，加之前請先在 staging 跑 nginx -t）--
+{% endif %}
+{{ d }}
+{% endfor %}
+
+# ---- (2) CRS 設定 ----------------------------------------------------------
+# 這條是保險，不是重複：CRS 4 的規則 901001 是
+#   SecRule &TX:crs_setup_version "@eq 0" "id:901001,phase:1,deny,status:500,..."
+# 也就是說 crs-setup 沒被載到就是「每一個請求都回 500」，而訊息只會說
+# deployed without configuration。先在這裡設一次，crs-setup.conf 之後再設一次
+# 也無妨（setvar 只是覆寫），但少了它就會整站 500。
+SecAction "id:{{ waf_local_rule_id_base }},phase:1,pass,nolog,setvar:tx.crs_setup_version={{ waf_crs_setup_version }}"
+
+Include {{ waf_crs_setup_conf }}
+
+# ---- (3) A11：排除規則（必須在 CRS 之前）-----------------------------------
+Include {{ waf_exclusions_before_dir }}/*.conf
+
+# ---- (4) CRS 本體 ----------------------------------------------------------
+{% if (crs_dir | length) > 0 %}
+# rules_dir 模式：完全自控，刻意不 Include 發行版的 crs-setup.conf
+#（那個檔含 SecAction id:900xxx，跟我們自己的 crs-setup 併用會有重複 id 的風險）。
+Include {{ crs_dir }}/*.conf
+{% elif (crs_load | length) > 0 %}
+# load_file 模式：由套件提供的載入檔決定要 Include 哪些規則。
+Include {{ crs_load }}
+{% else %}
+# ⚠ 沒有偵測到 CRS 規則（waf_crs_rules_dir / waf_crs_load_file 都是空的）。
+# 目前只有上面的引擎設定生效，等於沒有任何規則 —— waf.yml 應該在這種情況
+# fail fast，而不是讓一個「看起來有 WAF」的設定上線。
+{% endif %}
+
+# ---- (5) A11：載入後才能做的調整（必須在 CRS 之後）-------------------------
+Include {{ waf_exclusions_after_dir }}/*.conf

@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+#
+# fallback：只有在發行版沒有提供 {{ certbot_packaged_timer }} 時才會被安裝
+#（pip / snap 安裝的 certbot）。Debian/Ubuntu 的 certbot 套件自帶 timer，
+# 那種情況下本檔不會存在。
+[Unit]
+Description=Renew Let's Encrypt certificates for {{ app_domain }}
+Documentation=https://eff-certbot.readthedocs.io/en/stable/using.html#renewing-certificates
+After=network-online.target {{ nginx_service_name }}.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 續期後要做什麼（reload nginx）由兩個地方負責，這裡刻意不帶 hook 參數：
+#   1. {{ certbot_renewal_conf }} 裡的 renew_hook
+#   2. {{ certbot_deploy_hook_path }}（renewal-hooks/deploy/ 對所有 lineage 生效）
+ExecStart={{ certbot_binary }} renew --non-interactive --quiet
+PrivateTmp=true
+ProtectHome=true
+# 憑證與帳號金鑰在 /etc/letsencrypt 底下，必須可寫，所以不能用 ProtectSystem=strict。
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

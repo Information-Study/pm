@@ -1,0 +1,87 @@
+# {{ ansible_managed }}
+# ============================================================================
+# ModSecurity（或 Coraza）引擎設定 —— 落點 {{ waf_engine_conf }}
+#
+# ⚠ 本檔只放**引擎指令**（Sec*），刻意不含任何帶 id 的 SecRule / SecAction。
+#   ModSecurity 遇到重複的 rule id 會拒絕載入整份設定、nginx 以 emerg 起不來，
+#   而本檔與 {{ waf_main_rules_file }} 使用同一組變數、可能同時生效，
+#   沒有 id 就永遠不會撞。重複的 Sec* 指令是「後者覆寫前者」，安全。
+#
+# ⚠ 已知不一致（不是本檔的問題，記錄於此）：
+#   templates/waf-main.conf.j2 目前把同一組引擎設定 **inline** 寫在自己的前半段，
+#   而且沒有 `Include {{ waf_engine_conf }}`。也就是說本檔目前是渲染出來但沒被載入。
+#   兩邊的值都來自同一組變數（waf_rule_engine / waf_request_body_limit / …），
+#   所以執行結果一致，只是多了一份副本。要收斂的話，把 waf-main.conf.j2 的
+#   「(1) 引擎」整段換成 `Include {{ waf_engine_conf }}` 即可，本檔已經寫成
+#   可以直接被 Include 的形式。
+#
+# 載入順序（由 {{ waf_main_rules_file }} 決定，A11）：
+#   modsecurity.conf → crs-setup.conf → exclusions-before/*.conf
+#                    → CRS → exclusions-after/*.conf
+# ============================================================================
+{% set unicode_map = waf_unicode_mapping | default(waf_unicode_mapping_file | default('')) %}
+
+# ---- 引擎 ------------------------------------------------------------------
+# On = 真的擋；DetectionOnly = 只記錄不擋（verify.yml 的 block test 會自動跳過）。
+SecRuleEngine {{ waf_rule_engine }}
+SecRequestBodyAccess {{ waf_request_body_access }}
+
+# A16：這個值必須**大於** nginx 的 client_max_body_size（{{ nginx_client_max_body_size }}）。
+# 順序寫反的話，接近上限的上傳會過了 nginx 和 PHP 才被 WAF 擋成 413，
+# 而錯誤訊息完全指不到真正的原因。單位是 bytes。
+SecRequestBodyLimit {{ waf_request_body_limit }}
+# 非 multipart（JSON/表單）的 body 上限。ModSecurity 的建議值 131072 對 Livewire
+# 太小 —— Filament 的表格/表單一次送的元件快照很容易破 1MB。
+SecRequestBodyNoFilesLimit {{ waf_request_body_no_files_limit }}
+# Reject = 超過上限直接 413；ProcessPartial 會讓超限的部分不被檢查（等於開後門）。
+SecRequestBodyLimitAction {{ waf_request_body_limit_action }}
+
+SecResponseBodyAccess {{ waf_response_body_access }}
+SecResponseBodyMimeType {{ waf_response_body_mime }}
+SecResponseBodyLimit {{ waf_response_body_limit }}
+SecResponseBodyLimitAction ProcessPartial
+
+# ---- 暫存 / 資料目錄 -------------------------------------------------------
+# 由 waf.yml 建立，owner {{ web_user }}:{{ web_group }} mode 0750 ——
+# nginx worker 是以 {{ web_user }} 身分寫入的，root-only 會讓 multipart 解析失敗。
+SecTmpDir {{ waf_tmp_dir }}
+SecDataDir {{ waf_data_dir }}
+SecUploadDir {{ waf_upload_dir }}
+SecUploadKeepFiles Off
+SecUploadFileMode 0600
+
+SecPcreMatchLimit {{ waf_pcre_match_limit }}
+SecPcreMatchLimitRecursion {{ waf_pcre_match_limit }}
+
+# CRS 是異常計分制：預設動作必須是 pass，由 949110/959100 依累計分數決定阻擋。
+# 改成 deny 會讓每一條規則各自阻擋，paranoia level 的設計就整個失效。
+SecDefaultAction "phase:1,log,auditlog,pass"
+SecDefaultAction "phase:2,log,auditlog,pass"
+{% if (unicode_map | length) > 0 %}
+
+# 只有偵測到對應檔時才輸出（Coraza 不認得這個指令，偵測不到就自動略過）。
+SecUnicodeMapFile {{ unicode_map }} 20127
+{% else %}
+
+# 沒有偵測到 unicode.mapping（waf.yml 已印出試過的路徑），略過 SecUnicodeMapFile。
+# t:urlDecodeUni 之外的多位元組正規化會失效。
+{% endif %}
+
+# ---- 稽核 ------------------------------------------------------------------
+SecAuditEngine {{ waf_audit_engine }}
+SecAuditLogRelevantStatus "{{ waf_audit_relevant_status }}"
+SecAuditLogParts {{ waf_audit_log_parts }}
+SecAuditLogType {{ waf_audit_log_type | default('Serial') }}
+SecAuditLogFormat {{ waf_audit_log_format }}
+SecAuditLog {{ waf_audit_log }}
+
+SecDebugLog {{ waf_debug_log }}
+# 查誤判時把 waf_debug_log_level 暫時調到 9，查完一定要調回 0（會寫爆磁碟）。
+SecDebugLogLevel {{ waf_debug_log_level }}
+{% for d in waf_extra_directives | default([]) %}
+{% if loop.first %}
+
+# ---- waf_extra_directives（各引擎支援度不一，加之前請先在 staging 跑 nginx -t）--
+{% endif %}
+{{ d }}
+{% endfor %}

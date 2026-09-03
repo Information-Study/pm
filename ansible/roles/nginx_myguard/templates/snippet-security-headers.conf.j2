@@ -1,0 +1,42 @@
+# {{ ansible_managed }}
+# ============================================================================
+# 安全標頭 snippet —— 由 vhost 在 server 層 include。
+#
+# ⚠ A14：nginx 的 add_header 繼承規則是「當前層只要出現任何一個 add_header，
+#   就完全不繼承上層的 add_header」。因此**每一個自己加了 add_header 的 location**
+#   （本專案是 /_nuxt/ 與 /storage/ 的 Cache-Control）都必須把本檔重新 include 一次，
+#   否則那些路徑會整組安全標頭消失，而且 nginx -t 完全不會抱怨。
+#
+# always 的意義：連 4xx/5xx 的回應也要送。少了它，403/404/500 就沒有這些標頭。
+# ============================================================================
+{% set tls_real = nginx_tls_is_real | default(false) | bool %}
+{% set hsts_on = (nginx_hsts_enabled | default(true) | bool) and (tls_hsts_enabled | default(true) | bool) %}
+{% if tls_enable | bool and hsts_on and tls_real %}
+# HSTS 只在「TLS 已啟用且拿到的是正式憑證」時輸出。
+# A5：用 snakeoil 期間送 HSTS 會把瀏覽器釘死在一張不受信任的憑證上，
+# 而且 max-age 內無法撤銷 —— 那是不可逆的災難。
+add_header Strict-Transport-Security "max-age={{ nginx_hsts_max_age | default(31536000) }}{{ '; includeSubDomains' if (nginx_hsts_include_subdomains | default(true) | bool) else '' }}{{ '; preload' if (nginx_hsts_preload | default(false) | bool) else '' }}" always;
+{% else %}
+# HSTS 未輸出（tls_enable={{ tls_enable | bool }}、hsts_enabled={{ hsts_on }}、
+# 正式憑證={{ tls_real }}）。拿到 Let's Encrypt 憑證後重跑 --tags nginx 就會補上。
+{% endif %}
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "{{ nginx_x_frame_options }}" always;
+add_header Referrer-Policy "{{ nginx_referrer_policy }}" always;
+add_header Permissions-Policy "{{ nginx_permissions_policy }}" always;
+{% if (nginx_coop | default('')) | length > 0 %}
+add_header Cross-Origin-Opener-Policy "{{ nginx_coop }}" always;
+{% endif %}
+{% if (nginx_csp | default('')) | length > 0 %}
+{% if nginx_csp_report_only | default(false) | bool %}
+# Report-Only：先觀察 CSP 違規報告，確認不會弄壞 Filament/Alpine 與 Nuxt 的
+# hydration payload 之後，再把 nginx_csp_report_only 設回 false。
+add_header Content-Security-Policy-Report-Only "{{ nginx_csp }}" always;
+{% else %}
+add_header Content-Security-Policy "{{ nginx_csp }}" always;
+{% endif %}
+{% else %}
+# CSP 預設不輸出（nginx_csp 為空）。Filament v5（Alpine/Livewire）與 Nuxt 4 的
+# hydration script 都是 inline，隨手加 default-src 'self' 會直接讓後台白畫面。
+# 要開請先在 staging 用 nginx_csp_report_only: true 收報告。
+{% endif %}

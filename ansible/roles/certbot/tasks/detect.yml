@@ -1,0 +1,183 @@
+---
+# ── 冪等的核心 ──────────────────────────────────────────────────────────────
+# 「每次都跑一次 certbot」不是冪等：它會產生對外請求、寫 log、在 rate limit
+# 計數上留痕，而且 --dry-run 之外沒有 check mode。
+# 所以先用本機就能做完的三個判斷決定要不要呼叫它：
+#   (1) 憑證檔存在嗎                    → stat
+#   (2) 剩餘效期還夠嗎                  → openssl x509 -checkend
+#   (3) SAN 有涵蓋所有 certbot_domains  → openssl x509 -ext subjectAltName
+# 三者皆過就完全不呼叫 certbot。
+
+- name: certbot | 憑證檔是否存在
+  ansible.builtin.stat:
+    path: "{{ tls_cert_fullchain }}"
+  register: certbot_cert_stat
+
+- name: certbot | 讀出既有憑證的 issuer / 到期日 / SAN
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -noout
+      - -issuer
+      - -enddate
+      - -ext
+      - subjectAltName
+      - -in
+      - "{{ tls_cert_fullchain }}"
+  register: certbot_cert_info
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: certbot_cert_stat.stat.exists
+
+# -checkend <秒> 的語意：憑證在「現在 + 秒數」之後仍然有效就 rc=0，
+# 否則 rc=1（含已過期）。這是判斷「該不該續」最直接的方式。
+- name: certbot | 剩餘效期是否還有 {{ certbot_renew_before_days }} 天以上
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -checkend
+      - "{{ (certbot_renew_before_days | int) * 86400 }}"
+      - -noout
+      - -in
+      - "{{ tls_cert_fullchain }}"
+  register: certbot_cert_checkend
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: certbot_cert_stat.stat.exists
+
+- name: certbot | 彙整判斷結果
+  ansible.builtin.set_fact:
+    certbot_cert_exists: "{{ _exists }}"
+    certbot_cert_sans: "{{ _sans }}"
+    certbot_cert_is_staging: "{{ _staging }}"
+    certbot_cert_expiring: "{{ _expiring }}"
+    certbot_cert_enddate: "{{ _enddate }}"
+    certbot_cert_missing_domains: "{{ certbot_domains | difference(_sans) }}"
+    certbot_need_issue: >-
+      {{ (not (_exists | bool))
+         or (_expiring | bool)
+         or ((certbot_domains | difference(_sans)) | length > 0)
+         or ((_staging | bool) != (certbot_staging | bool))
+         or (certbot_force_renewal | bool) }}
+  vars:
+    _exists: "{{ certbot_cert_stat.stat.exists | default(false) }}"
+    _info: "{{ certbot_cert_info.stdout | default('') }}"
+    _sans: "{{ _info | regex_findall('DNS:([^,\\s]+)') }}"
+    # staging 憑證的 issuer 是 "(STAGING) Let's Encrypt" / "Fake LE Intermediate"。
+    _staging: "{{ _info is search('(?i)(STAGING|Fake LE)') }}"
+    _expiring: "{{ (certbot_cert_checkend.rc | default(1)) != 0 }}"
+    _enddate: "{{ (_info | regex_findall('notAfter=(.*)') | first | default('（無）')) | trim }}"
+
+# staging ↔ 正式互換：certbot 對同一個 --cert-name 換 ACME 端點時不會自動重簽，
+# 只會回 "Certificate not yet due for renewal"，於是憑證永遠停在舊的那一張，
+# 而 playbook 每次都宣稱成功。這裡直接擋下來並給兩個明確選項。
+- name: certbot | staging 與正式憑證互換需要顯式授權
+  ansible.builtin.fail:
+    msg: >-
+      既有憑證是「{{ 'staging（測試，瀏覽器不信任）' if (certbot_cert_is_staging | bool) else '正式' }}」憑證，
+      但目前設定 certbot_staging={{ certbot_staging }}。
+      certbot 不會因為 ACME 端點換了就自動重簽 —— 它只看到期日，
+      會回 "Certificate not yet due for renewal; no action taken"，
+      憑證會一直停在舊的那一張，而且每次執行都顯示成功。
+      兩個選項擇一：
+        (1) 強制重簽（會無視 rate limit，正式端點每週每組網域只有 5 張）：
+            ansible-playbook -i inventory/hosts.yml site.yml --tags certbot
+              -e certbot_force_renewal=true
+        (2) 先刪掉舊 lineage 再跑（不可逆，請自行在目標機執行、本 role 不會替你刪）：
+            sudo {{ certbot_binary }} delete --cert-name {{ certbot_cert_name }}
+  when:
+    - certbot_cert_exists | bool
+    - (certbot_cert_is_staging | bool) != (certbot_staging | bool)
+    - not (certbot_force_renewal | bool)
+
+- name: certbot | 憑證仍然有效，跳過簽發
+  ansible.builtin.debug:
+    msg: >-
+      {{ tls_cert_fullchain }} 有效期到 {{ certbot_cert_enddate }}，
+      涵蓋 {{ certbot_cert_sans | join(', ') }}，
+      距離續期窗口（剩 {{ certbot_renew_before_days }} 天）還早 —— 不呼叫 certbot。
+      續期由 systemd timer 負責，不是由這個 playbook。
+  when: not (certbot_need_issue | bool)
+
+- name: certbot | 需要簽發，原因
+  ansible.builtin.debug:
+    msg: >-
+      將呼叫 certbot certonly，原因：
+      {{ '憑證檔不存在（首次簽發）；' if not (certbot_cert_exists | bool) else '' }}
+      {{ '剩餘效期不足 ' ~ certbot_renew_before_days ~ ' 天（到期日 ' ~ certbot_cert_enddate ~ '）；' if (certbot_cert_expiring | bool) and (certbot_cert_exists | bool) else '' }}
+      {{ '憑證未涵蓋 ' ~ (certbot_cert_missing_domains | join(', ')) ~ '（會用 --expand 擴充）；' if (certbot_cert_missing_domains | length) > 0 else '' }}
+      {{ 'certbot_force_renewal=true（強制重簽）；' if certbot_force_renewal | bool else '' }}
+  when: certbot_need_issue | bool
+
+# ── 連通性預檢 ──────────────────────────────────────────────────────────────
+# 自己放一個 challenge 檔，再從目標機用 HTTP 取回來。失敗的話，
+# DNS 沒指過來 / 80 埠被擋 / webroot 對不上 三種原因在這裡就現形，
+# 不必先讓 certbot 燒掉一次 rate limit（失敗驗證每小時每帳號 5 次）才知道。
+# check mode 下不做（檔案不會真的被建立，探測必然假 404）。
+- name: certbot | 預檢
+  when:
+    - certbot_need_issue | bool
+    - certbot_preflight_probe | bool
+    - not ansible_check_mode
+  block:
+    - name: certbot | 放置預檢用的 challenge 檔
+      ansible.builtin.copy:
+        # 內容固定，不用亂數 —— 亂數會讓每次執行都顯示 changed。
+        content: "pm-ansible-acme-preflight\n"
+        dest: "{{ certbot_webroot }}/.well-known/acme-challenge/pm-ansible-preflight"
+        owner: root
+        group: "{{ web_group }}"
+        mode: "0644"
+      # 探測檔用完就刪，不留下任何持久狀態 —— 所以不算 changed。
+      changed_when: false
+
+    - name: certbot | 從 HTTP 取回 challenge 檔（每個網域都試）
+      ansible.builtin.uri:
+        url: "http://{{ item }}/.well-known/acme-challenge/pm-ansible-preflight"
+        method: GET
+        return_content: true
+        # ACME 驗證伺服器會跟隨 301/302，所以重導向到 https 也算成功。
+        follow_redirects: safe
+        validate_certs: false
+        timeout: "{{ certbot_preflight_probe_timeout | int }}"
+        status_code: [200]
+      register: certbot_probe
+      loop: "{{ certbot_domains }}"
+      failed_when: false
+      changed_when: false
+
+    - name: certbot | 預檢結果
+      ansible.builtin.debug:
+        msg: >-
+          ACME challenge 預檢：
+          {% for r in certbot_probe.results %}
+          {{ r.item }} → {{ 'OK' if (r.status | default(0)) == 200 else ('HTTP ' ~ (r.status | default('連線失敗'))) }};
+          {% endfor %}
+      when: certbot_probe is defined
+
+    - name: certbot | 預檢失敗（可設 certbot_preflight_probe_fatal=true 讓它中止）
+      ansible.builtin.fail:
+        msg: >-
+          以下網域取不回 ACME challenge 檔：
+          {{ certbot_probe.results | rejectattr('status', 'equalto', 200) | map(attribute='item') | list | join(', ') }}。
+          Let's Encrypt 會用一模一樣的方式取檔，所以現在直接簽會失敗並消耗
+          「每小時 5 次失敗驗證」的額度。請先確認：
+            [1] DNS：dig +short A <網域> 是否等於這台機器的公網 IP
+            [2] 80 埠：從外部 curl -I http://<網域>/ 是否通得過（雲端安全群組 / ufw）
+            [3] webroot：nginx 的 location /.well-known/acme-challenge/ 是否
+                root 到 {{ certbot_webroot }}（`{{ nginx_binary }} -T | grep -A3 acme-challenge`）
+          注意：機器在 NAT 後面且沒有 hairpin NAT 時，從自己連自己的公網 IP
+          本來就會失敗 —— 那是誤報，這也是本檢查預設不中止的原因。
+      when:
+        - certbot_preflight_probe_fatal | bool
+        - certbot_probe.results | rejectattr('status', 'equalto', 200) | list | length > 0
+
+    - name: certbot | 移除預檢用的 challenge 檔
+      ansible.builtin.file:
+        path: "{{ certbot_webroot }}/.well-known/acme-challenge/pm-ansible-preflight"
+        state: absent
+      changed_when: false

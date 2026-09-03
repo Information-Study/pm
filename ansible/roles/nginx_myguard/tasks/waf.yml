@@ -1,0 +1,169 @@
+---
+# A11：載入順序由 waf-main.conf.j2 產生的 {{ waf_main_rules_file }} 決定，順序是
+#   modsecurity.conf → crs-setup.conf → exclusions-before/*.conf → CRS → exclusions-after/*.conf
+# ctl:ruleRemoveById 只影響「同一 phase 中尚未執行」的規則，所以 remove 一定要在
+# CRS 之前（exclusions-before）；SecRuleUpdateTargetById 是載入期指令，引用的規則
+# 必須已經存在，所以一定要在 CRS 之後（exclusions-after）。
+# 另外：同一條規則的多個 ctl: 之間一律用逗號分隔。分號會讓 ModSecurity 拒絕載入
+# 整份設定、nginx 以 emerg 起不來。
+
+- name: WAF | 建立規則目錄
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ waf_dir }}"
+    - "{{ waf_exclusions_before_dir }}"
+    - "{{ waf_exclusions_after_dir }}"
+
+- name: WAF | 建立暫存/上傳目錄（worker 以 {{ web_user }} 身分寫入）
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ web_user }}"
+    group: "{{ web_group }}"
+    mode: "0750"
+  loop:
+    - "{{ waf_data_dir }}"
+    - "{{ waf_tmp_dir }}"
+    - "{{ waf_upload_dir }}"
+
+- name: WAF | 探測 CRS rules 目錄候選
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ waf_crs_rules_dir_candidates }}"
+  register: waf_crs_dir_stat
+
+- name: WAF | 探測 CRS 載入檔候選
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ waf_crs_load_candidates }}"
+  register: waf_crs_load_stat
+
+- name: WAF | 探測 unicode.mapping 候選
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ waf_unicode_mapping_candidates }}"
+  register: waf_unicode_stat
+
+- name: WAF | 決定 CRS 位置
+  ansible.builtin.set_fact:
+    waf_crs_rules_dir: >-
+      {{ (waf_crs_dir_stat.results | selectattr('stat.isdir', 'defined')
+          | selectattr('stat.isdir') | map(attribute='item') | first) | default('', true) }}
+    waf_crs_load_file: >-
+      {{ (waf_crs_load_stat.results | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists') | map(attribute='item') | first) | default('', true) }}
+    waf_unicode_mapping: >-
+      {{ (waf_unicode_stat.results | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists') | map(attribute='item') | first) | default('', true) }}
+
+- name: WAF | 決定 include 模式與規則搜尋根目錄
+  ansible.builtin.set_fact:
+    waf_crs_mode_eff: >-
+      {{ waf_crs_include_mode if waf_crs_include_mode != 'auto'
+         else ('rules_dir' if (waf_crs_rules_dir | length > 0) else 'load_file') }}
+    waf_crs_grep_root: >-
+      {{ waf_crs_rules_dir if (waf_crs_rules_dir | length > 0) else (waf_crs_load_file | dirname) }}
+
+- name: WAF | 找不到 CRS 就 fail fast
+  ansible.builtin.assert:
+    that:
+      - (waf_crs_mode_eff == 'rules_dir' and waf_crs_rules_dir | length > 0) or (waf_crs_mode_eff == 'load_file' and waf_crs_load_file | length > 0)
+    quiet: true
+    fail_msg: >-
+      找不到 OWASP CRS。已試過目錄 {{ waf_crs_rules_dir_candidates | join(', ') }}
+      與載入檔 {{ waf_crs_load_candidates | join(', ') }}。
+      已安裝的 WAF 套件：{{ waf_pkg_resolved | default([]) | join(', ') }}。
+      請用 dpkg -L <CRS 套件> 找出實際路徑，再覆寫
+      waf_crs_rules_dir_candidates / waf_crs_load_candidates。
+
+- name: WAF | 找不到 unicode.mapping 時提醒
+  ansible.builtin.debug:
+    msg: >-
+      找不到 unicode.mapping（試過 {{ waf_unicode_mapping_candidates | join(', ') }}）。
+      模板會略過 SecUnicodeMapCode；t:urlDecodeUni 之外的多位元組正規化會失效。
+      找到實際路徑後請補進 waf_unicode_mapping_candidates。
+  when: waf_unicode_mapping | length == 0
+
+# SecRuleUpdateTargetById 引用不存在的規則 ID，ModSecurity v3 會在「載入階段」報錯，
+# nginx 直接起不來。所以這裡真的到 CRS 規則檔裡 grep 一次，只寫出確實存在的 ID。
+- name: WAF | 檢查 exclusions-after 引用的規則 ID 是否真的存在於 CRS
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      grep -RIlE 'id:[^0-9]?{{ item.id }}[^0-9]' {{ waf_crs_grep_root | quote }} 2>/dev/null
+      | head -n 1 || true
+    executable: /bin/bash
+  loop: "{{ waf_exclusions_after }}"
+  loop_control:
+    label: "{{ item.id }}"
+  register: waf_crs_id_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: waf_exclusions_after | length > 0
+
+- name: WAF | 只保留 CRS 裡確實存在的 exclusions-after 條目
+  ansible.builtin.set_fact:
+    waf_exclusions_after_valid: >-
+      {{ waf_crs_id_probe.results | default([]) | selectattr('stdout', 'defined')
+         | rejectattr('stdout', 'equalto', '') | map(attribute='item') | list }}
+
+- name: WAF | 顯示被略過的 exclusions-after 條目
+  ansible.builtin.debug:
+    msg: >-
+      下列 ID 在 {{ waf_crs_grep_root }} 找不到，已略過（硬寫進去會讓 nginx 起不來）：
+      {{ (waf_exclusions_after | map(attribute='id') | list)
+         | difference(waf_exclusions_after_valid | map(attribute='id') | list) | join(', ') }}
+  when: (waf_exclusions_after | length) != (waf_exclusions_after_valid | length)
+
+# A12：以下 template 一律不加 validate。ModSecurity 規則檔不是完整的 nginx 主設定，
+# nginx -t -c 會直接 emerg。整體驗證交給 handler 與 verify.yml 的單一 nginx -t。
+- name: WAF | 渲染 ModSecurity 引擎設定
+  ansible.builtin.template:
+    src: modsecurity.conf.j2
+    dest: "{{ waf_engine_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload
+
+- name: WAF | 渲染 CRS 設定（tx.crs_setup_version 必須有值，否則 901001 讓每個請求都 500）
+  ansible.builtin.template:
+    src: crs-setup.conf.j2
+    dest: "{{ waf_crs_setup_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload
+
+- name: WAF | 渲染 exclusions-before（A11：ctl:ruleRemoveById 必須在 CRS 之前）
+  ansible.builtin.template:
+    src: exclusions-before.conf.j2
+    dest: "{{ waf_exclusions_before_dir }}/10-{{ app_slug }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload
+
+- name: WAF | 渲染 exclusions-after（A11：SecRuleUpdateTargetById 必須在 CRS 之後）
+  ansible.builtin.template:
+    src: exclusions-after.conf.j2
+    dest: "{{ waf_exclusions_after_dir }}/10-{{ app_slug }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload
+
+- name: WAF | 渲染主規則檔（A11 載入順序的唯一來源）
+  ansible.builtin.template:
+    src: waf-main.conf.j2
+    dest: "{{ waf_main_rules_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: nginx reload

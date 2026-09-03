@@ -1,0 +1,72 @@
+# {{ ansible_managed }}
+# ============================================================================
+# OWASP CRS 設定 —— 落點 {{ waf_crs_setup_conf }}
+#
+# ⚠⚠ tx.crs_setup_version 一定要有值。CRS 4 的規則 901001 是
+#       SecRule &TX:crs_setup_version "@eq 0" \
+#         "id:901001,phase:1,deny,status:500,log,msg:'... deployed without configuration'"
+#     —— 沒設就是「**每一個請求都回 500**」，而訊息只會說 deployed without
+#     configuration，完全看不出是這個變數沒設。
+#
+# ⚠ 規則 ID 配置（assert.yml 會驗重複）：
+#     {{ waf_local_rule_id_base | int }}      waf-main.conf 的 crs_setup_version 保險
+#     {{ (waf_local_rule_id_base | int) + 1 }}      本檔：crs_setup_version
+#     {{ (waf_local_rule_id_base | int) + 2 }}      本檔：waf_crs_setup_vars 的 tx.*
+#     {{ (waf_local_rule_id_base | int) + 3 }}      本檔：tx.combined_file_sizes（A16）
+#   也就是 {{ waf_local_rule_id_base | int }}–{{ (waf_local_rule_id_base | int) + 9 }} 是保留帶，
+#   waf_exclusions_before 請從 {{ (waf_local_rule_id_base | int) + 10 }} 起編（defaults 已如此）。
+#   ModSecurity 遇到重複 id 會拒絕載入整份設定、nginx 以 emerg 起不來。
+#
+# ⚠ 語法：多個 action 之間是**逗號**；含空白或 | 的值要用單引號包住整個 setvar，
+#   例如 setvar:'tx.allowed_methods=GET HEAD POST'。行尾的 \ 是續行，
+#   後面不可以有任何空白字元。
+#
+# 本檔在 CRS 本體**之前**載入（A11），tx.* 才會被 CRS 讀到。
+# rules_dir 模式刻意不 Include 發行版自帶的 crs-setup.conf：那個檔含
+# SecAction id:900xxx，跟本檔併用會有重複 id 的風險。
+# ============================================================================
+{% set base = waf_local_rule_id_base | int %}
+{% set combined_file_sizes = waf_combined_file_sizes | default(waf_request_body_limit) %}
+{% set _sv = [] %}
+{% for k, v in (waf_crs_setup_vars | default({})).items() %}
+{% set _ = _sv.append("setvar:'" ~ k ~ "=" ~ v ~ "'") %}
+{% endfor %}
+{% set _acts = ['id:' ~ (base + 2), 'phase:1', 'nolog', 'pass', 't:none'] + _sv %}
+
+# ---- (1) CRS 版本標記（沒有它 = 每個請求都 500）---------------------------
+SecAction \
+    "id:{{ base + 1 }},\
+    phase:1,\
+    nolog,\
+    pass,\
+    t:none,\
+    setvar:tx.crs_setup_version={{ waf_crs_setup_version }}"
+
+# ---- (2) tx.* 設定（來源：waf_crs_setup_vars）------------------------------
+# paranoia level：1 = 誤判最少。調到 2 以上請先在 staging 跑過 Filament 後台，
+# 941/942 的誤判會直接讓後台無法儲存。
+# 異常分數門檻：inbound 5 代表「一條 CRITICAL 規則就擋」。
+{% if (_sv | length) > 0 %}
+SecAction \
+{% for a in _acts %}
+    {{ '"' if loop.first else '' }}{{ a }}{{ ',\\' if not loop.last else '"' }}
+{% endfor %}
+{% else %}
+# ⚠ waf_crs_setup_vars 是空的 —— CRS 會用它自己的預設值（paranoia 1、
+#   inbound 門檻 5）。allowed_methods / allowed_request_content_type 沒設的話，
+#   920440 / 920420 這類規則不會生效。
+{% endif %}
+
+# ---- (3) A16：上傳大小上限 -------------------------------------------------
+# CRS 的 920410（FILES_COMBINED_SIZE @gt tx.combined_file_sizes）只有在這個
+# 變數有值時才會判定。單位 bytes，對齊 SecRequestBodyLimit（{{ waf_request_body_limit }}），
+# 也就是 app_max_upload_mb({{ app_max_upload_mb }}) + app_upload_waf_overhead_mb({{ app_upload_waf_overhead_mb }})。
+# 比 nginx 的 client_max_body_size（{{ nginx_client_max_body_size }}）大是刻意的：
+# 要讓 413 由 nginx 回，而不是讓請求走到 WAF 才被擋成看不懂的錯誤。
+SecAction \
+    "id:{{ base + 3 }},\
+    phase:1,\
+    nolog,\
+    pass,\
+    t:none,\
+    setvar:'tx.combined_file_sizes={{ combined_file_sizes }}'"
