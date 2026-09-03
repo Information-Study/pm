@@ -49,7 +49,8 @@ cmd_doctor_main() {
         (( ${#opt[@]} == 0 )) && _ok "PHP 選用擴充" "齊備" \
             || { _wr "PHP 選用擴充缺少" "${opt[*]}"
                  (( ${#pkgs[@]} )) && cx_dim "sudo apt install -y ${pkgs[*]}"
-                 cx_dim '阻擋：php artisan test（phpunit.xml 用記憶體 sqlite）'; }
+                 cx_dim '這只影響「在 host 上直接跑 php artisan test」。'
+                 cx_dim '容器映像已內建 pdo_sqlite，cx test back 不受影響。'; }
     else
         _fl "PHP" "未安裝"
     fi

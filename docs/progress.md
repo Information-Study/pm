@@ -1,6 +1,10 @@
 # 進度追蹤
 
 > 最後更新：**2026-09-04**
+>
+> 最後一次完整回歸：`cx doctor` 25 通過 / 1 警告 / **0 失敗**；
+> `cx verify all` **52 項全過**；12 個 cx 動詞（doctor / verify / scan ×4 /
+> test ×2 / deploy ×2 / db / git）全數 exit 0；三個模式的 14 個容器同時運行。
 > 這份文件的維護原則：**沒跑過的就寫沒跑過。** 不要因為程式碼看起來對就標成已驗證。
 > 可機器驗證的部分請以 `cx verify` 的輸出為準，不要手抄。
 
@@ -40,7 +44,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `doctor` | ✅ | 含 Phase 2 產出物與動詞完整性檢查 |
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
-| `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:` |
+| `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |

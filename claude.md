@@ -860,6 +860,7 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 | **Sanctum SPA 認證流程** | ⚠ `/sanctum/csrf-cookie` 回 204、`/api/user` 未認證回 401，但**沒有真的走完一次登入**（前端還沒有登入頁） |
 | **CORS 實際行為** | ⚠ 只驗證了設定值。三個模式都是同源，沒有做過真的跨源請求 |
 | **前端 dev server** | ✅ 已啟動（HMR 容器 healthy，`/` 回 200） |
+| **前端型別檢查** | ✅ **已補齊並通過**。原本缺 `tsconfig.json`（`npm create nuxt` 會產生，手工建立的骨架漏了）與 vue-tsc / typescript / @types/node |
 | **前後端串接** | ✅ 經 edge 同源串接已驗（`/` → Nuxt、`/api` → Laravel） |
 | **後端 Vite 資產** | ✅ **新增**。舊專案呼叫一個從來不存在的 `npm-php` service（缺陷 D3），所以 `public/build` 從來沒被建置過 |
 
