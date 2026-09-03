@@ -101,6 +101,21 @@ cmd_doctor_main() {
     done < <(cx_guard_repos)
     (( n == tot )) && _ok "push guard" "$n/$tot 個 repo" || _fl "push guard" "只有 $n/$tot —— 執行 cx git guard install"
 
+    cx_step "可執行位元"
+    # 這個 repo 的進入點必須可執行。git index 曾經把 cx 的模式記成 100644
+    # 而磁碟是 755 —— 內容零差異，git diff 看不出來，但一旦提交，
+    # 任何人 clone 下來打 ./cx 都是 Permission denied。
+    local f nx=0 idx_bad=0
+    while IFS= read -r f; do
+        [[ -x $f ]] || { _fl "磁碟未設執行位元" "$f"; nx=$((nx+1)); }
+        if git -C "$CX_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+            local m; m=$(git -C "$CX_ROOT" ls-files -s -- "$f" 2>/dev/null | awk '{print $1}')
+            [[ -n $m && $m != 100755 ]] && { _fl "git index 模式錯誤" "$f（$m，應為 100755）"; idx_bad=$((idx_bad+1)); }
+        fi
+    done < <(cd "$CX_ROOT" && ls cx bin/lib/*.sh bin/cmd/*.sh bin/lib/*.py 2>/dev/null)
+    (( nx == 0 && idx_bad == 0 )) && _ok "cx 與 bin/ 的執行位元" "磁碟與 git index 皆正確"
+    (( idx_bad )) && cx_dim "修正： git update-index --chmod=+x <檔案>"
+
     cx_step "結果"
     printf '  通過 %d  警告 %d  失敗 %d\n' "$_dr_pass" "$_dr_warn" "$_dr_fail" >&2
     if (( _dr_fail )); then
