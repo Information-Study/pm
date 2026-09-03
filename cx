@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# cx — pm 專案統一入口。
+# 用法：cx [全域旗標] <動詞> [參數...]
+# 可從專案任何子目錄執行（向上搜尋 .cxroot）。
+
+set -Eeuo pipefail
+
+CX_INVOKE_PWD=$PWD          # 必須在任何 cd 之前記下
+
+# ---- 全域旗標：要在載入函式庫「之前」解析，因為 --root 會決定去哪裡載 ----
+CX_ROOT_OVERRIDE=''
+CX_MODE_OVERRIDE=''
+CX_DRY_RUN=0
+CX_ASSUME_YES=0
+CX_UI=auto
+
+while (( $# )); do
+    case $1 in
+        --root)     CX_ROOT_OVERRIDE=${2:?--root 需要路徑}; shift 2 ;;
+        --root=*)   CX_ROOT_OVERRIDE=${1#*=}; shift ;;
+        --mode)     CX_MODE_OVERRIDE=${2:?--mode 需要 dev|test|prod}; shift 2 ;;
+        --mode=*)   CX_MODE_OVERRIDE=${1#*=}; shift ;;
+        --ui)       CX_UI=${2:?--ui 需要 whiptail|dialog|plain}; shift 2 ;;
+        --ui=*)     CX_UI=${1#*=}; shift ;;
+        --dry-run)  CX_DRY_RUN=1; shift ;;
+        --yes|-y)   CX_ASSUME_YES=1; shift ;;
+        -h|--help)  set -- help; break ;;
+        --)         shift; break ;;
+        -*)         printf 'cx: 未知的全域旗標 %s\n' "$1" >&2; exit 2 ;;
+        *)          break ;;
+    esac
+done
+export CX_DRY_RUN CX_ASSUME_YES CX_UI CX_INVOKE_PWD
+
+# ---- 定位根目錄 ----
+if [[ -n $CX_ROOT_OVERRIDE ]]; then
+    CX_ROOT=$(cd "$CX_ROOT_OVERRIDE" && pwd -P) || { echo "cx: --root 路徑無效" >&2; exit 2; }
+    [[ -f $CX_ROOT/.cxroot ]] || { echo "cx: $CX_ROOT 沒有 .cxroot" >&2; exit 3; }
+else
+    # 解析自身位置（可能是 symlink）
+    _self=${BASH_SOURCE[0]}
+    while [[ -L $_self ]]; do
+        _d=$(cd -P "$(dirname "$_self")" && pwd)
+        _self=$(readlink "$_self")
+        [[ $_self != /* ]] && _self=$_d/$_self
+    done
+    _selfdir=$(cd -P "$(dirname "$_self")" && pwd)
+
+    CX_ROOT=''
+    # 先從呼叫者的 cwd 往上找，找不到再退回 cx 自身所在目錄
+    for _start in "$CX_INVOKE_PWD" "$_selfdir"; do
+        _d=$(cd "$_start" 2>/dev/null && pwd -P) || continue
+        while [[ $_d != / ]]; do
+            [[ -f $_d/.cxroot ]] && { CX_ROOT=$_d; break 2; }
+            _d=$(dirname "$_d")
+        done
+    done
+    [[ -n $CX_ROOT ]] || { echo "cx: 找不到 .cxroot（不在 pm 專案內？）" >&2; exit 3; }
+fi
+export CX_ROOT
+
+# ---- 載入函式庫（明確順序，不用 glob）----
+for _lib in common ui; do
+    # shellcheck source=/dev/null
+    . "$CX_ROOT/bin/lib/$_lib.sh"
+done
+trap cx_on_err ERR
+
+# shellcheck source=/dev/null
+. "$CX_ROOT/.cxroot"
+
+cx_ui_init
+
+CX_MODE=${CX_MODE_OVERRIDE:-${CX_MODE:-dev}}
+export CX_MODE
+
+# ---- 動詞分派 ----
+# 有些動詞的實作與檔名不同名，用對照表處理
+declare -A CX_CMD_FILE_OF=(
+    [uninstall]=install
+    [dc]=compose
+    [up]=compose [down]=compose [restart]=compose [ps]=compose [logs]=compose [sh]=compose [build]=compose
+)
+
+verb=${1:-tui}
+[[ $# -gt 0 ]] && shift
+
+case $verb in
+    help|-h|--help) verb=help ;;
+esac
+
+file="$CX_ROOT/bin/cmd/${CX_CMD_FILE_OF[$verb]:-$verb}.sh"
+[[ -f $file ]] || cx_die "$EX_USAGE" "未知的指令：'$verb'（試試 cx help）"
+
+# shellcheck source=/dev/null
+. "$file"
+
+fn="cmd_${verb}_main"
+declare -F "$fn" >/dev/null || fn="cmd_${CX_CMD_FILE_OF[$verb]:-$verb}_main"
+declare -F "$fn" >/dev/null || cx_die "$EX_FAIL" "$file 未定義 $fn"
+
+"$fn" "$@"

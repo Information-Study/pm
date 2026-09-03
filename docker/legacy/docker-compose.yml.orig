@@ -1,0 +1,84 @@
+name: "PSYOP_DutyManager"
+
+services:
+    composer:
+        image: composer
+        volumes:
+            - ./backend:/var/www/html
+        working_dir: /var/www/html
+        entrypoint: ["composer", "--ignore-platform-reqs"]
+
+    php:
+        build:
+            context: .
+            dockerfile: php/dockerfile.development
+            args:
+                APP_UID: ${APP_UID:-1000}
+                APP_GID: ${APP_GID:-1000}
+        working_dir: /var/www/html
+        container_name: php
+        ports:
+            - "8080:8080"
+        volumes:
+            - ./backend:/var/www/html
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+
+    artisan:
+        build:
+            context: .
+            dockerfile: php/dockerfile.development
+            args:
+                APP_UID: ${APP_UID:-1000}
+                APP_GID: ${APP_GID:-1000}
+        container_name: artisan
+        volumes:
+            - ./backend:/var/www/html
+        entrypoint: ["php", "artisan"]
+
+    mysql:
+        image: mysql:8.4
+        restart: always
+        ports:
+            - "3306:3306"
+        container_name: mysql
+        environment:
+            MYSQL_ROOT_PASSWORD: password
+            MYSQL_DATABASE: pwg
+        volumes:
+            - mysql-data:/var/lib/mysql
+
+    phpmyadmin:
+        image: phpmyadmin:latest
+        restart: always
+        container_name: phpmyadmin
+        ports:
+            - "8891:80"
+        environment:
+            PMA_HOST: mysql
+            PMA_USER: root
+            PMA_PASSWORD: password
+        depends_on:
+            - mysql
+
+    nuxt:
+        build:
+            dockerfile: nuxt/Dockerfile
+            context: .
+        container_name: nuxt
+        ports:
+            - "3000:3000"
+        volumes:
+            - ./frontend:/app
+            - /app/node_modules
+        working_dir: /app
+
+    npm:
+        image: node:24-alpine
+        container_name: npm
+        working_dir: /app
+        volumes:
+            - ./frontend:/app
+        entrypoint: ["npm"]
+volumes:
+    mysql-data:

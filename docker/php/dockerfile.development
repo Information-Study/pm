@@ -1,0 +1,72 @@
+FROM php:8.4-fpm-alpine AS php
+
+# 設置 Composer 環境變量允許 superuser
+ENV COMPOSER_ALLOW_SUPERUSER=1
+ENV COMPOSER_MEMORY_LIMIT=-1
+
+ARG APP_UID=1000
+ARG APP_GID=1000
+
+# 安裝必要的軟體包和 PHP 擴展
+RUN apk add --no-cache curl nginx mysql-client msmtp perl wget procps shadow libzip libpng libjpeg-turbo libwebp freetype icu linux-headers git supervisor redis imagemagick openldap-dev \
+    && apk add --no-cache --virtual .build-deps \
+    icu-dev icu-libs zlib-dev g++ make automake autoconf libzip-dev \
+    libpng-dev libwebp-dev libjpeg-turbo-dev freetype-dev imagemagick-dev \
+    && docker-php-ext-configure gd --enable-gd --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install gd mysqli pdo_mysql intl bcmath opcache exif zip ldap \
+    && apk del .build-deps && rm -rf /usr/src/php* \
+    && apk add --no-cache pcre-dev $PHPIZE_DEPS imagemagick-dev \
+    && pecl install redis xdebug imagick \
+    && docker-php-ext-enable redis xdebug imagick \
+    && apk del imagemagick-dev \
+    && apk add --no-cache jpegoptim optipng pngquant gifsicle libavif
+
+# 讓 PHP-FPM 的 www-data 與主機掛載檔案擁有者 UID/GID 對齊，避免 bind mount 下的寫入權限問題。
+RUN groupmod -o -g ${APP_GID} www-data \
+    && usermod -o -u ${APP_UID} -g ${APP_GID} www-data
+
+# 安裝 Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# 創建 artisan 快捷腳本
+RUN echo '#!/bin/sh' > /usr/local/bin/art && \
+    echo 'php artisan "$@"' >> /usr/local/bin/art && \
+    echo '#!/bin/sh' > /usr/local/bin/t && \
+    echo 'php artisan test "$@"' >> /usr/local/bin/t && \
+    chmod +x /usr/local/bin/art /usr/local/bin/t
+
+# 複製 Nginx 和 PHP 配置文件
+COPY ./php/nginx.conf /etc/nginx/nginx.conf
+COPY ./php/default.conf /etc/nginx/conf.d/default.conf
+COPY ./php/xdebug.ini /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+COPY ./php/supervisord.conf /etc/supervisord.conf
+COPY ./php/laravel-queue.conf /etc/supervisor/conf.d/laravel-queue.conf
+
+# 創建必要的目錄並設置權限
+RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d \
+    && chown -R www-data:www-data /var/log/supervisor
+
+# 設置工作目錄
+WORKDIR /var/www/html
+
+# 首先只複製 composer 相關文件，提高緩存效率
+COPY backend/composer.json backend/composer.lock ./
+
+# 使用 --no-scripts 和 --no-autoloader 來避免卡死
+RUN composer install --no-interaction --no-scripts --no-autoloader
+
+# 複製剩餘專案文件
+COPY backend/ .
+
+# 再執行 dump-autoload 完成安裝
+RUN composer dump-autoload --optimize
+
+# 設置正確的檔案權限
+RUN chown -R www-data:www-data /var/www/html
+RUN chmod -R 777 storage bootstrap/cache
+
+# 暴露 HTTP 端口
+EXPOSE 8080
+
+# 啟動 Nginx 和 PHP-FPM
+CMD ["sh", "-c", "php-fpm -D && nginx -g 'daemon off;'", "supervisord -c /etc/supervisord.conf"]

@@ -1,0 +1,38 @@
+# ── pm 主庫 .gitignore ──
+# ⚠ 本 repo 是 PUBLIC。任何進入歷史的祕密都撤不回來。
+# ⚠ 不可列入 backend/ 或 frontend/ —— 被 ignore 的路徑會讓 git submodule add 失敗。
+
+# 環境與祕密
+.env
+.env.*
+!.env.example
+.secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+auth.json
+/ansible/inventory/hosts.yml
+/ansible/**/vault_pass*
+/ansible/collections/
+
+# 掃描報告：排除「內容」而非目錄本身。
+# 寫成 /reports/ 會讓 git 連進去讀巢狀 .gitignore 都不做，
+# 導致 reports/ 不進版控 → fresh clone 沒這目錄 → Docker 以 root:root 建立 → 掃描器 EACCES。
+/reports/*
+!/reports/.gitignore
+!/reports/README.md
+
+# cx 執行期狀態
+/.cx/
+/_archive/
+
+# 系統與編輯器
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*~

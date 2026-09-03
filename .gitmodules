@@ -1,0 +1,8 @@
+[submodule "backend"]
+	path = backend
+	url = ./backend
+	branch = main
+[submodule "frontend"]
+	path = frontend
+	url = ./frontend
+	branch = main

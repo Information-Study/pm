@@ -1,0 +1,62 @@
+# ── pm-backend .gitignore（Laravel 13 + Filament v5）──
+# ⚠ 本 repo 是 PUBLIC。任何進入歷史的祕密都撤不回來。
+# 基底來自 Laravel 13 自帶版本，另加 public repo 的安全項目。
+
+# 相依
+/vendor
+/node_modules
+
+# 建置產物
+/public/build
+/public/hot
+/public/storage
+/public/fonts-manifest.dev.json
+
+# 環境與祕密
+.env
+.env.*
+!.env.example
+.env.backup
+.env.production
+/auth.json
+/storage/*.key
+*.key
+*.pem
+*.p12
+*.pfx
+
+# 執行期
+/storage/pail
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/storage/logs/*
+!/storage/**/.gitignore
+!/bootstrap/cache/.gitignore
+*.log
+/database/*.sqlite
+/database/*.sqlite-journal
+
+# 測試與靜態分析快取
+/.phpunit.cache
+.phpunit.result.cache
+/.phpstan.cache
+phpstan.neon
+!phpstan.neon.dist
+
+# 開發輔助
+_ide_helper.php
+_ide_helper_models.php
+.phpactor.json
+Homestead.json
+Homestead.yaml
+
+# 編輯器與系統
+/.idea
+/.vscode
+/.zed
+/.nova
+/.cursor/
+/.codex
+.DS_Store
+Thumbs.db

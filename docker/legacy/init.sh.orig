@@ -1,0 +1,28 @@
+#!/bin/sh
+
+# 重新 pull 前後端(開發期間，因為都不是在branch main ，故本行建議先註解)
+# git pull --recurse-submodules
+
+# 前端：npm 依賴安裝
+docker compose run --rm npm i
+
+# 前端：重啟前端服務
+docker compose restart vue
+
+# 後端：composer 安裝後端依賴
+docker compose run --rm composer --ignore-platform-reqs install --prefer-dist
+
+# 後端：Laravel Nova 安裝
+docker compose run --rm artisan nova:install
+
+# 後端：建立 public/storage 的連結
+docker compose run --rm artisan storage:link
+
+# 後端：npm 依賴安裝
+docker compose run --rm npm-php i
+
+# 後端：重啟 php 服務
+docker compose restart php
+
+# 後端：Laravel 執行資料庫遷移
+docker compose run --rm artisan migrate:fresh --seed

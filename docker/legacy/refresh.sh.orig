@@ -1,0 +1,131 @@
+#!/bin/sh
+
+# 預設值
+BRANCH="dev"
+TARGET=""
+
+# 顯示用法說明
+usage() {
+    echo "參數說明:"
+    echo "  -b=<branch> 指定分支名稱，預設為 dev"
+    echo "  -t=<backend|frontend> 指定更新目標"
+    echo "用法: $0 -b=<branch> -t=<backend|frontend>"
+    echo "範例: $0 -b=dev -t=backend"
+    exit 1
+}
+
+# 解析參數
+for arg in "$@"; do
+    case $arg in
+    -b=*)
+        BRANCH="${arg#*=}"
+        shift
+        ;;
+    -t=*)
+        TARGET="${arg#*=}"
+        shift
+        ;;
+    *)
+        echo "錯誤：未知的參數: $arg"
+        usage
+        ;;
+    esac
+done
+
+# 檢查是否有指定 target
+if [ -z "$TARGET" ]; then
+    echo "錯誤：未指定 target。"
+    usage
+fi
+
+# 驗證 target 是否有效
+if [ "$TARGET" != "backend" ] && [ "$TARGET" != "frontend" ]; then
+    echo "錯誤：無效的 target: $TARGET"
+    usage
+fi
+
+# 後端操作函數
+backend() {
+    echo "=============================="
+    echo "開始更新後端，使用分支: $BRANCH"
+    echo "=============================="
+
+    # 重新 pull 後端
+    echo "進入 backend 目錄..."
+    cd backend || {
+        echo "進入 backend 目錄失敗"
+        exit 1
+    }
+
+    echo "執行 git pull origin $BRANCH..."
+    git pull origin "$BRANCH"
+
+    echo "返回上一層目錄..."
+    cd ..
+
+    # Composer 安裝
+    echo "執行 Composer 安裝相依套件..."
+    docker compose run --rm composer install --prefer-dist
+
+    # 更新後端資料庫
+    echo "執行資料庫遷移與填充種子資料..."
+    docker compose run --rm artisan migrate:fresh --seed
+
+    # 建立 storage 連結
+    echo "建立 public/storage 的符號連結..."
+    docker compose run --rm artisan storage:link
+
+    # 前端依賴安裝（假設在後端容器中）
+    echo "執行前端依賴安裝 (npm-php ci)..."
+    docker compose run --rm npm-php ci
+
+    # 後端建置
+    echo "執行後端建置 (npm-php run build)..."
+    docker compose run --rm npm-php run build
+
+    echo "=============================="
+    echo "後端更新完成。"
+    echo "=============================="
+}
+
+# 前端操作函數
+frontend() {
+    echo "=============================="
+    echo "開始更新前端，使用分支: $BRANCH"
+    echo "=============================="
+
+    # 重新 pull 前端
+    echo "進入 frontend 目錄..."
+    cd frontend || {
+        echo "進入 frontend 目錄失敗"
+        exit 1
+    }
+
+    echo "執行 git pull origin $BRANCH..."
+    git pull origin "$BRANCH"
+
+    echo "返回上一層目錄..."
+    cd ..
+
+    # NPM 依賴安裝
+    echo "執行 NPM 依賴安裝 (npm ci)..."
+    docker compose run --rm npm ci
+
+    echo "=============================="
+    echo "前端更新完成。"
+    echo "=============================="
+}
+
+# 根據 target 執行相應的操作
+case "$TARGET" in
+backend)
+    backend
+    ;;
+frontend)
+    frontend
+    ;;
+*)
+    echo "無效的 target: $TARGET"
+    usage
+    ;;
+esac

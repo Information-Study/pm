@@ -1,0 +1,6 @@
+# reports/ 目錄本身要進版控，內容不進。
+# 這樣 fresh clone 才有這個目錄，Docker 不會以 root:root 自動建立它，
+# 掃描器（uid 1000）也就不會 EACCES。
+*
+!.gitignore
+!README.md

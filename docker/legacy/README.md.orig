@@ -1,0 +1,170 @@
+# PSYOP_DutyManager
+
+此存儲庫包含基於前後端分離架構下，使用 PHP 8.4 + Laravel 11 作為後端、Nuxt 4 作為前端開發框架，資料庫使用 MySQL 8.4，並結合 phpMyAdmin；網站服務使用 Nginx；提供完整的 Docker 開發環境。
+
+# 目錄
+
+1. [初始化作業](#初始化作業)
+    - [下載](#下載)
+    - [初始化指令](#初始化指令)
+    - [快速更新指令](#快速更新指令)
+2. [使用服務](#使用服務)
+3. [常用指令](#常用指令)
+    - [Docker 常用指令](#docker-常用指令)
+    - [Git 常用指令](#git-常用指令)
+    - [Laravel 常用指令](#laravel-常用指令)
+    - [Nuxt 常用指令](#nuxt-常用指令)
+4. [服務概述](#服務概述)
+    - [Nginx](#nginx)
+    - [PHP](#php)
+    - [MySQL](#mysql)
+    - [Composer](#composer)
+    - [Artisan](#artisan)
+    - [PhpMyAdmin](#phpmyadmin)
+    - [NPM](#npm)
+    - [Nuxt](#nuxt)
+5. [卷](#卷)
+
+# 初始化作業
+
+## 下載
+
+欲同時下載主專案與子專案，執行以下指令：
+
+```
+git clone --recurse-submodules https://github.com/team-of-P/PSYOP_DutyManager.git <自訂專案名稱>
+```
+
+## 初始化指令
+
+初次使用時請在主專案目錄下執行以下指令：
+
+```
+sh init.sh
+```
+
+## 快速更新指令
+
+```
+sh refresh.sh
+```
+
+# 使用服務
+
+1. **前端網址：** 在瀏覽器中訪問 `http://localhost:3000` 。
+2. **後端網址：** 在瀏覽器中訪問 `http://localhost:8080`。
+3. **資料庫管理：** 在瀏覽器中訪問 `http://localhost:8891` 管理 MySQL 數據庫。
+4. **後台 Filament 網址：** 在瀏覽器中訪問 `http://localhost:8080/admin`。
+    > [!TIP]  
+    > Nova 管理帳號：A187382073
+    >
+    > 密碼：!password1234
+
+# 常用指令
+
+:warning: 開始使用前務必先執行初始化指令：`sh init.sh` :warning:
+
+## Docker 常用指令
+
+1. **啟動容器：** `dc up -d --build`
+2. **關閉容器：** `dc down`
+3. **查看 Docker 當前狀態：** `docker ps`
+4. **完整重啟服務：** `dc down && dc up -d --build`（**推薦使用**）
+5. **單獨重啟前端服務：** `dc restart nuxt`（前端開發當機可用）
+6. **重新建立 image：** `dc build --no-cache`（記得先關閉服務）
+
+## Git 常用指令
+
+1. **一次性 Pull 主專案＋子模組：** `git pull --recurse-submodules`
+2. **已經 Pull 過主專案，再 Pull 子模組：** `git submodule update --remote`
+3. **Pull 單一子模組：** `cd <子模組目錄>` 再執行 `git pull`
+4. **Push 單一子模組：** `cd <子模組目錄>` 再執行 `git push`
+    > [!WARNING]  
+    > 請注意!!!本專案應該在分支上進行開發，在完成開發並 commit 後應該通過 _Pull Request(PR)_ 將變更合併到 main 分支，而不是直接 push 到 main。
+
+## Laravel 常用指令
+
+1. **資料庫重新建制與假資料生成：** `dc run --rm artisan migrate:fresh --seed`
+2. **進入交互式命令行界面（REPL）：** `dc run --rm artisan tinker`
+3. **清除快取：** `dc run --rm artisan cache:clear`
+4. **生成金鑰：** `dc run --rm artisan key:generate`
+
+## Nuxt 常用指令
+
+1. **安裝相依套件：** `dc run --rm npm install`
+2. **安裝特定套件：** `dc run --rm npm install <套件名稱>`
+3. **建立 Nuxt 專案：** `dc run --rm npm create nuxt@latest`
+4. **啟動開發模式：** `dc run --rm npm run dev`
+5. **建置正式版本：** `dc run --rm npm run build`
+6. **生成靜態檔案：** `dc run --rm npm run generate`
+
+# 服務概述
+
+## Nginx
+
+- **容器名稱:** nginx
+- **端口:** 8000:80
+- **卷:** 將 backend 目錄對應到容器內的 `/var/www/html`
+- **依賴:** php、mysql
+
+## PHP
+
+- **容器名稱:** php
+- **卷:** 將 backend 目錄對應到容器內的 `/var/www/html`
+- **額外主機:** `host.docker.internal:host-gateway`
+- **依賴:** mysql
+
+## MySQL
+
+- **容器名稱:** mysql
+- **映射端口:** 3306:3306
+- **環境變量:**
+    - `MYSQL_ROOT_PASSWORD`: 設置 MySQL 的 root 密碼
+    - `MYSQL_DATABASE`: 設置默認的數據庫名稱
+- **卷:** `mysql_data` 對應到容器內的 `/var/lib/mysql`
+
+## Composer
+
+- **容器名稱:** composer
+- **卷:** 將 backend 目錄對應到容器內的 `/var/www/html`
+- **工作目錄:** `/var/www/html`
+- **入口點:** `composer --ignore-platform-reqs`
+- **依賴:** php
+
+## Artisan
+
+- **容器名稱:** artisan
+- **卷:** 將 backend 目錄對應到容器內的 `/var/www/html`
+- **工作目錄:** `/var/www/html`
+- **入口點:** `php artisan`
+
+## PhpMyAdmin
+
+- **容器名稱:** phpmyadmin
+- **映射端口:** 8891:80
+- **平台:** `linux/amd64`
+- **環境變量:**
+    - `PMA_HOST`: mysql
+    - `PMA_USER`: root
+    - `PMA_PASSWORD`: password
+- **依賴:** mysql
+
+## NPM
+
+- **容器名稱:** npm
+- **工作目錄:** `/app`
+- **卷:** 將 frontend 目錄對應到容器內的 `/app`
+- **入口點:** `npm`
+
+## Nuxt
+
+- **容器名稱:** nuxt
+- **工作目錄:** `/app`
+- **映射端口:** 3000:3000
+- **卷:** 將 frontend 目錄對應到容器內的 `/app`
+- **入口點:** `npm run dev`
+- **框架:** Nuxt 4 with Tailwind CSS 支援
+
+# 卷
+
+- `mysql_data`: 用於持久化存儲 MySQL 數據

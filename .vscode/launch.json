@@ -1,0 +1,88 @@
+{
+    // VS Code 調試配置版本
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // PHP Laravel 後端調試配置 - 使用 Xdebug
+            "name": "🐘 PHP Backend (Xdebug)",
+            "type": "php", // 調試器類型：PHP
+            "request": "launch", // 啟動模式：直接啟動調試
+            "port": 9003, // Xdebug 監聽端口
+            "pathMappings": {
+                // 容器內路徑映射到本地路徑
+                "/var/www/html": "${workspaceFolder}/backend"
+            },
+            "ignore": [
+                // 忽略這些目錄的文件進行調試
+                "**/vendor/**/*.php", // Composer 依賴包
+                "**/storage/**/*.php", // Laravel 存儲文件
+                "**/bootstrap/cache/**/*.php" // Laravel 緩存文件
+            ],
+            "xdebugSettings": {
+                // Xdebug 調試器設置
+                "max_children": 128, // 最大子變量數量
+                "max_data": 512, // 最大數據長度 (字節)
+                "max_depth": 3 // 最大遞歸深度
+            }
+        },
+        {
+            // Nuxt.js 前端調試配置 - 附加到已運行的 Node.js 進程
+            "name": "🟢 Nuxt Frontend (Node.js)",
+            "type": "node", // 調試器類型：Node.js
+            "request": "attach", // 附加模式：連接到已運行的進程
+            "address": "localhost", // 調試服務器地址
+            "port": 9229, // Node.js 調試端口
+            "localRoot": "${workspaceFolder}/frontend", // 本地源代碼根目錄
+            "remoteRoot": "/app", // 遠程（容器內）源代碼根目錄
+            "restart": true, // 進程重啟時自動重新連接
+            "skipFiles": [
+                // 調試時跳過這些文件
+                "<node_internals>/**", // Node.js 內部文件
+                "**/node_modules/**" // NPM 依賴包
+            ]
+        },
+        {
+            // Chrome 瀏覽器調試配置 - 用於前端頁面調試
+            "name": "🌐 Chrome Browser Debug",
+            "type": "chrome", // 調試器類型：Chrome
+            "request": "launch", // 啟動模式：打開新的瀏覽器實例
+            "url": "http://localhost:3000", // 要調試的網頁 URL
+            "webRoot": "${workspaceFolder}/frontend", // Web 應用根目錄
+            "sourceMaps": true, // 啟用 Source Maps 支持
+            "userDataDir": "${workspaceFolder}/.vscode/chrome-debug", // Chrome 用戶數據目錄
+            "runtimeArgs": [
+                // Chrome 啟動參數
+                "--disable-web-security", // 禁用同源策略（開發時用）
+                "--disable-features=VizDisplayCompositor" // 禁用某些可能導致調試問題的功能
+            ]
+        },
+        {
+            // 附加到任意運行中的 Node.js 進程
+            "name": "🔧 Attach to Running Process",
+            "type": "node", // 調試器類型：Node.js
+            "request": "attach", // 附加模式
+            "processId": "${command:PickProcess}", // 手動選擇要附加的進程ID
+            "restart": true // 進程重啟時自動重新連接
+        }
+    ],
+    // 複合調試配置 - 可以同時啟動多個調試器
+    "compounds": [
+        {
+            // 全堆疊調試 - 同時調試後端 PHP 和前端 Chrome
+            "name": "🚀 Full Stack Debug",
+            "configurations": [
+                "🐘 PHP Backend (Xdebug)", // 啟動 PHP 後端調試
+                "🌐 Chrome Browser Debug" // 啟動 Chrome 瀏覽器調試
+            ],
+            "stopAll": true // 停止調試時關閉所有配置
+        },
+        {
+            // 僅前端調試 - 調試 Node.js 和 Chrome
+            "name": "🎯 Frontend Only Debug",
+            "configurations": [
+                "🟢 Nuxt Frontend (Node.js)", // 附加到 Nuxt.js 進程
+                "🌐 Chrome Browser Debug" // 啟動 Chrome 瀏覽器調試
+            ]
+        }
+    ]
+}

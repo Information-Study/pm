@@ -1,0 +1,8 @@
+# cx 專案根目錄標記。cx 靠向上搜尋此檔來定位 CX_ROOT。
+# 不用 git rev-parse —— 因為 cx fresh 會刪掉 .git，用 git 當解析器會在流程中途壞掉。
+CX_PROJECT_NAME=pm
+CX_LAYOUT_VERSION=2
+CX_GH_ORG=Information-Study
+CX_REPO_MAIN=pm
+CX_REPO_BACKEND=pm-backend
+CX_REPO_FRONTEND=pm-frontend

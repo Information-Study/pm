@@ -1,0 +1,33 @@
+# ── pm-frontend .gitignore（Vue 3 + Nuxt 4）──
+# ⚠ 本 repo 是 PUBLIC。
+
+node_modules/
+.nuxt/
+.nitro/
+.cache/
+.output/
+# 不帶斜線：nuxt generate 會建立「名為 dist 的 symlink」指向絕對路徑，
+# 寫成 dist/ 只擋目錄，那個 symlink 會溜進版控並洩漏本機使用者路徑。
+dist
+.data/
+
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+.DS_Store
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
