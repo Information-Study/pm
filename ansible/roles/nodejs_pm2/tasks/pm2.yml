@@ -1,0 +1,122 @@
+---
+# 後面所有 pm2 任務都要 become_user 到 {{ deploy_user }}。root → 非特權使用者的
+# become 需要 setfacl 才能把 Ansible 的暫存檔交出去，沒有 acl 會得到
+#   "Failed to set permissions on the temporary files Ansible needs to create...
+#    Enable ACLs or set allow_world_readable_tmpfiles"
+- name: 安裝 acl（become_user 需要）
+  ansible.builtin.apt:
+    name: acl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# ---- A9 的同型問題：PM2 要寫的目錄全部先明確建好 ---------------------------
+- name: 建立 PM2 需要的目錄
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    # PM2_HOME：pm2 daemon 的 socket、pid、dump.pm2 都在這裡
+    - path: "{{ pm2_home }}"
+      owner: "{{ deploy_user }}"
+      group: "{{ deploy_group }}"
+      mode: "0750"
+    # PM2 的 out/err 由 deploy 身分的行程直接寫入。
+    # 屬性刻意跟 common 的 common_log_directories 一致（deploy:web_group 0770），
+    # 否則兩個 role 每次執行都會互相翻對方的 owner / mode。
+    - path: "{{ app_log_dir }}"
+      owner: "{{ deploy_user }}"
+      group: "{{ web_group }}"
+      mode: "0770"
+    # ecosystem 放在 shared/ 底下，換版不會被覆蓋。
+    # common 已經建好父層 {{ app_shared_dir }}（02750 deploy:web_group），
+    # 這裡只補 pm2/ 子目錄，沿用同樣的 setgid 模式。
+    - path: "{{ pm2_ecosystem_dir }}"
+      owner: "{{ deploy_user }}"
+      group: "{{ web_group }}"
+      mode: "02750"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: 讀取目前的 PM2 版本
+  ansible.builtin.command:
+    argv: ["{{ pm2_bin }}", "--version"]
+  register: pm2_installed
+  changed_when: false
+  failed_when: false
+
+- name: 安裝 / 對齊 PM2 版本
+  ansible.builtin.command:
+    argv:
+      - "{{ npm_bin }}"
+      - install
+      - "-g"
+      - "--no-fund"
+      - "--no-audit"
+      - "pm2@{{ pm2_version }}"
+  register: pm2_npm_install
+  changed_when: pm2_npm_install.rc == 0
+  failed_when: pm2_npm_install.rc != 0
+  when: pm2_version not in (pm2_installed.stdout | default('') | trim)
+
+- name: 確認 pm2 執行檔位置
+  ansible.builtin.stat:
+    path: "{{ pm2_bin }}"
+  register: pm2_bin_stat
+
+- name: pm2 執行檔不在預期位置時 fail fast
+  ansible.builtin.assert:
+    that:
+      - pm2_bin_stat.stat.exists
+    fail_msg: >-
+      npm 全域安裝完成，但 {{ pm2_bin }} 不存在。
+      NodeSource 的 nodejs 套件把 npm prefix 設在 /usr（模組在 /usr/lib/node_modules，
+      執行檔 symlink 到 /usr/bin）。若這台機器改過 prefix，
+      請執行 `npm prefix -g` 找出實際位置，再設定 pm2_bin 變數。
+    quiet: true
+
+# `pm2 startup` 以 root 執行時會直接寫出 unit 檔並 enable，不只是印指令。
+# PM2_HOME 刻意指到 /root/.pm2：不讓 root 的 pm2 client 在 deploy 的 PM2_HOME
+# 底下留下 root 屬主的檔案（那會讓之後 deploy 身分的 pm2 完全連不上 daemon）。
+# unit 內的 PM2_HOME 由 --hp 決定，也就是 {{ deploy_user_home }}/.pm2。
+- name: 安裝 PM2 的 systemd 開機單元
+  ansible.builtin.command:
+    argv:
+      - "{{ pm2_bin }}"
+      - startup
+      - systemd
+      - "-u"
+      - "{{ deploy_user }}"
+      - "--hp"
+      - "{{ deploy_user_home }}"
+    creates: "/etc/systemd/system/{{ pm2_systemd_unit }}.service"
+  environment:
+    PM2_HOME: /root/.pm2
+    HOME: /root
+  register: pm2_startup
+  changed_when: (pm2_startup.rc | default(0)) == 0
+  failed_when: (pm2_startup.rc | default(0)) != 0
+
+- name: 確認 systemd unit 已產生
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ pm2_systemd_unit }}.service"
+  register: pm2_unit_stat
+
+- name: systemd unit 未產生時 fail fast
+  ansible.builtin.assert:
+    that:
+      - pm2_unit_stat.stat.exists
+    fail_msg: >-
+      /etc/systemd/system/{{ pm2_systemd_unit }}.service 不存在。
+      `pm2 startup systemd -u {{ deploy_user }} --hp {{ deploy_user_home }}` 的輸出：
+      {{ pm2_startup.stdout | default('（本次因 creates 而略過）') | trim }}
+      {{ pm2_startup.stderr | default('') | trim }}
+    quiet: true
+
+# 註：這裡刻意沒有 logrotate 任務。
+# common role 的 /etc/logrotate.d/{{ app_slug }} 已經涵蓋 {{ app_log_dir }}/*.log，
+# 再寫一份會讓 logrotate 報 "duplicate log entry"，
+# 而 common 的 `logrotate --debug` 驗證會讓 play 失敗。

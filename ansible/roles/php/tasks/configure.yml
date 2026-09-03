@@ -1,0 +1,129 @@
+---
+# ---- A9：pool 模板引用 slowlog / error_log，目錄必須先存在 ------------------
+# 少了這個目錄，php-fpm 會在啟動時直接死掉：
+#   ERROR: Unable to create or open slowlog(/var/log/php/pm-fpm-slow.log): No such file or directory
+#   ERROR: FPM initialization failed
+# 這是硬錯誤，不是警告 —— 服務根本起不來。
+# 屬性刻意跟 common role 的 common_log_directories 一致，
+# 否則兩個 role 每次執行都會互相翻對方的 owner / mode（永遠 changed）。
+- name: 建立 PHP 日誌目錄
+  ansible.builtin.file:
+    path: "{{ php_log_dir }}"
+    state: directory
+    owner: "{{ php_log_dir_owner }}"
+    group: "{{ php_log_dir_group }}"
+    mode: "{{ php_log_dir_mode }}"
+
+- name: 建立 FPM pool 目錄與 conf.d（套件通常已建，這裡確保萬無一失）
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ php_fpm_conf_d }}"
+    - "{{ php_fpm_pool_d }}"
+
+# ---- A2：ini 只寫 fpm/conf.d ------------------------------------------------
+- name: 佈署 99-app.ini（僅 FPM）
+  ansible.builtin.template:
+    src: 99-app.ini.j2
+    dest: "{{ php_fpm_conf_d }}/99-app.ini"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: 重載 php-fpm
+
+- name: 佈署 90-opcache-app.ini（僅 FPM）
+  ansible.builtin.template:
+    src: 90-opcache-app.ini.j2
+    dest: "{{ php_fpm_conf_d }}/90-opcache-app.ini"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: 重載 php-fpm
+
+- name: 檢查 CLI conf.d 是否被汙染（A2 防呆）
+  ansible.builtin.stat:
+    path: "{{ php_cli_conf_d }}/{{ item }}"
+  register: php_cli_pollution
+  loop:
+    - 99-app.ini
+    - 90-opcache-app.ini
+
+- name: CLI conf.d 出現 FPM 專用 ini 時 fail fast
+  ansible.builtin.assert:
+    that:
+      - php_cli_pollution.results | selectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      {{ php_cli_conf_d }} 底下出現了 FPM 專用的 ini：
+      {{ php_cli_pollution.results | selectattr('stat.exists')
+         | map(attribute='item') | join(', ') }}。
+      這些檔含 disable_functions，套到 CLI 之後 composer install 會死於
+      "The Process class relies on proc_open, which is not available on your PHP installation."
+      （backend/composer.json 的 post-autoload-dump 會跑 package:discover 與 filament:upgrade）。
+      請手動移除該檔後重跑。
+    quiet: true
+
+# ---- FPM pool ---------------------------------------------------------------
+# 注意：這裡刻意不用 template 的 validate。
+# `php-fpm -t -y <pool 片段>` 會把片段當成完整主設定來解析，因為片段沒有 [global]
+# 區段而失敗 —— 跟 nginx 的 `nginx -t -c <vhost 片段>` 是同一個坑（A12）。
+# 正確做法是片段不驗證，全部寫完之後跑一次完整的 `php-fpm -t`（見下方）。
+- name: 佈署 FPM pool
+  ansible.builtin.template:
+    src: pool.conf.j2
+    dest: "{{ php_fpm_pool_d }}/{{ php_fpm_pool_name }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: 重啟 php-fpm
+
+- name: 斷言預設 www pool 的路徑完整（刪除前的安全檢查）
+  ansible.builtin.assert:
+    that:
+      - php_fpm_pool_d is match('^/etc/php/[0-9]+\.[0-9]+/fpm/pool\.d$')
+      - php_fpm_pool_name != 'www'
+    fail_msg: >-
+      拒絕刪除 www.conf：pool 目錄路徑（{{ php_fpm_pool_d }}）不符合預期格式，
+      或本專案的 pool 就叫 www（{{ php_fpm_pool_name }}）。
+    quiet: true
+  when: php_fpm_disable_default_pool | bool
+
+- name: 移除 distro 預設的 www pool
+  # 三重 gate：變數開關 + when + 上一個 assert 驗過路徑格式。
+  ansible.builtin.file:
+    path: "{{ php_fpm_pool_d }}/www.conf"
+    state: absent
+  when: php_fpm_disable_default_pool | bool
+  notify: 重啟 php-fpm
+
+# ---- logrotate --------------------------------------------------------------
+- name: 佈署 php-fpm 日誌輪替設定
+  ansible.builtin.template:
+    src: logrotate-php.j2
+    dest: "/etc/logrotate.d/{{ app_slug }}-php"
+    owner: root
+    group: root
+    mode: "0644"
+  when: php_logrotate_enabled | bool
+
+# ---- 全設定驗證（完整設定，不是片段）---------------------------------------
+- name: 驗證完整的 php-fpm 設定
+  ansible.builtin.command:
+    argv:
+      - "{{ php_fpm_binary }}"
+      - "-t"
+      - "-y"
+      - "{{ php_conf_root }}/fpm/php-fpm.conf"
+  register: php_fpm_configtest
+  changed_when: false
+  failed_when: php_fpm_configtest.rc != 0
+
+- name: 確保 php-fpm 已啟用並執行
+  ansible.builtin.systemd_service:
+    name: "{{ php_fpm_service }}"
+    enabled: true
+    state: started
+    daemon_reload: true

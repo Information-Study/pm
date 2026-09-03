@@ -1,0 +1,182 @@
+---
+- name: 斷言前置條件
+  ansible.builtin.assert:
+    that:
+      - composer_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - composer_sha256 is match('^[0-9a-f]{64}$')
+      - composer_bin_path is match('^/[^\0]+')
+      - deploy_user | length > 0
+    fail_msg: >-
+      composer_version 必須是 x.y.z（目前 {{ composer_version | default('') }}），
+      composer_sha256 必須是 64 位小寫十六進位（目前
+      {{ composer_sha256 | default('') | truncate(12, true, '…') }}），
+      composer_bin_path 必須是絕對路徑，deploy_user 不可為空。
+      版本與雜湊值是一組的，改一個就要改另一個。
+    quiet: true
+
+# ---- A2 的最後一道關卡：composer 沒有 proc_open 就不用往下走了 --------------
+- name: 檢查 PHP CLI 可用且有 proc_open
+  ansible.builtin.command:
+    argv:
+      - "{{ php_cli_binary }}"
+      - "-r"
+      - "echo function_exists('proc_open') ? 'yes' : 'no';"
+  register: composer_proc_open
+  changed_when: false
+  failed_when: false
+
+- name: PHP CLI 不可用或缺 proc_open 時 fail fast
+  ansible.builtin.assert:
+    that:
+      - composer_proc_open.rc == 0
+      - composer_proc_open.stdout | trim == 'yes'
+    fail_msg: >-
+      {{ php_cli_binary }} 不可執行，或 CLI 缺少 proc_open
+      （rc={{ composer_proc_open.rc }}，輸出 "{{ composer_proc_open.stdout | default('') | trim }}"）。
+      本專案的 backend/composer.json 有 post-autoload-dump
+      （@php artisan package:discover、@php artisan filament:upgrade），
+      會經 Symfony Process 呼叫 proc_open。少了它，composer install 必死於
+      "The Process class relies on proc_open, which is not available on your PHP installation."
+      請確認 php role 的 99-app.ini 沒有被放進 {{ '/etc/php/' ~ php_version ~ '/cli/conf.d' }}。
+    quiet: true
+
+- name: 建立 composer.phar 的暫存目錄
+  ansible.builtin.file:
+    path: "{{ composer_stage_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# get_url 帶 checksum 時是「先比對既有檔案，不同才下載」，所以這步是冪等的，
+# 而且雜湊不符會直接失敗（不會留下壞檔案在最終路徑上）。
+- name: 下載並校驗 composer.phar
+  ansible.builtin.get_url:
+    url: "{{ composer_download_url }}"
+    dest: "{{ composer_stage_path }}"
+    checksum: "sha256:{{ composer_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: "{{ composer_download_timeout }}"
+  register: composer_download
+
+# ---- 選用 GPG 驗簽 ----------------------------------------------------------
+- name: 下載 composer.phar 簽章
+  ansible.builtin.get_url:
+    url: "{{ composer_signature_url }}"
+    dest: "{{ composer_stage_path }}.asc"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: "{{ composer_download_timeout }}"
+  when: composer_verify_gpg | bool
+
+- name: 匯入 Composer 簽章金鑰到暫時 keyring
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --no-tty
+      - --no-default-keyring
+      - --keyring
+      - "{{ composer_stage_dir }}/composer-keyring.gpg"
+      - --keyserver
+      - "{{ composer_gpg_keyserver }}"
+      - --recv-keys
+      - "{{ composer_gpg_fingerprint }}"
+  register: composer_recv_key
+  changed_when: composer_recv_key.rc == 0
+  failed_when: composer_recv_key.rc != 0
+  when: composer_verify_gpg | bool
+
+- name: 驗證 composer.phar 簽章
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --no-tty
+      - --no-default-keyring
+      - --keyring
+      - "{{ composer_stage_dir }}/composer-keyring.gpg"
+      - --verify
+      - "{{ composer_stage_path }}.asc"
+      - "{{ composer_stage_path }}"
+  register: composer_gpg_verify
+  changed_when: false
+  failed_when: composer_gpg_verify.rc != 0
+  when: composer_verify_gpg | bool
+
+# ---- 安裝 -------------------------------------------------------------------
+- name: 安裝 composer 到 {{ composer_bin_path }}
+  ansible.builtin.copy:
+    src: "{{ composer_stage_path }}"
+    dest: "{{ composer_bin_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: 確認 composer 版本
+  ansible.builtin.command:
+    argv:
+      - "{{ composer_bin_path }}"
+      - --version
+      - --no-interaction
+      - --no-ansi
+  environment:
+    COMPOSER_HOME: "{{ composer_stage_dir }}/.home"
+    COMPOSER_ALLOW_SUPERUSER: "1"
+  register: composer_version_check
+  changed_when: false
+  failed_when: composer_version_check.rc != 0
+
+- name: 版本不符時 fail fast
+  ansible.builtin.assert:
+    that:
+      - composer_version in composer_version_check.stdout
+    fail_msg: >-
+      安裝後回報的版本與預期不符。
+      預期含 "{{ composer_version }}"，實際輸出：
+      {{ composer_version_check.stdout | trim }}
+      如果 {{ composer_bin_path }} 是別的來源裝的（例如 distro 的 composer 套件），
+      請先移除再重跑。
+    quiet: true
+
+# ---- deploy 使用者的 COMPOSER_HOME / cache ---------------------------------
+# A9 的同型問題：目錄不先建好且屬主不對，composer 會退回 root 的家目錄或
+# 直接停用快取，讓每次部署都重抓整包 vendor。
+- name: 建立 deploy 使用者的 composer 目錄
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "0750"
+  loop:
+    - "{{ composer_home }}"
+    - "{{ composer_cache_dir }}"
+
+- name: 佈署 composer 環境變數（互動式登入用）
+  ansible.builtin.copy:
+    dest: "{{ composer_profile_d_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      # deploy role 的任務會在 environment: 明確帶這些值；
+      # 這支檔案只是讓人 ssh 進去手動除錯時也有一致的環境。
+      export COMPOSER_HOME="{{ composer_home }}"
+      export COMPOSER_CACHE_DIR="{{ composer_cache_dir }}"
+      export COMPOSER_NO_INTERACTION=1
+  when: composer_write_profile_d | bool
+
+- name: 顯示 composer 安裝結果
+  ansible.builtin.debug:
+    msg: >-
+      {{ composer_version_check.stdout_lines | first | default('') | trim }}
+      | bin={{ composer_bin_path }}
+      | COMPOSER_HOME={{ composer_home }}
+      | COMPOSER_CACHE_DIR={{ composer_cache_dir }}
+      | sha256 已校驗，版本由 Ansible 釘死（bin 為 root:root 0755，deploy 無法 self-update）

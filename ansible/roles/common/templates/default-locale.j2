@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# 只設 LANG。刻意不設 LC_ALL —— LC_ALL 會蓋掉所有 LC_* 的個別設定，
+# 之後想單獨調整 LC_TIME / LC_COLLATE 就完全沒辦法。
+# 應用層的語系是 Laravel 的 APP_LOCALE（zh_TW），跟系統 LANG 是兩件事。
+LANG={{ common_default_locale }}

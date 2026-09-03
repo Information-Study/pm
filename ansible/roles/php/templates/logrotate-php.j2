@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# copytruncate：不需要 reload php-fpm 就能輪替，避免輪替與部署互相踩到。
+{{ php_log_dir }}/{{ app_slug }}-fpm-*.log {
+    daily
+    rotate {{ php_logrotate_rotate }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root {{ web_group }}
+    create 0640 {{ php_log_dir_owner }} {{ php_log_dir_group }}
+}

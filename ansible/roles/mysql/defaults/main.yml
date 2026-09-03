@@ -1,0 +1,141 @@
+---
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║ roles/mysql/defaults/main.yml                                        ║
+# ║ MySQL 8.4 LTS —— Oracle APT 來源、雙 host 授權、備份                  ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+# ── 套件來源 ─────────────────────────────────────────────────────────
+# A4：Ubuntu noble 的 mysql-server 是 8.0.x，Debian 的 default-mysql-server
+#     根本是 MariaDB。要拿到 8.4 LTS 只能用 repo.mysql.com。
+#     oracle = repo.mysql.com（預設）；distro = 發行版套件（會被 assert 擋下，
+#     除非明確設定 mysql_allow_distro_version=true）。
+mysql_repo_source: oracle
+mysql_version_series: "8.4"
+mysql_allow_distro_version: false
+
+mysql_repo_ubuntu_url: https://repo.mysql.com/apt/ubuntu
+mysql_repo_debian_url: https://repo.mysql.com/apt/debian
+# 目標機的 codename。Ubuntu 26.04 (resolute) 剛釋出時 repo.mysql.com 可能還沒有
+# 對應目錄，屆時把這個變數覆寫成 noble（MySQL 的 deb 相容性夠）。
+mysql_repo_suite: "{{ ansible_facts['distribution_release'] }}"
+# mysql-8.4-lts = 8.4 LTS 系列；mysql-innovation 才是 9.x（千萬不要用）。
+mysql_repo_components:
+  - "mysql-{{ mysql_version_series }}-lts"
+  - mysql-tools
+mysql_repo_key_url: https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+mysql_repo_keyring_path: /etc/apt/keyrings/mysql-repo.asc
+# 下載後會用 gpg --show-keys 取指紋並比對這個白名單；不符就 fail fast。
+# Oracle 若輪替金鑰，這裡要更新（更新前請自行從官方管道確認指紋）。
+mysql_repo_key_fingerprints_allowed:
+  - BCA43417C3B485DD128EC6D4B7B3B788A8D3785C
+mysql_repo_check_suite: true
+mysql_repo_pin_priority: 1001
+# 把 mysql-server 等套件釘在 held 狀態（避免意外跳版）。預設關閉，
+# 因為 components 已經鎖在 8.4 LTS，9.x 在別的 component。
+mysql_apt_hold: false
+# 安裝完把 debconf 裡的 root 密碼答案清空（密碼已寫進 /root/.my.cnf）。
+mysql_purge_debconf_password: true
+
+# ── 套件清單 ─────────────────────────────────────────────────────────
+mysql_packages_oracle:
+  - mysql-server
+  - mysql-client
+mysql_packages_distro:
+  - mysql-server
+  - mysql-client
+# python3-pymysql 是 community.mysql 模組的必要相依；
+# python3-debian / python3-apt 是 deb822_repository 的必要相依（A6）。
+mysql_support_packages:
+  - python3-pymysql
+  - python3-debian
+  - python3-apt
+  - gnupg
+  - ca-certificates
+
+# ── 服務與路徑 ───────────────────────────────────────────────────────
+mysql_service_name: mysql
+mysql_mysqld_bin: /usr/sbin/mysqld
+mysql_socket: /var/run/mysqld/mysqld.sock
+mysql_my_cnf: /etc/mysql/my.cnf
+mysql_conf_dir: /etc/mysql/conf.d
+mysql_conf_file: "{{ mysql_conf_dir }}/zz-app.cnf"
+mysql_defaults_file: /root/.my.cnf
+mysql_datadir: /var/lib/mysql
+mysql_log_dir: /var/log/mysql
+mysql_log_error: "{{ mysql_log_dir }}/error.log"
+
+# ── 設定值 ───────────────────────────────────────────────────────────
+mysql_bind_address: 127.0.0.1
+mysql_mysqlx_bind_address: 127.0.0.1
+mysql_port: 3306
+# A3：skip-name-resolve 之下 MySQL 不做反解，授權比對的是字面 host，
+#     所以應用帳號一定要同時有 'localhost' 與 '127.0.0.1' 兩筆。
+mysql_skip_name_resolve: true
+mysql_charset: utf8mb4
+mysql_collation: utf8mb4_unicode_ci
+# 只接受 SYSTEM 或 ±HH:MM 數字位移。具名時區（Asia/Taipei）需要先載入
+# tz 表，沒載入會讓 mysqld 起不來 —— assert 會擋。
+mysql_default_time_zone: "+08:00"
+mysql_sql_mode: ""
+mysql_max_connections: 151
+mysql_innodb_buffer_pool_mb: "{{ [(ansible_facts['memtotal_mb'] | int * 35 / 100) | int, 128] | max }}"
+mysql_innodb_redo_log_capacity_mb: 256
+mysql_innodb_flush_log_at_trx_commit: 1
+mysql_innodb_flush_method: O_DIRECT
+mysql_innodb_io_capacity: 200
+mysql_innodb_io_capacity_max: 400
+mysql_table_open_cache: 4000
+mysql_tmp_table_size_mb: 64
+# A16：上傳限制四個值從單一來源 app_max_upload_mb 推導。
+#      max_allowed_packet 要比 PHP / nginx 的上限大，否則大附件走 LONGBLOB
+#      會在 DB 層被截斷（Packet too large）。
+mysql_max_allowed_packet_mb: "{{ (app_max_upload_mb | default(32) | int) + 32 }}"
+mysql_slow_query_log: true
+mysql_slow_query_log_file: "{{ mysql_log_dir }}/slow.log"
+mysql_long_query_time: 2
+mysql_log_queries_not_using_indexes: false
+# 額外 [mysqld] 選項（key: value），會原樣寫入 zz-app.cnf。
+mysql_extra_mysqld_options: {}
+# 設定無法通過 mysqld --validate-config 時，是否刪掉本次寫入的片段。
+# 預設 false（刪除一律預設關閉），只 fail 並印出 mysqld 的錯誤訊息。
+mysql_config_rollback_on_invalid: false
+
+# ── 帳號 ─────────────────────────────────────────────────────────────
+# 兩個密碼一律從 vault 帶入；空字串會被 assert 擋下。
+mysql_root_password: "{{ vault_mysql_root_password | default('') }}"
+mysql_app_db_name: "{{ app_db_name | default('pm') }}"
+mysql_app_db_user: "{{ app_db_user | default('pm') }}"
+mysql_app_db_password: "{{ vault_mysql_app_password | default('') }}"
+mysql_app_user_hosts:
+  - localhost
+  - 127.0.0.1
+mysql_app_priv: "{{ mysql_app_db_name }}.*:ALL"
+mysql_password_min_length: 12
+# always = 每次執行都把密碼收斂到 vault 的值（MySQL 8 的 caching_sha2 雜湊
+# 有 salt，模組無法比對，所以這個任務每次都會報 changed —— 那是正常的）。
+# 不想要噪音就設成 on_create，但輪替密碼時要記得改回 always。
+mysql_root_password_update: always
+mysql_app_password_update: always
+
+# ── 安全強化（皆為 gate；刪除類預設保守）────────────────────────────
+mysql_remove_anonymous_users: true
+mysql_remove_remote_root: true
+# A19：DROP DATABASE 是不可逆動作，預設關閉，
+#      而且只有在該 schema 的 table 數為 0 時才會執行。
+mysql_drop_test_db: false
+mysql_test_db_name: test
+
+# ── 備份 ─────────────────────────────────────────────────────────────
+mysql_backup_enabled: true
+mysql_backup_dir: "/var/backups/{{ app_slug | default('pm') }}-mysql"
+mysql_backup_prefix: "{{ app_slug | default('pm') }}"
+mysql_backup_retention_days: 14
+mysql_backup_gzip: true
+mysql_backup_databases:
+  - "{{ mysql_app_db_name }}"
+mysql_backup_script: "/usr/local/sbin/{{ app_slug | default('pm') }}-mysql-backup"
+mysql_backup_log: "/var/log/{{ app_slug | default('pm') }}/mysql-backup.log"
+mysql_backup_hour: 3
+mysql_backup_minute: 15
+mysql_backup_logrotate: true
+mysql_backup_log_rotate_count: 8

@@ -1,0 +1,176 @@
+---
+# roles/mysql/tasks/repo.yml —— repo.mysql.com（Oracle）APT 來源
+# A4：這是唯一能在 Ubuntu/Debian 上拿到 MySQL 8.4 LTS 的方式。
+# A6：deb822_repository 需要目標機有 python3-debian，所以先裝相依。
+
+- name: 安裝 APT 來源所需的相依套件（A6：python3-debian 必須先到位）
+  ansible.builtin.apt:
+    name:
+      - python3-debian
+      - python3-apt
+      - gnupg
+      - ca-certificates
+      - apt-transport-https
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  register: mysql_repo_prereq
+  retries: 2
+  delay: 5
+  until: mysql_repo_prereq is succeeded
+
+- name: 決定 repo.mysql.com 的 base URL
+  ansible.builtin.set_fact:
+    mysql_repo_base_url: >-
+      {{ (ansible_facts['distribution'] == 'Ubuntu')
+         | ternary(mysql_repo_ubuntu_url, mysql_repo_debian_url) }}
+
+- name: 探測 repo.mysql.com 是否已支援本機 codename
+  ansible.builtin.uri:
+    url: "{{ mysql_repo_base_url }}/dists/{{ mysql_repo_suite }}/Release"
+    method: GET
+    return_content: false
+    status_code: [200]
+    timeout: 20
+  register: mysql_repo_suite_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: mysql_repo_check_suite | bool
+
+- name: codename 不存在時給出可行動的訊息（不要默默裝錯東西）
+  ansible.builtin.assert:
+    that:
+      - (mysql_repo_suite_probe.status | default(0) | int) == 200
+    fail_msg: >-
+      {{ mysql_repo_base_url }}/dists/{{ mysql_repo_suite }}/Release 取不到
+      （HTTP {{ mysql_repo_suite_probe.status | default('n/a') }}）。
+      Oracle 尚未為 {{ ansible_facts['distribution'] }}
+      {{ ansible_facts['distribution_release'] }} 出 apt 目錄。
+      解法二選一：
+      (1) 設定 mysql_repo_suite=noble 沿用上一版 LTS 的 deb；
+      (2) 改用 Ubuntu 24.04 LTS 目標機。
+      確認網路受限而非 codename 問題時，可暫時設 mysql_repo_check_suite=false。
+    quiet: true
+  when: mysql_repo_check_suite | bool
+
+- name: 建立 /etc/apt/keyrings
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: 下載 MySQL 套件簽章金鑰（ASCII armored）
+  ansible.builtin.get_url:
+    url: "{{ mysql_repo_key_url }}"
+    dest: "{{ mysql_repo_keyring_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+  register: mysql_repo_key_download
+  retries: 3
+  delay: 5
+  until: mysql_repo_key_download is succeeded
+
+- name: 確認金鑰檔存在
+  ansible.builtin.stat:
+    path: "{{ mysql_repo_keyring_path }}"
+  register: mysql_repo_keyring_stat
+
+- name: 讀出金鑰指紋
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --no-tty
+      - --show-keys
+      - --with-colons
+      - "{{ mysql_repo_keyring_path }}"
+  register: mysql_repo_key_info
+  changed_when: false
+  failed_when: mysql_repo_key_info.rc != 0
+  check_mode: false
+  when: mysql_repo_keyring_stat.stat.exists
+
+- name: 解析指紋
+  ansible.builtin.set_fact:
+    mysql_repo_key_fingerprints: >-
+      {{ mysql_repo_key_info.stdout_lines
+         | select('match', '^fpr:')
+         | map('regex_replace', '^fpr:+', '')
+         | map('regex_replace', ':+$', '')
+         | map('upper')
+         | list }}
+  when: mysql_repo_keyring_stat.stat.exists
+
+- name: 金鑰指紋必須在白名單內（不比對就等於信任任何被中間人替換的檔案）
+  ansible.builtin.assert:
+    that:
+      - mysql_repo_key_fingerprints | length > 0
+      - (mysql_repo_key_fingerprints
+         | intersect(mysql_repo_key_fingerprints_allowed | map('upper') | list)
+         | length) > 0
+    fail_msg: >-
+      {{ mysql_repo_key_url }} 的指紋
+      {{ mysql_repo_key_fingerprints | default([]) | join(', ') }}
+      不在白名單 {{ mysql_repo_key_fingerprints_allowed | join(', ') }} 內。
+      Oracle 可能已輪替金鑰。請自行從 https://dev.mysql.com/doc/refman/8.4/en/checking-gpg-signature.html
+      查證新指紋後，更新 mysql_repo_key_fingerprints_allowed；
+      在查證之前不要繼續安裝。
+    quiet: true
+  when: mysql_repo_keyring_stat.stat.exists
+
+- name: 設定 Oracle MySQL APT repository（deb822）
+  ansible.builtin.deb822_repository:
+    name: mysql
+    types: [deb]
+    uris: "{{ mysql_repo_base_url }}"
+    suites: ["{{ mysql_repo_suite }}"]
+    components: "{{ mysql_repo_components }}"
+    architectures: "{{ mysql_repo_architectures }}"
+    signed_by: "{{ mysql_repo_keyring_path }}"
+    enabled: true
+    state: present
+  register: mysql_repo_file
+
+- name: 釘選 repo.mysql.com 優先於發行版套件（A4）
+  ansible.builtin.template:
+    src: mysql-apt-pin.pref.j2
+    dest: /etc/apt/preferences.d/99-mysql.pref
+    owner: root
+    group: root
+    mode: "0644"
+  register: mysql_repo_pin
+
+- name: 更新 APT 快取
+  ansible.builtin.apt:
+    update_cache: true
+  when: mysql_repo_file is changed or mysql_repo_pin is changed
+
+# 探測：套件名必須真的存在於新來源，否則後面 apt install 的錯誤訊息很難懂
+- name: 確認 mysql-community-server 可從新來源取得且是 {{ mysql_version_series }} 系列
+  ansible.builtin.command:
+    argv: [apt-cache, policy, mysql-community-server]
+  register: mysql_repo_policy
+  changed_when: false
+  failed_when: mysql_repo_policy.rc != 0
+  check_mode: false
+  # --check 時 repo 檔尚未寫入，候選版本仍是發行版的 8.0，比對沒有意義
+  when: not ansible_check_mode
+
+- name: 候選版本必須是 {{ mysql_version_series }}.x
+  ansible.builtin.assert:
+    that:
+      - mysql_repo_policy.stdout is search('Candidate:\s+' ~ (mysql_version_series | regex_escape) ~ '\.')
+    fail_msg: >-
+      apt-cache policy mysql-community-server 的候選版本不是
+      {{ mysql_version_series }}.x：
+      {{ mysql_repo_policy.stdout_lines | select('search', 'Candidate') | list | join(' ') | default('（無候選版本）') }}
+      請檢查 mysql_repo_components（目前 {{ mysql_repo_components | join(', ') }}）
+      與 /etc/apt/preferences.d/99-mysql.pref 的 pin。
+      注意 9.x 屬於 Innovation track（每版只有 8 個月支援），不可使用。
+    quiet: true
+  when: not ansible_check_mode

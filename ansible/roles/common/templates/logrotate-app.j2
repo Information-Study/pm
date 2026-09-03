@@ -1,0 +1,34 @@
+# {{ ansible_managed }}
+# {{ app_log_dir }}：PM2 / queue worker / schedule 的輸出。
+# copytruncate 是刻意的 —— PM2 與 systemd 服務都不會在收到訊號後重開檔案，
+# 用 create + postrotate 反而會讓行程繼續寫到已經被改名的舊 inode。
+{{ app_log_dir }}/*.log {
+    {{ common_logrotate_frequency }}
+    rotate {{ common_logrotate_rotate }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    su {{ deploy_user }} {{ web_group }}
+    create 0640 {{ deploy_user }} {{ web_group }}
+}
+{% if common_logrotate_php_logs | bool %}
+
+# php-fpm 的 error_log / slowlog。
+# 預設是關的（common_logrotate_php_logs: false）—— 交給 php role 管，
+# 它才知道輪替後要不要 reload FPM。兩邊都寫會造成重複輪替。
+{{ php_log_dir }}/*.log {
+    {{ common_logrotate_frequency }}
+    rotate {{ common_logrotate_rotate }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    su root {{ web_group }}
+    create 0640 {{ deploy_user }} {{ web_group }}
+}
+{% endif %}

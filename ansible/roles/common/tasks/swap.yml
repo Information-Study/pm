@@ -1,0 +1,82 @@
+---
+# 選配，預設關閉。用途是讓 1 GB 記憶體的小機器有辦法跑完 Nuxt build。
+#
+# 注意：把 common_swap_enabled 改回 false 「不會」刪掉已經建好的 swapfile。
+# 這是刻意的 —— 沒有 gate 的刪除一律不做。要移除請人工執行：
+#   swapoff /swapfile && sed -i '\|^/swapfile|d' /etc/fstab && rm -f /swapfile
+- name: Swap | 參數合理性
+  ansible.builtin.assert:
+    that:
+      - common_swap_file is match('^/..*')
+      - (common_swap_size_mb | int) >= 256
+      - (common_swap_size_mb | int) <= 32768
+    quiet: true
+    fail_msg: "common_swap_file 必須是絕對路徑，common_swap_size_mb 要在 256..32768 之間。"
+
+- name: Swap | 檢查 swapfile 是否已存在
+  ansible.builtin.stat:
+    path: "{{ common_swap_file }}"
+  register: common_swap_stat
+
+# 用 dd 而不是 fallocate：fallocate 在某些檔案系統上會產生帶洞的檔案，
+# swapon 會拒絕並回 "swapfile has holes"。dd 慢一點，但一定可用。
+- name: Swap | 建立 swapfile（{{ common_swap_size_mb }} MB）
+  ansible.builtin.command:
+    cmd: "/usr/bin/dd if=/dev/zero of={{ common_swap_file | quote }} bs=1M count={{ common_swap_size_mb | int }}"
+  register: common_swap_create
+  changed_when: true
+  failed_when: common_swap_create.rc != 0
+  when: not (common_swap_stat.stat.exists | default(false))
+
+- name: Swap | swapfile 權限必須是 0600
+  ansible.builtin.file:
+    path: "{{ common_swap_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: common_swap_stat.stat.exists | default(false) or (common_swap_create is changed)
+
+- name: Swap | 格式化
+  ansible.builtin.command:
+    cmd: "/usr/sbin/mkswap {{ common_swap_file | quote }}"
+  register: common_swap_mkswap
+  changed_when: true
+  failed_when: common_swap_mkswap.rc != 0
+  when: common_swap_create is changed
+
+- name: Swap | 寫進 /etc/fstab（開機自動掛上）
+  ansible.posix.mount:
+    path: none
+    src: "{{ common_swap_file }}"
+    fstype: swap
+    opts: sw
+    dump: "0"
+    passno: "0"
+    state: present
+
+- name: Swap | 目前是否已經啟用
+  ansible.builtin.command:
+    cmd: "/usr/bin/grep -qF -- {{ common_swap_file | quote }} /proc/swaps"
+  register: common_swap_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Swap | 啟用
+  ansible.builtin.command:
+    cmd: "/usr/sbin/swapon {{ common_swap_file | quote }}"
+  register: common_swap_on
+  changed_when: true
+  failed_when: common_swap_on.rc != 0
+  when:
+    - common_swap_active.rc != 0
+    - not ansible_check_mode
+
+- name: Swap | vm.swappiness
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "{{ common_swap_swappiness | string }}"
+    state: present
+    sysctl_file: "/etc/sysctl.d/60-{{ app_slug }}-swap.conf"
+    sysctl_set: true
+    reload: true

@@ -1,0 +1,95 @@
+---
+- name: 斷言 ansible-core 版本
+  ansible.builtin.assert:
+    that:
+      - ansible_version.full is version('2.17', '>=')
+    fail_msg: >-
+      需要 ansible-core >= 2.17（目前 {{ ansible_version.full }}）：
+      deb822_repository 需 2.15、systemd_service 需 2.17。
+    quiet: true
+
+- name: 斷言為 Debian 系且 facts 已收集
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] is defined
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: >-
+      本 role 只支援 Debian 系，且需要 gather_facts: true。
+    quiet: true
+
+# app_slug 會被拿去組 PM2 process 名稱的正則，而那個正則是「刪除」動作的 gate，
+# 所以必須先確認它不是空字串、也不含正則元字元。
+- name: 斷言 app_slug / frontend_app_prefix 安全
+  ansible.builtin.assert:
+    that:
+      - app_slug is match('^[a-z0-9][a-z0-9_-]*$')
+      - frontend_app_prefix is match('^[a-z0-9][a-z0-9_-]*$')
+      - frontend_app_prefix | length >= 2
+    fail_msg: >-
+      app_slug（{{ app_slug | default('') }}）與
+      frontend_app_prefix（{{ frontend_app_prefix | default('') }}）
+      必須符合 ^[a-z0-9][a-z0-9_-]*$ 且長度 >= 2。
+      這兩個值會組成 `pm2 delete` 的比對正則，空值或含元字元會讓刪除範圍失控。
+    quiet: true
+
+# ---- A20 --------------------------------------------------------------------
+- name: 斷言 frontend_mode 合法
+  ansible.builtin.assert:
+    that:
+      - frontend_mode in ['ssr', 'spa', 'static']
+    fail_msg: >-
+      frontend_mode 只接受 ssr / spa / static（目前 "{{ frontend_mode | default('') }}"）。
+      ssr    → nuxt build                   → .output/server/index.mjs → PM2 fork
+      spa    → NUXT_SSR=false nuxt build    → .output/server/index.mjs → PM2 fork
+      static → NUXT_SSR=false nuxt generate → .output/public/          → Nginx 直送，不起 PM2
+    quiet: true
+
+# ---- A10 --------------------------------------------------------------------
+- name: 斷言實例數是明確的正整數
+  ansible.builtin.assert:
+    that:
+      - (frontend_instances | string) is match('^[0-9]+$')
+      - (frontend_instances | int) >= 1
+      - (frontend_instances | int) <= 64
+      - (frontend_port | int) > 0
+      - ((frontend_port | int) + (frontend_instances | int) - 1) < 65536
+    fail_msg: >-
+      frontend_instances 必須是 1..64 的整數字面值，不可以是 'max'
+      （目前 {{ frontend_instances | default('') }}）。
+      PM2 的 'max' 會去讀 os.cpus()，在容器 / cgroup 限額底下會誤讀成宿主機的核心數，
+      開出遠超預期的行程數。要擴充就明確寫數字，
+      每個 fork 會依序綁 {{ frontend_port }}..{{ (frontend_port | int) + (frontend_instances | int) - 1 }}，
+      再由 nginx upstream least_conn 分流。
+    quiet: true
+
+- name: 斷言 deploy 使用者的家目錄可用（pm2 startup 需要 --hp）
+  ansible.builtin.stat:
+    path: "{{ deploy_user_home }}"
+  register: pm2_deploy_user_home_stat
+
+- name: deploy 家目錄不存在時 fail fast
+  ansible.builtin.assert:
+    that:
+      - pm2_deploy_user_home_stat.stat.exists
+      - pm2_deploy_user_home_stat.stat.isdir
+    fail_msg: >-
+      {{ deploy_user_home }} 不存在或不是目錄。
+      `pm2 startup systemd -u {{ deploy_user }} --hp {{ deploy_user_home }}` 會寫出一個
+      指向這個路徑的 systemd unit，路徑不對的話開機時 pm2 resurrect 會失敗。
+      請確認 common role 已建立 {{ deploy_user }} 使用者與其家目錄。
+    quiet: true
+
+# `pm2 startup systemd -u <user> --hp <home>` 寫出的 unit 會把 PM2_HOME 設成
+# <home>/.pm2 —— 這個推導寫死在 PM2 裡，Ansible 改不了。
+# 所以 pm2_home 必須跟它一致，否則開機 resurrect 讀的是另一個 PM2_HOME，
+# 會出現「手動看得到 process、重開機後全沒了」這種很難查的狀況。
+- name: 斷言 pm2_home 與 pm2 startup 的推導一致
+  ansible.builtin.assert:
+    that:
+      - pm2_home == (deploy_user_home ~ '/.pm2')
+    fail_msg: >-
+      pm2_home（{{ pm2_home }}）必須等於 {{ deploy_user_home }}/.pm2。
+      systemd unit 的 PM2_HOME 由 `pm2 startup --hp {{ deploy_user_home }}` 推導成
+      {{ deploy_user_home }}/.pm2，兩者不一致的話開機 resurrect 會讀到空的 dump。
+      要換位置就同時改 deploy_user_home。
+    quiet: true

@@ -1,0 +1,118 @@
+---
+# roles/mysql/tasks/install.yml
+#
+# A18 —— 這個檔的第一個任務就是寫 /root/.my.cnf，而且是刻意的：
+#   Oracle 的 mysql-community-server 會在 apt install 當下就用 debconf 的
+#   root 密碼初始化資料目錄。如果先安裝再寫 .my.cnf，中途一旦中斷
+#   （網路斷、Ctrl-C、任一 assert 失敗），下一次執行就沒有任何憑證可以
+#   登入 root，只能停機用 --skip-grant-tables 救。
+#   先寫檔就沒有這個窗口 —— 檔案內容與稍後要設定的密碼是同一個值。
+#   （root 若仍是 auth_socket，多給一個密碼不影響：auth_socket 不檢查密碼。）
+
+- name: A18 —— 先寫入 /root/.my.cnf（早於任何 root 密碼變更）
+  ansible.builtin.template:
+    src: root-my.cnf.j2
+    dest: "{{ mysql_defaults_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: 設定 debconf：root 密碼（Oracle 套件安裝時就會用到）
+  ansible.builtin.debconf:
+    name: mysql-community-server
+    question: "{{ item }}"
+    vtype: password
+    value: "{{ mysql_root_password }}"
+  loop:
+    - mysql-community-server/root-pass
+    - mysql-community-server/re-root-pass
+  no_log: true
+  when: mysql_repo_source == 'oracle'
+
+- name: 設定 debconf：使用強式密碼加密（caching_sha2_password）
+  ansible.builtin.debconf:
+    name: mysql-community-server
+    question: mysql-server/default-auth-override
+    vtype: select
+    value: Use Strong Password Encryption (RECOMMENDED)
+  when: mysql_repo_source == 'oracle'
+
+- name: 安裝 MySQL 與相依套件
+  ansible.builtin.apt:
+    name: "{{ mysql_install_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  register: mysql_apt_install
+  retries: 2
+  delay: 10
+  until: mysql_apt_install is succeeded
+
+- name: 清除 debconf 中的 root 密碼答案（密碼已在 /root/.my.cnf）
+  ansible.builtin.debconf:
+    name: mysql-community-server
+    question: "{{ item }}"
+    vtype: password
+    value: ""
+  loop:
+    - mysql-community-server/root-pass
+    - mysql-community-server/re-root-pass
+  no_log: true
+  when:
+    - mysql_repo_source == 'oracle'
+    - mysql_purge_debconf_password | bool
+    - mysql_apt_install is not skipped
+
+
+# 這兩個任務標成 always：後面的 config / secure / databases / verify 都以
+# mysql_installed_ok 為 gate，若只跑 --tags mysql-config 而它們被跳過，
+# 變數會是 undefined，整個角色就會靜默地什麼都不做。
+- name: 確認 mysqld 真的裝起來了
+  ansible.builtin.stat:
+    path: "{{ mysql_mysqld_bin }}"
+  register: mysql_mysqld_stat
+  tags: always
+
+- name: 記錄安裝狀態（後續步驟以此為 gate；--check 於全新主機會整段跳過）
+  ansible.builtin.set_fact:
+    mysql_installed_ok: "{{ mysql_mysqld_stat.stat.exists | bool }}"
+  tags: always
+
+- name: 安裝後仍找不到 mysqld 就直接中止
+  ansible.builtin.fail:
+    msg: >-
+      安裝完成但 {{ mysql_mysqld_bin }} 不存在。
+      請在目標機執行 `apt-cache policy mysql-community-server`
+      與 `dpkg -l | grep -i mysql` 確認來源與套件名。
+  when:
+    - not (mysql_installed_ok | bool)
+    - not ansible_check_mode
+
+# 只在明確要求時才 hold（dpkg_selections 對「不存在的套件名」會直接失敗，
+# 預設不跑就不會因為套件名差異而炸掉）。要解除請人工
+# `apt-mark unhold mysql-server mysql-community-server mysql-community-client`。
+- name: 套用套件版本鎖（gate：mysql_apt_hold，預設 false —— component 已鎖在 {{ mysql_version_series }} LTS）
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ mysql_hold_packages }}"
+  when:
+    - mysql_installed_ok | bool
+    - mysql_apt_hold | bool
+
+- name: 建立 MySQL log 目錄（slow log 目錄不存在會讓 mysqld 起不來）
+  ansible.builtin.file:
+    path: "{{ mysql_log_dir }}"
+    state: directory
+    owner: mysql
+    group: adm
+    mode: "0750"
+  when: mysql_installed_ok | bool
+
+- name: 啟用並啟動 MySQL
+  ansible.builtin.systemd_service:
+    name: "{{ mysql_service_name }}"
+    enabled: true
+    state: started
+  when: mysql_installed_ok | bool

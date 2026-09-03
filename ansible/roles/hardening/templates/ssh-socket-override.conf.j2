@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# 第一個空的 ListenStream= 是必要的：systemd 的 list 型別設定是「累加」的，
+# 不先清空就會變成同時聽 22 和新的埠。
+[Socket]
+ListenStream=
+ListenStream={{ hardening_ssh_port }}

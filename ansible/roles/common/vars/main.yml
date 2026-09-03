@@ -1,0 +1,47 @@
+---
+# 這裡放「推導出來的」清單。放 vars/ 而不是 defaults/ 是刻意的：
+# 這些是從 app_root 等變數算出來的結果，不該被個別覆蓋。
+# 要加自己的目錄請用 common_extra_directories（在 defaults/）。
+
+# A8：目錄骨架必須在 deploy role 之前一次建好，而且 owner 是 deploy。
+# 否則 deploy 以 deploy 身分 clone 時，父目錄還是 root:root 0755 →
+# "could not create work tree dir: Permission denied"。
+common_core_directories:
+  - path: "{{ app_root }}"
+  # nodejs_pm2 的 pm2_ecosystem_dir 是 {{ app_root }}/shared/pm2，
+  # 這一層必須先由 deploy 擁有，否則 pm2 role 以 deploy 身分寫檔會 EACCES。
+  - path: "{{ app_shared_dir }}"
+  - path: "{{ backend_root }}"
+  - path: "{{ backend_releases_dir }}"
+  - path: "{{ backend_shared_dir }}"
+  - path: "{{ frontend_root }}"
+  - path: "{{ frontend_releases_dir }}"
+  - path: "{{ frontend_shared_dir }}"
+  # A9：frontend_mode 狀態檔的父目錄。deploy role 會往裡面寫「上一次用哪個模式」，
+  # 用來判斷模式切換時要不要清掉舊的 .output。
+  - path: "{{ frontend_mode_state_file | dirname }}"
+
+# Laravel 的 shared/storage 樹：www-data（php-fpm）要能寫，所以是 02770。
+common_laravel_shared_directories:
+  - "{{ backend_shared_dir }}/storage"
+  - "{{ backend_shared_dir }}/storage/app"
+  - "{{ backend_shared_dir }}/storage/app/private"
+  - "{{ backend_shared_dir }}/storage/app/public"
+  - "{{ backend_shared_dir }}/storage/framework"
+  - "{{ backend_shared_dir }}/storage/framework/cache"
+  - "{{ backend_shared_dir }}/storage/framework/cache/data"
+  - "{{ backend_shared_dir }}/storage/framework/sessions"
+  - "{{ backend_shared_dir }}/storage/framework/testing"
+  - "{{ backend_shared_dir }}/storage/framework/views"
+  - "{{ backend_shared_dir }}/storage/logs"
+
+# A9：日誌目錄。
+#   php_log_dir 缺席對 php-fpm 是硬錯誤 ——
+#   "ERROR: Unable to create or open slowlog(...)" → "FPM initialization failed"，
+#   服務根本起不來，而且訊息不會告訴你是目錄不存在。
+common_log_directories:
+  - path: "{{ php_log_dir }}"
+  - path: "{{ app_log_dir }}"
+
+common_sudoers_file: "/etc/sudoers.d/60-{{ app_slug }}-deploy"
+common_logrotate_file: "/etc/logrotate.d/{{ app_slug }}"

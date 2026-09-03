@@ -1,0 +1,68 @@
+; {{ ansible_managed }}
+; ============================================================================
+; php-fpm pool for {{ app_slug }}
+;
+; 這是「片段」，不能單獨用 php-fpm -t -y 驗（沒有 [global] 區段會直接失敗，
+; 跟 nginx 的 `nginx -t -c <vhost 片段>` 是同一個坑）。
+; 正確驗法：寫完之後跑一次完整的 `{{ php_fpm_binary }} -t -y {{ php_conf_root }}/fpm/php-fpm.conf`。
+;
+; 推導依據：memtotal={{ ansible_memtotal_mb | default('n/a') }}MB、
+;           vcpus={{ ansible_processor_vcpus | default('n/a') }}、
+;           每個 child 估 {{ php_fpm_process_mb }}MB、
+;           保留給其他服務 {{ php_fpm_reserved_mb }}MB
+; ============================================================================
+
+[{{ php_fpm_pool_name }}]
+
+user = {{ php_fpm_user }}
+group = {{ php_fpm_group }}
+
+; socket 由 root（master）建立，所以 /run/php 的權限不影響建立；
+; owner/group 決定的是誰連得上 —— 必須是 nginx 的執行身分，
+; 否則 nginx error.log 會出現 "connect() to unix:... failed (13: Permission denied)"。
+listen = {{ php_fpm_socket }}
+listen.owner = {{ web_user }}
+listen.group = {{ web_group }}
+listen.mode = 0660
+listen.backlog = {{ php_fpm_listen_backlog }}
+
+pm = dynamic
+pm.max_children = {{ php_fpm_max_children }}
+pm.start_servers = {{ php_fpm_start_servers }}
+pm.min_spare_servers = {{ php_fpm_min_spare_servers }}
+pm.max_spare_servers = {{ php_fpm_max_spare_servers }}
+pm.process_idle_timeout = {{ php_fpm_process_idle_timeout }}
+; 定期回收 child，壓住第三方擴充的記憶體洩漏
+pm.max_requests = {{ php_fpm_max_requests }}
+{% if php_fpm_status_enabled | bool %}
+
+; 有開就一定要在 nginx 端用 allow/deny 或 satisfy 限制來源，不要對外露出。
+pm.status_path = {{ php_fpm_status_path }}
+ping.path = {{ php_fpm_ping_path }}
+ping.response = pong
+{% endif %}
+
+request_terminate_timeout = {{ php_fpm_request_terminate_timeout }}
+request_slowlog_timeout = {{ php_fpm_request_slowlog_timeout }}
+; A9：這個目錄由 role 明確建立。少了它 php-fpm 會死在啟動階段：
+;   ERROR: Unable to create or open slowlog(...): No such file or directory
+;   ERROR: FPM initialization failed
+slowlog = {{ php_log_dir }}/{{ app_slug }}-fpm-slow.log
+
+catch_workers_output = yes
+decorate_workers_output = no
+
+; 安全預設：child 不繼承 master 的環境。但這樣連 PATH 都沒有，
+; 任何 exec 類呼叫會找不到執行檔，所以顯式補一個最小 PATH。
+clear_env = {{ php_fpm_clear_env }}
+env[PATH] = {{ php_fpm_env_path }}
+
+php_admin_flag[log_errors] = on
+php_admin_value[error_log] = {{ php_log_dir }}/{{ app_slug }}-fpm-error.log
+{% if php_fpm_open_basedir | length > 0 %}
+; open_basedir 很容易把 vendor/ 或 /tmp 擋掉造成難查的錯誤，預設不啟用。
+php_admin_value[open_basedir] = {{ php_fpm_open_basedir }}
+{% endif %}
+
+; 只允許執行 .php，避免上傳目錄被當成腳本跑
+security.limit_extensions = .php

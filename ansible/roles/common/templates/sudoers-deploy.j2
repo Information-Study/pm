@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# 只給部署需要的那幾條指令，不給 ALL。
+# 檔案由 visudo -cf 驗證過才會寫進 /etc/sudoers.d/。
+Defaults:{{ deploy_user }} !requiretty
+{% for cmd in deploy_user_sudo_commands %}
+{{ deploy_user }} ALL=(root) NOPASSWD: {{ cmd }}
+{% endfor %}

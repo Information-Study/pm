@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: hardening
+  author: pm
+  description: 主機層強化（ufw / fail2ban / sshd / sysctl）。每一項都是 opt-in，預設全關。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [security, hardening, firewall]
+
+dependencies: []

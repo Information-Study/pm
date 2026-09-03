@@ -1,0 +1,27 @@
+---
+- name: 前置斷言（版本、變數、A2 / A16 不變式）
+  ansible.builtin.import_tasks: assert.yml
+  tags: [php, php_assert]
+
+- name: 設定 APT 來源（Ubuntu → ondrej PPA；Debian → sury.org）
+  ansible.builtin.import_tasks: repo.yml
+  when: php_repo_manage | bool
+  tags: [php, php_repo]
+
+- name: 安裝 PHP 套件
+  ansible.builtin.import_tasks: install.yml
+  tags: [php, php_install]
+
+- name: 產生設定檔（ini 只進 fpm/conf.d、FPM pool、logrotate）
+  ansible.builtin.import_tasks: configure.yml
+  tags: [php, php_config]
+
+- name: 立即套用 php-fpm 設定變更
+  # composer role 隨後就要用 CLI，且 verify 會檢查 socket，
+  # 所以在離開本 role 之前先把 handler 沖掉。
+  ansible.builtin.meta: flush_handlers
+  tags: [php, php_config]
+
+- name: 驗證（proc_open / intl / OPcache / socket）
+  ansible.builtin.import_tasks: verify.yml
+  tags: [php, php_verify]

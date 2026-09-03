@@ -1,0 +1,43 @@
+// {{ ansible_managed }}
+// ============================================================================
+// PM2 ecosystem for {{ app_slug }} 前端
+//
+// 副檔名一定是 .cjs：frontend/package.json 有 "type": "module"，
+// 命名成 .js 會被當成 ESM，module.exports 直接爆
+// ReferenceError: module is not defined in ES module scope。
+//
+// ---- 為什麼永遠是 exec_mode: 'fork'（A10）--------------------------------
+// PM2 的 cluster 模式會透過 CJS 的 ProcessContainer 用 require() 載入進入點。
+// Nuxt/Nitro 產出的是 ESM 的 .output/server/index.mjs，require() 載不動，
+// 會得到 ERR_REQUIRE_ESM；就算換到能 require ESM 的 Node 版本，
+// Nitro 的 top-level await 也會變成 ERR_REQUIRE_ASYNC_MODULE。
+// 上游 pm2#5946 與 nuxt#13916 都還沒解。
+//
+// 要水平擴充就開 N 個獨立的 fork，每個綁自己的埠，前面用 nginx upstream least_conn：
+//     upstream {{ app_slug }}_frontend {
+//         least_conn;
+{% for i in range(frontend_instances | int) %}
+//         server {{ frontend_host }}:{{ (frontend_port | int) + i }};
+{% endfor %}
+//     }
+//
+// instances 一律寫明確數字，不用 'max'：'max' 會去讀 os.cpus()，
+// 在容器 / cgroup CPU 限額底下會誤讀成宿主機的核心數。
+//
+// ---- 三種模式 --------------------------------------------------------------
+//   ssr    → nuxt build                   → .output/server/index.mjs → 這裡的 fork
+//   spa    → NUXT_SSR=false nuxt build    → .output/server/index.mjs → 這裡的 fork
+//   static → NUXT_SSR=false nuxt generate → .output/public/          → Nginx 直送，apps 為空
+//
+// 目前 frontend_mode = {{ frontend_mode }}
+// ============================================================================
+
+{% if frontend_mode == 'static' %}
+// static 模式：完全不啟動 PM2。
+// Nginx 直接送 {{ frontend_static_root }}。
+// Ansible 會用 `pm2 delete` 收掉前一個模式留下的 process，再 `pm2 save --force`
+// 把空清單寫進 dump.pm2，這樣開機 resurrect 才不會把舊 process 叫回來。
+{% endif %}
+const apps = {{ pm2_apps | to_nice_json(indent=2) }};
+
+module.exports = { apps };

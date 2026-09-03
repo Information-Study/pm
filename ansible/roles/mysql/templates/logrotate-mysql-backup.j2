@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+{{ mysql_backup_log }} {
+    weekly
+    rotate {{ mysql_backup_log_rotate_count | int }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    su root adm
+    create 0640 root adm
+}

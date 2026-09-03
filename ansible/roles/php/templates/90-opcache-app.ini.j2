@@ -1,0 +1,53 @@
+; {{ ansible_managed }}
+; ============================================================================
+; OPcache / JIT —— 同樣只進 {{ php_fpm_conf_d }}
+;
+; PHP 8.5 的 OPcache 是**編進去的**，不是共享擴充：
+;   * ondrej PPA 與 packages.sury.org 都沒有 php8.5-opcache 套件（8.0–8.4 才有）
+;   * /etc/php/8.5/mods-available/ 底下沒有 opcache.ini
+;   * `php -m` 仍然看得到 Zend OPcache
+; 所以預設不輸出 zend_extension —— 硬寫會得到
+;   "Cannot load Zend OPcache - it was already loaded"
+; 只有把 php_version 退回 8.0–8.4 時，才需要把
+; php_opcache_load_zend_extension 設成 true 並安裝 phpX.Y-opcache。
+; ============================================================================
+
+[opcache]
+{% if php_opcache_load_zend_extension | bool %}
+zend_extension=opcache.so
+{% endif %}
+opcache.enable = {{ php_opcache_enable }}
+; CLI 開 opcache 對 artisan 只有壞處（每次都是新行程，快取立刻丟掉）。
+opcache.enable_cli = {{ php_opcache_enable_cli }}
+
+opcache.memory_consumption = {{ php_opcache_memory_consumption }}
+opcache.interned_strings_buffer = {{ php_opcache_interned_strings_buffer }}
+opcache.max_accelerated_files = {{ php_opcache_max_accelerated_files }}
+
+; 必須是 1。設 0 會丟掉 doc-comment，Laravel / Filament 有元件靠反射讀註解。
+opcache.save_comments = {{ php_opcache_save_comments }}
+
+; ---- 換版與快取失效 --------------------------------------------------------
+; validate_timestamps = {{ php_opcache_validate_timestamps }}
+{% if (php_opcache_validate_timestamps | int) == 0 %}
+; 目前設成 0（最快）。這只有在下面兩件事都成立時才安全，否則換版之後
+; php-fpm 會繼續服務舊 release 的程式碼：
+;   1. nginx 必須傳 SCRIPT_FILENAME $realpath_root$fastcgi_script_name
+;      （用 $document_root 的話拿到的是 current symlink 的字面路徑，OPcache 認不出換版）
+;   2. deploy role 換完 symlink 後必須 reload php-fpm
+{% else %}
+; 目前設成 1 + revalidate_freq=0：每次請求 stat 一次檔案。
+; 慢一點，但不依賴 nginx 的 $realpath_root 與 deploy 的 reload，換版一定生效。
+{% endif %}
+opcache.validate_timestamps = {{ php_opcache_validate_timestamps }}
+opcache.revalidate_freq = {{ php_opcache_revalidate_freq }}
+
+; ---- JIT -------------------------------------------------------------------
+; PHP 8.5 的 opcache.jit 預設是 disable。Laravel 這類 I/O 密集的 web 請求
+; 從 JIT 得到的好處有限；要回退就把 php_opcache_jit 設成 disable。
+opcache.jit = {{ php_opcache_jit }}
+{% if php_opcache_jit == 'disable' %}
+opcache.jit_buffer_size = 0
+{% else %}
+opcache.jit_buffer_size = {{ php_opcache_jit_buffer_size }}
+{% endif %}

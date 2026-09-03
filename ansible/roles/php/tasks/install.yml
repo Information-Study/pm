@@ -1,0 +1,84 @@
+---
+- name: 確保 APT 快取夠新（apt-cache policy 探測前）
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+# 先用 apt-cache policy 探測，不要把套件名寫死後讓 apt 自己爆。
+# 具體理由：php8.5-opcache 在 ondrej PPA 與 sury 上都不存在
+#（8.0–8.4 有，8.5 已內建進 php8.5-common），寫死會得到
+#   E: Unable to locate package php8.5-opcache
+- name: 探測 PHP 套件在 APT 中的可用性
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      LC_ALL=C apt-cache policy
+      {{ (php_packages_required + php_packages_optional) | map('quote') | join(' ') }}
+      2>/dev/null
+      | awk '/^[^[:space:]]/ { pkg = $0; sub(/:$/, "", pkg) }
+             /^[[:space:]]+Candidate:/ { if ($2 != "(none)") print pkg }'
+    executable: /bin/bash
+  register: php_pkg_probe
+  changed_when: false
+  failed_when: php_pkg_probe.rc != 0
+
+- name: 整理可用套件清單
+  ansible.builtin.set_fact:
+    php_pkgs_available: "{{ php_pkg_probe.stdout_lines | map('trim') | list | difference(['']) }}"
+
+- name: 計算實際要安裝的套件
+  ansible.builtin.set_fact:
+    php_pkgs_missing_required: "{{ php_packages_required | difference(php_pkgs_available) }}"
+    php_pkgs_missing_optional: "{{ php_packages_optional | difference(php_pkgs_available) }}"
+    php_packages_to_install: >-
+      {{ php_packages_required + (php_packages_optional | intersect(php_pkgs_available)) }}
+
+- name: 必要 PHP 套件缺失時 fail fast
+  ansible.builtin.assert:
+    that:
+      - php_pkgs_missing_required | length == 0
+    fail_msg: >-
+      下列必要 PHP 套件在目前的 APT 來源中找不到：
+      {{ php_pkgs_missing_required | join(', ') }}。
+      檢查順序：
+      (1) /etc/apt/sources.list.d/ 底下是否有 ondrej-php.sources 或 sury-php.sources；
+      (2) 該來源的 suite 是否等於本機 codename（{{ ansible_facts['distribution_release'] }}）；
+      (3) apt-get update 是否成功（金鑰 / 網路 / proxy）；
+      (4) php_version={{ php_version }} 這個版本上游是否真的有出。
+      在人工確認之前不要放寬清單 —— 少了 php{{ php_version }}-intl，
+      Filament v5 會在開機時丟 "ext-intl is required"。
+    quiet: true
+
+- name: 說明被略過的選用套件
+  ansible.builtin.debug:
+    msg: >-
+      略過 APT 中不存在的選用套件：{{ php_pkgs_missing_optional | join(', ') }}。
+      這通常是正確的：PHP 8.5 的 OPcache 已內建於 php{{ php_version }}-common，
+      上游沒有 php{{ php_version }}-opcache 套件（8.0–8.4 才有）。
+      稍後的 verify 步驟會實際確認 Zend OPcache 有載入。
+  when: php_pkgs_missing_optional | length > 0
+
+- name: 安裝 PHP 套件
+  ansible.builtin.apt:
+    name: "{{ php_packages_to_install }}"
+    state: present
+    install_recommends: false
+  notify: 重啟 php-fpm
+
+- name: 確認 php-fpm 與 php CLI 執行檔就位
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: php_binaries
+  loop:
+    - "{{ php_fpm_binary }}"
+    - "{{ php_cli_binary }}"
+
+- name: 執行檔缺失時 fail fast
+  ansible.builtin.assert:
+    that:
+      - php_binaries.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      安裝完成但找不到執行檔：
+      {{ php_binaries.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}。
+      請確認 php_version（{{ php_version }}）與實際安裝的套件版本一致。
+    quiet: true

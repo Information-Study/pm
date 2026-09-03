@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# /root/.my.cnf —— root 的登入憑證（mode 0600）
+#
+# A18：這個檔一定在「改 root 密碼」之前寫入。
+# 只要它先存在，任何中途失敗都還能用 `mysql` / `mysqldump` 以 root 進去，
+# 不需要停機用 --skip-grant-tables 救。
+#
+# 值用雙引號包住：MySQL 選項檔中「未加引號」的 # 會被當成註解起點，
+# 密碼含 # 就會被截斷。引號內的 # 與空白則是安全的。
+# 反斜線與雙引號本身沒有可靠的逸出方式，已在 tasks/assert.yml 直接禁止。
+[client]
+user     = root
+password = "{{ mysql_root_password }}"
+socket   = {{ mysql_socket }}
+
+[mysql]
+default-character-set = {{ mysql_charset }}
+
+[mysqldump]
+# --single-transaction 讓 InnoDB 取一致性快照，不鎖表
+single-transaction
+quick
+max_allowed_packet = {{ mysql_max_allowed_packet_mb | int }}M

@@ -1,0 +1,28 @@
+---
+# roles/mysql/vars/main.yml —— 由 defaults 推導、不建議覆寫
+
+# x86_64 → amd64、aarch64 → arm64；其餘原樣帶入（會在 assert 時被檢查）
+mysql_dpkg_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+  armv7l: armhf
+mysql_repo_architectures:
+  - "{{ mysql_dpkg_arch_map[ansible_facts['architecture']] | default(ansible_facts['architecture']) }}"
+
+mysql_install_packages: >-
+  {{ ((mysql_repo_source == 'oracle') | ternary(mysql_packages_oracle, mysql_packages_distro))
+     + mysql_support_packages }}
+
+# mysql_apt_hold=true 時要 hold 的套件
+# （解除請人工 apt-mark unhold —— 見 tasks/install.yml 的說明）
+mysql_hold_packages: >-
+  {{ (mysql_repo_source == 'oracle')
+     | ternary(['mysql-server', 'mysql-community-server', 'mysql-community-client'],
+               ['mysql-server']) }}
+
+# 發行版套件與 Oracle 套件互斥；偵測到就 fail fast（見 tasks/assert.yml）
+mysql_conflicting_packages:
+  - mariadb-server
+  - mariadb-server-10.11
+  - mariadb-server-11.4
+  - default-mysql-server

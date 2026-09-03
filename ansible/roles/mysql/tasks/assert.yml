@@ -1,0 +1,180 @@
+---
+# roles/mysql/tasks/assert.yml —— 全部在動任何東西之前失敗，訊息要可行動
+
+- name: 只支援 Debian 家族
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: >-
+      roles/mysql 只支援 Debian/Ubuntu，偵測到 os_family=
+      {{ ansible_facts['os_family'] | default('unknown') }}。
+    quiet: true
+
+- name: mysql_repo_source 必須是 oracle 或 distro
+  ansible.builtin.assert:
+    that:
+      - mysql_repo_source in ['oracle', 'distro']
+    fail_msg: "mysql_repo_source 目前是 '{{ mysql_repo_source }}'，只接受 oracle 或 distro。"
+    quiet: true
+
+# ── A4：發行版套件來源的兩個陷阱 ─────────────────────────────────────
+- name: A4 —— Debian 沒有 Oracle MySQL，default-mysql-server 是 MariaDB
+  ansible.builtin.fail:
+    msg: >-
+      Debian 的套件庫沒有 mysql-server（default-mysql-server 指向 MariaDB，
+      不是 MySQL，Laravel 的 utf8mb4 / JSON / CTE 行為會不同）。
+      請維持 mysql_repo_source=oracle，或改用 Ubuntu 24.04 LTS。
+  when:
+    - mysql_repo_source == 'distro'
+    - ansible_facts['distribution'] == 'Debian'
+
+- name: A4 —— Ubuntu 發行版套件只有 8.0.x，要用需明確放行
+  ansible.builtin.fail:
+    msg: >-
+      Ubuntu {{ ansible_facts['distribution_version'] }} 的 mysql-server 是 8.0.x，
+      不是本專案要求的 MySQL {{ mysql_version_series }} LTS。
+      請用 mysql_repo_source=oracle（預設，會加入 repo.mysql.com 並鎖 8.4 LTS），
+      或明確設定 mysql_allow_distro_version=true 表示你接受 8.0.x。
+  when:
+    - mysql_repo_source == 'distro'
+    - ansible_facts['distribution'] == 'Ubuntu'
+    - not (mysql_allow_distro_version | bool)
+
+- name: 取得已安裝套件清單
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: 偵測互斥的資料庫套件（MariaDB / default-mysql-server）
+  ansible.builtin.assert:
+    that:
+      - mysql_conflicting_packages | select('in', ansible_facts['packages']) | list | length == 0
+    fail_msg: >-
+      目標機已安裝互斥套件
+      {{ mysql_conflicting_packages | select('in', ansible_facts['packages']) | list | join(', ') }}。
+      MariaDB 與 MySQL 不能共存於同一個 3306。
+      請先人工確認資料無誤並移除該套件（本 role 不會替你解除安裝資料庫）。
+    quiet: true
+
+- name: 偵測發行版 MySQL 8.0 是否已安裝（就地升級到 8.4 需人工確認）
+  ansible.builtin.assert:
+    that:
+      - "'mysql-server-8.0' not in ansible_facts['packages']"
+    fail_msg: >-
+      目標機已安裝發行版的 mysql-server-8.0。
+      切到 Oracle 8.4 LTS 屬於就地大版本升級，dpkg 不會自動處理 datadir 的
+      升級（8.4 移除了 mysql_native_password 等）。
+      請先做一次完整 mysqldump 備份，人工執行升級，或直接用乾淨主機。
+      確認過後可暫時設定 mysql_allow_distro_version=true 略過本檢查。
+    quiet: true
+  when: not (mysql_allow_distro_version | bool)
+
+# ── 憑證與密碼 ───────────────────────────────────────────────────────
+- name: root 密碼必須有值且夠長
+  ansible.builtin.assert:
+    that:
+      - mysql_root_password | default('') | length >= (mysql_password_min_length | int)
+    fail_msg: >-
+      mysql_root_password 未設定或長度不足 {{ mysql_password_min_length }} 字元。
+      請在 vault 設定 vault_mysql_root_password（建議 32 字元隨機字串）。
+    quiet: true
+
+- name: 應用帳號密碼必須有值且夠長
+  ansible.builtin.assert:
+    that:
+      - mysql_app_db_password | default('') | length >= (mysql_password_min_length | int)
+    fail_msg: >-
+      mysql_app_db_password 未設定或長度不足 {{ mysql_password_min_length }} 字元。
+      請在 vault 設定 vault_mysql_app_password，並確保後端 .env 的 DB_PASSWORD
+      取用同一個值。
+    quiet: true
+
+# /root/.my.cnf 的值會用雙引號包起來 —— 引號內的 # 與空白是安全的，
+# 但 MySQL 選項檔對「反斜線 + 非 \b\t\n\r\\\s 的字元」的處理是保留反斜線，
+# 沒有可靠的方式表達字面的 " 與 \。同一組密碼也要寫進 Laravel 的 .env，
+# 那邊對 " 與 \ 同樣麻煩。與其寫一個猜測式的逸出，不如直接禁掉這兩個字元。
+- name: 密碼不可含 my.cnf / .env 無法可靠表達的字元
+  ansible.builtin.assert:
+    that:
+      - mysql_root_password is not search('[\\\\\"\n\r]')
+      - mysql_app_db_password is not search('[\\\\\"\n\r]')
+    fail_msg: >-
+      MySQL 密碼不可含反斜線、雙引號或換行。
+      這三種字元在 /root/.my.cnf 與 Laravel .env 都沒有可靠的表達方式。
+      建議用 `openssl rand -base64 36 | tr -d '/+=\n'` 產生。
+    quiet: true
+
+# ── A3：skip-name-resolve 與雙 host 授權必須同時成立 ─────────────────
+- name: A3 —— skip-name-resolve 之下必須同時授權 localhost 與 127.0.0.1
+  ansible.builtin.assert:
+    that:
+      - "'localhost' in mysql_app_user_hosts"
+      - "'127.0.0.1' in mysql_app_user_hosts"
+    fail_msg: >-
+      mysql_skip_name_resolve=true 時 MySQL 不做反解，授權比對的是字面 host。
+      後端 .env 若用 DB_HOST=127.0.0.1，只建 'localhost' 會得到
+      ERROR 1045 (28000) Access denied。
+      mysql_app_user_hosts 必須同時包含 localhost 與 127.0.0.1
+      （目前：{{ mysql_app_user_hosts | join(', ') }}）。
+    quiet: true
+  when: mysql_skip_name_resolve | bool
+
+# ── 設定值健全性 ─────────────────────────────────────────────────────
+- name: default-time-zone 只接受 SYSTEM 或 ±HH:MM
+  ansible.builtin.assert:
+    that:
+      - mysql_default_time_zone | length == 0 or
+        mysql_default_time_zone == 'SYSTEM' or
+        mysql_default_time_zone is match('^[+-][0-9]{2}:[0-9]{2}$')
+    fail_msg: >-
+      mysql_default_time_zone='{{ mysql_default_time_zone }}' 不是數字位移。
+      具名時區（例如 Asia/Taipei）需要先用 mysql_tzinfo_to_sql 載入時區表，
+      沒載入時 mysqld 會直接啟動失敗。請改用 '+08:00'，
+      或留空使用系統時區（Laravel 端已有 APP_TIMEZONE=Asia/Taipei）。
+    quiet: true
+
+- name: A16 —— max_allowed_packet 必須大於應用層上傳上限
+  ansible.builtin.assert:
+    that:
+      - (mysql_max_allowed_packet_mb | int) > (app_max_upload_mb | default(32) | int)
+    fail_msg: >-
+      mysql_max_allowed_packet_mb={{ mysql_max_allowed_packet_mb }}MB 不大於
+      app_max_upload_mb={{ app_max_upload_mb | default(32) }}MB。
+      這四個值（PHP upload_max_filesize / post_max_size、nginx
+      client_max_body_size、MySQL max_allowed_packet）必須從同一個變數推導，
+      且越往後端越寬鬆。
+    quiet: true
+
+- name: InnoDB buffer pool 至少 128MB
+  ansible.builtin.assert:
+    that:
+      - (mysql_innodb_buffer_pool_mb | int) >= 128
+    fail_msg: >-
+      mysql_innodb_buffer_pool_mb={{ mysql_innodb_buffer_pool_mb }}
+      小於 MySQL 允許的最小值 128MB（記憶體僅
+      {{ ansible_facts['memtotal_mb'] }}MB？請明確覆寫這個變數）。
+    quiet: true
+
+# ── 備份參數（決定 find -delete 的作用範圍，必須先擋住危險值）────────
+- name: 備份目錄必須是絕對路徑且不是系統要害目錄
+  ansible.builtin.assert:
+    that:
+      - mysql_backup_dir | length > 1
+      - mysql_backup_dir is match('^/')
+      - mysql_backup_dir | regex_replace('/+$', '') not in
+        ['', '/', '/root', '/home', '/etc', '/var', '/var/lib', '/usr', '/boot', '/tmp']
+    fail_msg: >-
+      mysql_backup_dir='{{ mysql_backup_dir }}' 不安全。
+      備份清理用的是 find <dir> -maxdepth 1 -type f -name '<prefix>-*.sql*' -delete，
+      目錄必須是專用的絕對路徑。
+    quiet: true
+
+- name: 備份保留天數必須有上下界
+  ansible.builtin.assert:
+    that:
+      - (mysql_backup_retention_days | int) >= 1
+      - (mysql_backup_retention_days | int) <= 3650
+    fail_msg: >-
+      mysql_backup_retention_days 必須介於 1 與 3650 之間，
+      目前是 '{{ mysql_backup_retention_days }}'（空字串或 0 會讓 find -mtime
+      的行為不是你預期的）。
+    quiet: true

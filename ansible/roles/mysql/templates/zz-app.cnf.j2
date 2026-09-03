@@ -1,0 +1,74 @@
+# {{ ansible_managed }}
+# {{ mysql_conf_file }} —— 應用層設定
+# 檔名以 zz- 開頭，確保在同一個 !includedir 目錄中最後載入（覆寫其他片段）。
+# 手動修改會在下次部署被覆蓋，請改 group_vars 的 mysql_* 變數。
+
+[mysqld]
+# ── 連線 ─────────────────────────────────────────────────────────────
+bind-address                   = {{ mysql_bind_address }}
+port                           = {{ mysql_port | int }}
+{% if mysql_skip_name_resolve | bool %}
+# skip-name-resolve：MySQL 不做 DNS 反解，授權比對的是「字面 host」。
+# 因此 {{ mysql_app_db_user }} 必須同時有 @'localhost'（socket）
+# 與 @'127.0.0.1'（TCP）兩筆授權 —— 見 tasks/databases.yml。
+skip-name-resolve
+{% endif %}
+max_connections                = {{ mysql_max_connections | int }}
+# 與 app_max_upload_mb={{ app_max_upload_mb | default(32) }}MB 連動，且必須比它大
+max_allowed_packet             = {{ mysql_max_allowed_packet_mb | int }}M
+# X Protocol 只聽 loopback。loose- 前綴：plugin 未載入時 mysqld 不會因為
+# 「unknown variable」而啟動失敗。
+loose-mysqlx-bind-address      = {{ mysql_mysqlx_bind_address }}
+
+# ── 字元集（Laravel 13 + Filament v5 需要 utf8mb4）───────────────────
+character-set-server           = {{ mysql_charset }}
+collation-server               = {{ mysql_collation }}
+{% if mysql_default_time_zone | length > 0 %}
+# 只用數字位移。具名時區要先 mysql_tzinfo_to_sql 載表，否則 mysqld 起不來。
+default-time-zone              = '{{ mysql_default_time_zone }}'
+{% endif %}
+{% if mysql_sql_mode | length > 0 %}
+sql_mode                       = {{ mysql_sql_mode }}
+{% endif %}
+
+# ── InnoDB ──────────────────────────────────────────────────────────
+innodb_buffer_pool_size        = {{ mysql_innodb_buffer_pool_mb | int }}M
+# 8.0.30+ / 8.4 用 innodb_redo_log_capacity 取代 innodb_log_file_size
+loose-innodb_redo_log_capacity = {{ mysql_innodb_redo_log_capacity_mb | int }}M
+innodb_flush_log_at_trx_commit = {{ mysql_innodb_flush_log_at_trx_commit | int }}
+innodb_flush_method            = {{ mysql_innodb_flush_method }}
+innodb_file_per_table          = 1
+innodb_io_capacity             = {{ mysql_innodb_io_capacity | int }}
+innodb_io_capacity_max         = {{ mysql_innodb_io_capacity_max | int }}
+
+# ── 暫存表 ──────────────────────────────────────────────────────────
+table_open_cache               = {{ mysql_table_open_cache | int }}
+tmp_table_size                 = {{ mysql_tmp_table_size_mb | int }}M
+max_heap_table_size            = {{ mysql_tmp_table_size_mb | int }}M
+
+# ── 記錄 ────────────────────────────────────────────────────────────
+log_error                      = {{ mysql_log_error }}
+{% if mysql_slow_query_log | bool %}
+slow_query_log                 = 1
+# 這個檔的目錄必須先存在（tasks/install.yml 有建），否則 mysqld 啟動即失敗
+slow_query_log_file            = {{ mysql_slow_query_log_file }}
+long_query_time                = {{ mysql_long_query_time }}
+log_queries_not_using_indexes  = {{ (mysql_log_queries_not_using_indexes | bool) | ternary(1, 0) }}
+{% else %}
+slow_query_log                 = 0
+{% endif %}
+{% if mysql_extra_mysqld_options | length > 0 %}
+
+# ── mysql_extra_mysqld_options ──────────────────────────────────────
+{% for key, value in mysql_extra_mysqld_options | dictsort %}
+{{ key }} = {{ value }}
+{% endfor %}
+{% endif %}
+
+[client]
+port                  = {{ mysql_port | int }}
+socket                = {{ mysql_socket }}
+default-character-set = {{ mysql_charset }}
+
+[mysql]
+default-character-set = {{ mysql_charset }}

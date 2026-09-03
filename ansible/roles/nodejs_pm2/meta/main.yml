@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: nodejs_pm2
+  author: pm
+  description: >-
+    Node.js 24 (NodeSource) + PM2。ecosystem 一律 fork 模式，支援 ssr / spa / static
+    三種前端模式，切換模式時會清掉前一個模式殘留的 PM2 process。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [nodejs, pm2, nuxt]
+dependencies: []

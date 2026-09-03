@@ -21,7 +21,12 @@ cx — pm 專案統一入口
     --rollback [--from <dir>]   從封存還原
 
 Git
-  git status|sync|save        日常操作（自動處理子模組先後）
+  git status                  三個 repo 的分支 / 變更 / 上游
+  git sync                    子模組 checkout 追蹤分支
+  git commit [-m <訊息>]      提交（子模組先、主庫 gitlink 後）
+                              未給 -m 會引導產生 Conventional Commits 訊息
+  git branch list|new|switch|delete <名稱>
+                              三個 repo 同進同出
   git remote-init             用 gh 建立 Information-Study 的三個 public repo
   git push                    推送（白名單 + 祕密掃描 + 子模組順序）
   git guard install|status|remove
@@ -35,8 +40,17 @@ DevSecOps（四道防線，runner 自動偵測 docker/native）
   scan all        依序執行
     --runner docker|native|auto
 
+開發輔助（Docker 可用時走容器，否則走本機）
+  art <參數>      php artisan
+  composer <參數> composer（在 backend/）
+  npm <參數>      npm（在 frontend/）
+
+安裝
+  install [--rc]  建立 ~/.local/bin/cx symlink + 註冊 bash 補全
+  uninstall       移除（需確認）
+
 Ansible
-  lint            靜態檢查（ansible 未安裝時的替代品，不等於 --syntax-check）
+  lint [目錄]     靜態檢查（ansible 未安裝時的替代品，不等於 --syntax-check）
 
 Docker 動詞（up/down/build 等）待 Phase 2，見 docs/docker-verification.md。
 未驗證項目清單見 claude.md §12。

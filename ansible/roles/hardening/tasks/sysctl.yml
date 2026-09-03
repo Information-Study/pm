@@ -1,0 +1,14 @@
+---
+# 注意：若核心關閉了 IPv6（ipv6.disable=1），net.ipv6.* 會寫不進去而失敗。
+# 遇到的話請把那幾行從 hardening_sysctl_settings 移除，不要整組關掉。
+- name: sysctl | 套用核心參數
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value | string }}"
+    state: present
+    sysctl_file: "/etc/sysctl.d/60-{{ app_slug }}-hardening.conf"
+    sysctl_set: true
+    reload: true
+  loop: "{{ hardening_sysctl_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"

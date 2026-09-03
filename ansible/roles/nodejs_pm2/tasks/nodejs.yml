@@ -1,0 +1,179 @@
+---
+# ---- A6 ---------------------------------------------------------------------
+- name: 檢查 python3-debian 是否可匯入
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
+      - "-c"
+      - "import debian.deb822"
+  register: node_pydebian
+  changed_when: false
+  failed_when: false
+  when: nodejs_repo_manage | bool
+
+- name: python3-debian 缺失時給可行動訊息
+  ansible.builtin.assert:
+    that:
+      - node_pydebian.rc == 0
+    fail_msg: >-
+      目標機沒有 python3-debian，deb822_repository 會報
+      "Failed to import the required Python library (python-debian)"。
+      common role 必須在任何 repo 任務之前安裝 python3-debian 與 python3-apt。
+    quiet: true
+  when: nodejs_repo_manage | bool
+
+- name: 安裝 repo 前置套件
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: nodejs_repo_manage | bool
+
+- name: 建立 APT keyrings 目錄
+  ansible.builtin.file:
+    path: "{{ nodejs_keyring | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nodejs_repo_manage | bool
+
+- name: 下載 NodeSource 簽章金鑰
+  ansible.builtin.get_url:
+    url: "{{ nodejs_key_url }}"
+    dest: "{{ nodejs_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+    timeout: 30
+  when: nodejs_repo_manage | bool
+
+- name: 讀出 NodeSource 金鑰指紋
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      gpg --batch --no-tty --show-keys --with-colons {{ nodejs_keyring | quote }}
+      | awk -F: '$1 == "fpr" { print $10 }'
+    executable: /bin/bash
+  register: node_key_fpr
+  changed_when: false
+  failed_when: node_key_fpr.rc != 0
+  when: nodejs_repo_manage | bool
+
+- name: 驗證 NodeSource 金鑰指紋
+  ansible.builtin.assert:
+    that:
+      - nodejs_key_fingerprint in node_key_fpr.stdout_lines
+    fail_msg: >-
+      {{ nodejs_keyring }} 的主鑰指紋不是預期的 {{ nodejs_key_fingerprint }}
+      （實際讀到：{{ node_key_fpr.stdout_lines | join(', ') | default('（空）', true) }}）。
+      在確認上游真的換鑰之前不要放行；先刪掉 {{ nodejs_keyring }} 再重跑，
+      確認不是舊的殘檔。
+    quiet: true
+  when: nodejs_repo_manage | bool
+
+- name: 探測 NodeSource 是否有 node_{{ nodejs_major }}.x
+  ansible.builtin.uri:
+    url: "{{ nodejs_repo_uri }}/dists/{{ nodejs_repo_suite }}/Release"
+    method: HEAD
+    timeout: 20
+    status_code: [200]
+  register: node_repo_probe
+  changed_when: false
+  failed_when: false
+  when:
+    - nodejs_repo_manage | bool
+    - nodejs_repo_probe | bool
+
+- name: NodeSource 沒有這個主版本時 fail fast
+  ansible.builtin.assert:
+    that:
+      - node_repo_probe.status | default(0) | int == 200
+    fail_msg: >-
+      NodeSource 沒有 node_{{ nodejs_major }}.x / {{ nodejs_repo_suite }}
+      （HEAD {{ nodejs_repo_uri }}/dists/{{ nodejs_repo_suite }}/Release
+      回 {{ node_repo_probe.status | default('無回應') }}）。
+      注意新版 NodeSource 倉庫的 suite 固定是 "nodistro"（發行版無關），
+      不是 noble / bookworm。若確認 24 已下架才改 nodejs_major，
+      但不要跳到 26 —— 2026-10 之前它還是 Current，不是 LTS。
+    quiet: true
+  when:
+    - nodejs_repo_manage | bool
+    - nodejs_repo_probe | bool
+
+- name: 設定 NodeSource APT 來源
+  ansible.builtin.deb822_repository:
+    name: nodesource
+    types: [deb]
+    uris: "{{ nodejs_repo_uri }}"
+    suites: ["{{ nodejs_repo_suite }}"]
+    components: "{{ nodejs_repo_components }}"
+    signed_by: "{{ nodejs_keyring }}"
+    enabled: true
+    state: present
+  register: node_repo
+  when: nodejs_repo_manage | bool
+
+- name: 釘住 nodejs 來源，避免被發行版的舊版蓋掉
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/nodesource.pref
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      Package: nodejs
+      Pin: origin deb.nodesource.com
+      Pin-Priority: {{ nodejs_apt_pin_priority }}
+  register: node_pin
+  when: nodejs_repo_manage | bool
+
+- name: 來源有變動時更新 APT 快取
+  ansible.builtin.apt:
+    update_cache: true
+  when: (node_repo.changed | default(false)) or (node_pin.changed | default(false))
+
+# NodeSource 的 nodejs 套件已內含 npm，且與發行版的 npm 套件互斥。
+# 千萬不要另外裝 npm —— 那會把 nodejs 換成發行版的舊版。
+- name: 安裝 Node.js
+  ansible.builtin.apt:
+    name: "nodejs{{ ('=' ~ nodejs_package_version) if (nodejs_package_version | length > 0) else '' }}"
+    state: present
+    install_recommends: false
+
+- name: 讀取 node 與 npm 版本
+  ansible.builtin.command:
+    argv: ["{{ item }}", "--version"]
+  register: node_versions
+  changed_when: false
+  loop:
+    - "{{ nodejs_bin }}"
+    - "{{ npm_bin }}"
+
+- name: 斷言 Node 主版本正確
+  ansible.builtin.assert:
+    that:
+      - (node_versions.results[0].stdout | trim) is match('^v' ~ (nodejs_major | string) ~ '\.')
+    fail_msg: >-
+      預期 Node v{{ nodejs_major }}.x，實際是
+      "{{ node_versions.results[0].stdout | default('') | trim }}"。
+      多半是發行版的 nodejs 贏了優先權（Ubuntu noble 內建 18.x）。
+      檢查 /etc/apt/preferences.d/nodesource.pref 與
+      `apt-cache policy nodejs` 的候選版本。
+      另外 frontend/package.json 的 engines 是
+      "^22.19.0 || ^24.11.0 || >=26.0.0"，18.x 會讓 npm ci 直接拒絕。
+    quiet: true
+
+- name: 建立 deploy 使用者的 npm 快取目錄
+  # 目錄不先建好且屬主不對，npm ci 會退回唯讀模式或改寫 root 的快取，
+  # 讓每次部署都重抓整包 node_modules。
+  ansible.builtin.file:
+    path: "{{ deploy_user_home }}/.npm"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "0750"

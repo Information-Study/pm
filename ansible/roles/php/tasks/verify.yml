@@ -1,0 +1,84 @@
+---
+# 這些檢查故意放在 role 尾端而不是部署尾端：在 composer install 之前就失敗，
+# 訊息才對得上原因。
+
+- name: 檢查 CLI 是否還有 proc_open（A2 的實際驗證）
+  ansible.builtin.command:
+    argv:
+      - "{{ php_cli_binary }}"
+      - "-r"
+      - "echo function_exists('proc_open') ? 'yes' : 'no';"
+  register: php_proc_open
+  changed_when: false
+  failed_when: false
+
+- name: CLI 缺 proc_open 時 fail fast
+  ansible.builtin.assert:
+    that:
+      - php_proc_open.rc == 0
+      - php_proc_open.stdout | trim == 'yes'
+    fail_msg: >-
+      PHP CLI 沒有 proc_open（回傳 "{{ php_proc_open.stdout | default('') | trim }}"）。
+      composer install 會立刻死於
+      "The Process class relies on proc_open, which is not available on your PHP installation."
+      因為 backend/composer.json 的 post-autoload-dump 會跑
+      package:discover 與 filament:upgrade。
+      請檢查 {{ php_cli_conf_d }} 與 {{ php_conf_root }}/cli/php.ini 裡是否有 disable_functions。
+    quiet: true
+
+- name: 列出已載入的 PHP 擴充
+  ansible.builtin.command:
+    argv:
+      - "{{ php_cli_binary }}"
+      - "-m"
+  register: php_modules
+  changed_when: false
+
+- name: 斷言 Filament v5 / Laravel 13 需要的擴充都在
+  ansible.builtin.assert:
+    that:
+      - "'intl' in (php_modules.stdout_lines | map('trim') | list)"
+      - "'mbstring' in (php_modules.stdout_lines | map('trim') | list)"
+      - "'curl' in (php_modules.stdout_lines | map('trim') | list)"
+      - "'zip' in (php_modules.stdout_lines | map('trim') | list)"
+      - "'gd' in (php_modules.stdout_lines | map('trim') | list)"
+      - "'bcmath' in (php_modules.stdout_lines | map('trim') | list)"
+      - "'pdo_mysql' in (php_modules.stdout_lines | map('trim') | list)"
+      - "'Zend OPcache' in (php_modules.stdout_lines | map('trim') | list)"
+    fail_msg: >-
+      必要擴充缺失。目前載入：{{ php_modules.stdout_lines | map('trim') | join(', ') }}。
+      * intl 是 Filament v5 的硬性需求，缺了會在 boot 時丟 "ext-intl is required"。
+      * Zend OPcache 在 PHP 8.5 是內建的（不需要 php8.5-opcache 套件）；
+        若這裡缺了，代表 php{{ php_version }}-common 沒裝成功，或版本不是 8.5。
+    quiet: true
+
+- name: 確認 FPM socket 已建立
+  ansible.builtin.stat:
+    path: "{{ php_fpm_socket }}"
+  register: php_socket_stat
+
+- name: FPM socket 不存在時 fail fast
+  ansible.builtin.assert:
+    that:
+      - php_socket_stat.stat.exists
+    fail_msg: >-
+      找不到 {{ php_fpm_socket }}。
+      先看 `systemctl status {{ php_fpm_service }}` 與 `journalctl -u {{ php_fpm_service }}`。
+      最常見的原因是 slowlog / error_log 目錄不存在：
+      "ERROR: Unable to create or open slowlog(...)" 後面接
+      "ERROR: FPM initialization failed"，服務會完全起不來。
+      本 role 會建立 {{ php_log_dir }}，若它被別的角色刪掉就會踩到這個。
+    quiet: true
+
+- name: 顯示 FPM 推導出來的 pool 參數
+  ansible.builtin.debug:
+    msg: >-
+      pool={{ php_fpm_pool_name }}
+      user={{ php_fpm_user }}:{{ php_fpm_group }}
+      socket={{ php_fpm_socket }}
+      max_children={{ php_fpm_max_children }}
+      start={{ php_fpm_start_servers }}
+      spare={{ php_fpm_min_spare_servers }}..{{ php_fpm_max_spare_servers }}
+      upload={{ php_upload_max_filesize }} post={{ php_post_max_size }}
+      memory={{ php_memory_limit }} jit={{ php_opcache_jit }}
+      validate_timestamps={{ php_opcache_validate_timestamps }}

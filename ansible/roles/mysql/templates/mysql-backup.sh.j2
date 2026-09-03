@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# {{ mysql_backup_script }} —— mysqldump 備份與過期清理
+#
+# 清理策略：find <備份目錄> -maxdepth 1 -type f -name '<prefix>-*.sql*'
+#           -mtime +<保留天數> -delete
+# 三重限制（目錄、深度、檔名樣式）＋ 執行期的絕對路徑與天數檢查。
+# 這個腳本裡沒有、也不該有無界的遞迴刪除指令。
+
+set -Eeuo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+BACKUP_DIR={{ mysql_backup_dir | quote }}
+PREFIX={{ mysql_backup_prefix | quote }}
+RETENTION_DAYS={{ mysql_backup_retention_days | int }}
+DEFAULTS_FILE={{ mysql_defaults_file | quote }}
+LOCK_FILE="/run/lock/{{ mysql_backup_prefix }}-mysql-backup.lock"
+GZIP={{ (mysql_backup_gzip | bool) | ternary('1', '0') }}
+DATABASES=(
+{% for db in mysql_backup_databases %}
+  {{ db | quote }}
+{% endfor %}
+)
+
+log() { printf '%s [%s] %s\n' "$(date -Is)" "${1}" "${*:2}"; }
+# shellcheck disable=SC2154
+trap 'rc=$?; log ERROR "line ${LINENO} 失敗（exit ${rc}）"; exit "${rc}"' ERR
+
+# ── 執行期防呆：這些值決定 find -delete 的作用範圍 ────────────────────
+case "${BACKUP_DIR}" in
+  /|/root|/home|/etc|/var|/var/lib|/usr|/boot|/tmp|"")
+    log FATAL "BACKUP_DIR='${BACKUP_DIR}' 是系統要害目錄，拒絕執行"; exit 2 ;;
+  /*) : ;;
+  *)  log FATAL "BACKUP_DIR='${BACKUP_DIR}' 不是絕對路徑，拒絕執行"; exit 2 ;;
+esac
+
+if ! [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] || (( RETENTION_DAYS < 1 || RETENTION_DAYS > 3650 )); then
+  log FATAL "RETENTION_DAYS='${RETENTION_DAYS}' 不在 1..3650，拒絕執行清理"; exit 2
+fi
+
+if [[ ! -r "${DEFAULTS_FILE}" ]]; then
+  log FATAL "讀不到 ${DEFAULTS_FILE}（需以 root 執行）"; exit 2
+fi
+
+# 陣列長度由 Jinja 在產生時算好：bash 的 dollar-brace-hash 取長度語法會被
+# Jinja 當成註解起始（TemplateSyntaxError: Missing end of comment tag），
+# 所以模板裡刻意不寫那個語法。
+DB_COUNT={{ mysql_backup_databases | length }}
+if (( DB_COUNT == 0 )); then
+  log FATAL "沒有指定要備份的資料庫"; exit 2
+fi
+
+# 同時只跑一份。flock 是 per open-file-description，這裡只 open 一次。
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+  log WARN "另一份備份仍在執行，本次跳過"; exit 0
+fi
+
+install -d -m 0700 -o root -g root "${BACKUP_DIR}"
+umask 077
+
+TS="$(date +%Y%m%d-%H%M%S)"
+FAILED=0
+
+for db in "${DATABASES[@]}"; do
+  base="${BACKUP_DIR}/${PREFIX}-${db}-${TS}.sql"
+  if (( GZIP == 1 )); then
+    out="${base}.gz"
+  else
+    out="${base}"
+  fi
+  tmp="${out}.part"
+
+  log INFO "dump ${db} -> ${out}"
+  # --single-transaction：InnoDB 一致性快照，不鎖表
+  # --set-gtid-purged=OFF：讓 dump 可以還原到別台機器
+  # 先寫 .part 再 mv，避免 cron 中途被砍留下半截檔案被當成有效備份
+  if (( GZIP == 1 )); then
+    mysqldump --defaults-file="${DEFAULTS_FILE}" \
+      --single-transaction --quick --routines --triggers --events \
+      --hex-blob --set-gtid-purged=OFF \
+      --databases "${db}" | gzip -9 -c > "${tmp}"
+  else
+    mysqldump --defaults-file="${DEFAULTS_FILE}" \
+      --single-transaction --quick --routines --triggers --events \
+      --hex-blob --set-gtid-purged=OFF \
+      --databases "${db}" > "${tmp}"
+  fi
+
+  if [[ ! -s "${tmp}" ]]; then
+    log ERROR "${db} 的備份是空檔，保留 ${tmp} 供檢查"
+    FAILED=1
+    continue
+  fi
+
+  chmod 0600 "${tmp}"
+  mv -f "${tmp}" "${out}"
+  log INFO "完成 ${out}（$(du -h "${out}" | cut -f1)）"
+done
+
+# ── 清理過期備份 ─────────────────────────────────────────────────────
+if [[ -d "${BACKUP_DIR}" ]]; then
+  log INFO "清理 ${RETENTION_DAYS} 天前的備份"
+  find "${BACKUP_DIR}" -maxdepth 1 -type f \
+    -name "${PREFIX}-*.sql*" -mtime "+${RETENTION_DAYS}" -print -delete
+fi
+
+if (( FAILED != 0 )); then
+  log ERROR "本次有資料庫備份失敗"
+  exit 1
+fi
+
+log INFO "全部完成"

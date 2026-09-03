@@ -1,0 +1,28 @@
+// {{ ansible_managed }}
+// 只吃安全性更新。
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+};
+
+// 黑名單：這些套件的更新會重啟服務，必須人工排程。
+Unattended-Upgrade::Package-Blacklist {
+{% for pkg in common_unattended_upgrades_blacklist %}
+        "{{ pkg }}";
+{% endfor %}
+};
+
+// 不自動重開機。要重開請走維護窗口。
+Unattended-Upgrade::Automatic-Reboot "{{ 'true' if common_unattended_upgrades_reboot | bool else 'false' }}";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+
+// 不自動移除相依套件 —— autoremove 曾經在別的專案上把 php 模組一起帶走。
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
+
+// 套件維護者的設定檔一律保留原本的（不要在無人值守時互動詢問）。
+Dpkg::Options {
+        "--force-confdef";
+        "--force-confold";
+};

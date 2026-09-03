@@ -1,0 +1,37 @@
+---
+# A9：這些目錄不存在的話：
+#   * php-fpm 直接起不來 —— "ERROR: Unable to create or open slowlog(/var/log/php/...)"
+#     後面接 "FPM initialization failed"，而且訊息裡完全沒提到「目錄不存在」。
+#   * PM2 / queue worker 的 log 會靜默寫不出來。
+- name: 日誌 | 建立日誌目錄
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(deploy_user) }}"
+    group: "{{ item.group | default(web_group) }}"
+    mode: "{{ item.mode | default(common_log_dir_mode) }}"
+  loop: "{{ common_log_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: 日誌 | logrotate 設定
+  ansible.builtin.template:
+    src: logrotate-app.j2
+    dest: "{{ common_logrotate_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_logrotate_enabled | bool
+
+# logrotate 的設定寫錯不會馬上有感覺（要等到隔天輪替才炸），所以在這裡先驗一次。
+# --debug 只解析與模擬，不會真的輪替，也不會動到任何檔案。
+- name: 日誌 | 驗證 logrotate 設定可解析
+  ansible.builtin.command:
+    cmd: "/usr/sbin/logrotate --debug {{ common_logrotate_file | quote }}"
+  register: common_logrotate_check
+  changed_when: false
+  failed_when: common_logrotate_check.rc != 0
+  check_mode: false
+  when:
+    - common_logrotate_enabled | bool
+    - not ansible_check_mode

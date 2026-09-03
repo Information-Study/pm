@@ -1,0 +1,37 @@
+---
+- name: 資源 | 磁碟可用空間
+  ansible.builtin.assert:
+    that:
+      - (item.size_available | int) >= ((preflight_min_free_disk_mb | int) * 1048576)
+    quiet: true
+    fail_msg: >-
+      掛載點 {{ item.mount }} 只剩 {{ (item.size_available | int / 1048576) | round(0, 'floor') | int }} MB，
+      低於門檻 {{ preflight_min_free_disk_mb }} MB。
+      composer vendor + node_modules + Nuxt build 暫存 + 保留數個 release 很吃空間，
+      空間不足時 npm ci 會以難以理解的 ENOSPC 失敗。
+      修正：清掉舊 release（keep_releases）、apt clean、或加大磁碟。
+  loop: "{{ ansible_facts['mounts'] | selectattr('mount', 'in', preflight_disk_check_mounts) | list }}"
+  loop_control:
+    label: "{{ item.mount }}"
+
+- name: 資源 | 記憶體（RAM + swap）
+  ansible.builtin.assert:
+    that:
+      - ((ansible_facts['memtotal_mb'] | int) + (ansible_facts['swaptotal_mb'] | int)) >= (preflight_min_total_mem_mb | int)
+    quiet: true
+    fail_msg: >-
+      RAM {{ ansible_facts['memtotal_mb'] }} MB + swap {{ ansible_facts['swaptotal_mb'] }} MB
+      低於門檻 {{ preflight_min_total_mem_mb }} MB。
+      Nuxt 4 build 尖峰大約要 1.5 GB，不夠時 node 會被 OOM killer 砍掉，
+      症狀是 npm run build 沒有錯誤訊息就中斷（exit 137）。
+      修正：在 group_vars 設 common_swap_enabled: true（common role 會建 swapfile），
+      或改用記憶體較大的機器 / 改成在 CI 先 build 好再送上來。
+
+- name: 資源 | 記憶體吃緊時的提醒
+  ansible.builtin.debug:
+    msg: >-
+      注意：實體 RAM 只有 {{ ansible_facts['memtotal_mb'] }} MB，目前靠 swap 撐過門檻。
+      Nuxt build 會很慢，但不會被 OOM。
+  when:
+    - (ansible_facts['memtotal_mb'] | int) < (preflight_min_total_mem_mb | int)
+    - ((ansible_facts['memtotal_mb'] | int) + (ansible_facts['swaptotal_mb'] | int)) >= (preflight_min_total_mem_mb | int)

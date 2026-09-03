@@ -1,0 +1,20 @@
+---
+- name: 時區 | 設為 {{ app_timezone }}
+  community.general.timezone:
+    name: "{{ app_timezone }}"
+  notify: Restart cron
+
+- name: Locale | 產生需要的 locale
+  community.general.locale_gen:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ common_locales }}"
+
+- name: Locale | 系統預設 LANG
+  ansible.builtin.template:
+    src: default-locale.j2
+    dest: /etc/default/locale
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_manage_default_locale | bool

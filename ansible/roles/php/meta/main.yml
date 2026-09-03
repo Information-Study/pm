@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: php
+  author: pm
+  description: >-
+    PHP 8.5 (FPM + CLI) for Laravel 13 / Filament v5 —— ondrej PPA (Ubuntu) 或
+    packages.sury.org (Debian)，ini 僅套用於 FPM，pool 由 vCPU 與記憶體推導。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [php, fpm, laravel, filament]
+dependencies: []

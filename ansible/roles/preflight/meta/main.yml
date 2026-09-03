@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: preflight
+  author: pm
+  description: 部署前的靜態斷言；不改變目標端任何狀態。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [preflight, assert]
+
+dependencies: []

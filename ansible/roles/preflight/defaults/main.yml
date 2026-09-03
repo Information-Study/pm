@@ -1,0 +1,130 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# preflight —— 只做斷言，不改變目標端任何狀態。目標是「5 秒內失敗」。
+#
+# 這裡有兩區：
+#   (1) preflight 自己的旋鈕（preflight_ 前綴）
+#   (2) 共用核心變數的「鏡像預設值」—— 正本在 roles/common/defaults/main.yml，
+#       實務上應該提升到 group_vars/all/main.yml（優先權高於 role defaults）。
+#       這裡鏡像一份，只是為了讓 preflight 可以單獨成一個 play 執行而不會噴
+#       undefined。兩邊的值必須一致；改一邊就要改另一邊。
+# ─────────────────────────────────────────────────────────────────────────────
+
+preflight_enabled: true
+
+# ── (1) 平台矩陣 ──────────────────────────────────────────────────────────────
+preflight_supported_ubuntu_versions:
+  - "24.04"   # noble（預設）
+  - "26.04"   # resolute（選項）
+preflight_supported_debian_versions:
+  - "12"      # bookworm
+  - "13"      # trixie
+# MyGuard 的 apt 來源行是 arch=amd64。非 amd64 會安裝不到 WAF 套件，
+# 與其到 nginx role 才炸，不如在這裡擋。確定要試 arm64 再打開。
+preflight_allow_non_amd64: false
+
+# ── (1) 控制端 ────────────────────────────────────────────────────────────────
+# deb822_repository 需要 2.15、systemd_service 需要 2.17 → 下限取 2.17。
+preflight_min_ansible_version: "2.17.0"
+preflight_check_collections: true
+preflight_required_collections:
+  - ansible.posix
+  - community.general
+  - community.mysql
+
+# ── (1) 資源門檻 ──────────────────────────────────────────────────────────────
+# 5 GB：composer vendor + node_modules + Nuxt build 的暫存 + 至少兩個 release。
+preflight_min_free_disk_mb: 5120
+# 只檢查「實際存在的掛載點」；不是獨立檔案系統的路徑會被 / 涵蓋。
+preflight_disk_check_mounts:
+  - "/"
+  - "/var"
+  - "/srv"
+# Nuxt 4 build 尖峰約 1.5 GB。RAM + swap 一起算（common_swap_enabled 可補）。
+preflight_min_total_mem_mb: 1800
+
+# ── (1) 變數健檢 ──────────────────────────────────────────────────────────────
+# A15：db_primary 超過一台的話，migration 會被跑很多次。
+preflight_require_db_primary: true
+preflight_domain_placeholders:
+  - ""
+  - "example.com"
+  - "www.example.com"
+  - "pm.example.com"
+  - "changeme"
+  - "change.me"
+  - "your-domain.tld"
+  - "yourdomain.com"
+  - "todo"
+preflight_domain_regex: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+# A1 的最上層防線：app_root 不可以是這些路徑，且深度至少 2 層。
+# 這樣即使 release prune 的邏輯被改壞，也不會有機會刪到系統目錄。
+preflight_app_root_forbidden:
+  - "/"
+  - "/bin"
+  - "/boot"
+  - "/dev"
+  - "/etc"
+  - "/home"
+  - "/lib"
+  - "/opt"
+  - "/proc"
+  - "/root"
+  - "/run"
+  - "/sbin"
+  - "/srv"
+  - "/sys"
+  - "/tmp"
+  - "/usr"
+  - "/var"
+  - "/var/www"
+preflight_app_root_min_depth: 2
+
+# ── (1) A16 上傳限制推導 ──────────────────────────────────────────────────────
+# 唯一輸入是 app_max_upload_mb；下面三個是「若對應 role 沒定義時的推導加成」。
+# php / nginx / waf role 若自己算，數值必須維持
+#   php_upload <= php_post <= nginx_client_max_body < waf_request_body_limit
+# 的順序，否則 26–32 MB 這種尺寸會過了 nginx 和 PHP 才被 WAF 擋掉（413）。
+preflight_post_overhead_mb: 8
+preflight_nginx_overhead_mb: 16
+preflight_waf_overhead_mb: 32
+# ModSecurity SecRequestBodyLimit 的硬上限是 1 GiB。
+preflight_waf_body_limit_max_bytes: 1073741824
+
+# ── (1) A20 前端設定檢查 ──────────────────────────────────────────────────────
+preflight_check_nuxt_config: true
+# 控制端的 repo（本專案 ansible/ 的上一層就是 repo 根目錄）
+preflight_frontend_config_controller_path: "{{ playbook_dir }}/../frontend/nuxt.config.ts"
+# 目標端：只有已經部署過才會存在，不存在就跳過（第一次部署時 clone 還沒發生）
+preflight_frontend_config_remote_path: "{{ frontend_current_path }}/nuxt.config.ts"
+
+# ── (2) 共用核心變數鏡像（正本：roles/common/defaults/main.yml）────────────────
+app_name: "pm"
+app_slug: "pm"
+app_env: "production"
+app_domain: ""                                   # ← 必填，preflight 會擋
+app_timezone: "Asia/Taipei"
+app_root: "/srv/{{ app_slug }}"
+app_shared_dir: "{{ app_root }}/shared"
+backend_root: "{{ app_root }}/backend"
+backend_releases_dir: "{{ backend_root }}/releases"
+backend_shared_dir: "{{ backend_root }}/shared"
+backend_current_path: "{{ backend_root }}/current"
+backend_current: "{{ backend_current_path }}"
+frontend_root: "{{ app_root }}/frontend"
+frontend_releases_dir: "{{ frontend_root }}/releases"
+frontend_shared_dir: "{{ frontend_root }}/shared"
+frontend_current_path: "{{ frontend_root }}/current"
+frontend_current: "{{ frontend_current_path }}"
+app_state_dir: "/var/lib/{{ app_slug }}"
+frontend_mode_state_file: "{{ app_state_dir }}/frontend_mode"
+app_log_dir: "/var/log/{{ app_slug }}"
+php_log_dir: "/var/log/php"
+deploy_user: "deploy"
+deploy_group: "deploy"
+deploy_home: "/home/{{ deploy_user }}"
+web_user: "www-data"
+web_group: "www-data"
+# A20：nuxt.config.ts 已經正確讀 process.env.NUXT_SSR，所以預設是 ssr。
+frontend_mode: "ssr"
+app_max_upload_mb: 32

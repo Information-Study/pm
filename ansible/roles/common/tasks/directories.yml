@@ -1,0 +1,49 @@
+---
+# A8：一次把整個骨架建好，owner=deploy。
+# 少了這一步，deploy role 以 deploy 身分 clone 時父目錄還是 root:root 0755，
+# git 會回 "could not create work tree dir: Permission denied"。
+#
+# 02750 = setgid + rwxr-x---
+#   setgid  → deploy 建出來的子目錄自動掛 www-data 群組
+#   others  → 0，避免同機其他帳號讀到 .env / storage
+- name: 目錄 | 建立骨架（app_root / backend / frontend / releases / shared / state）
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(deploy_user) }}"
+    group: "{{ item.group | default(web_group) }}"
+    mode: "{{ item.mode | default(common_dir_mode) }}"
+  loop: "{{ common_core_directories + common_extra_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: 目錄 | Laravel shared/storage 樹（www-data 要可寫，02770）
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+    mode: "{{ common_shared_writable_mode }}"
+  loop: "{{ common_laravel_shared_directories }}"
+  loop_control:
+    label: "{{ item }}"
+  when: common_create_laravel_shared_tree | bool
+
+# nginx / php-fpm 以 www-data 執行，要能一路 traverse 到 current release。
+# app_root 的每一層父目錄至少要有 o+x 或屬於 www-data 群組；
+# 我們選擇「屬於 www-data 群組 + g+x」，所以 others 可以是 0。
+- name: 目錄 | 驗證 {{ web_user }} 能走到 backend/frontend
+  ansible.builtin.command:
+    cmd: "/usr/bin/test -x {{ item | quote }}"
+  become: true
+  become_user: "{{ web_user }}"
+  loop:
+    - "{{ app_root }}"
+    - "{{ backend_root }}"
+    - "{{ frontend_root }}"
+  register: common_traverse_check
+  changed_when: false
+  failed_when: common_traverse_check.rc != 0
+  check_mode: false
+  # --check 模式下上面的目錄還沒真的建立，這個驗證會假失敗，所以跳過。
+  when: not ansible_check_mode

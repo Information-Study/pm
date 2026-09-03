@@ -1,0 +1,41 @@
+---
+# 選配，預設關閉（common_unattended_upgrades_enabled: false）。
+# 打開之前請想清楚：自動更新會在部署途中搶 dpkg 鎖，
+# 而且如果不做黑名單，可能無預警重啟 nginx / php-fpm / mysql。
+- name: 自動更新 | 安裝 unattended-upgrades
+  ansible.builtin.apt:
+    name:
+      - unattended-upgrades
+      - apt-listchanges
+    state: present
+    install_recommends: false
+  register: common_apt_unattended
+  until: common_apt_unattended is succeeded
+  retries: "{{ common_apt_retries | int }}"
+  delay: "{{ common_apt_delay | int }}"
+
+- name: 自動更新 | 啟用排程
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: 自動更新 | 本專案的覆寫（黑名單 / 不自動重開機）
+  ansible.builtin.template:
+    src: 52-unattended-upgrades-local.j2
+    dest: "/etc/apt/apt.conf.d/52-{{ app_slug }}-unattended-upgrades"
+    owner: root
+    group: root
+    mode: "0644"
+
+# apt.conf 的語法錯誤會讓「所有」apt 指令失效（連 apt-get update 都跑不了），
+# 而且錯誤訊息只會指到行號。寫完馬上驗一次。
+- name: 自動更新 | 驗證 apt 設定仍可解析
+  ansible.builtin.command:
+    cmd: /usr/bin/apt-config dump
+  register: common_aptconf_check
+  changed_when: false
+  failed_when: common_aptconf_check.rc != 0
+  check_mode: false

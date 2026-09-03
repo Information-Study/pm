@@ -1,0 +1,123 @@
+---
+# roles/mysql/tasks/verify.yml —— 用真實連線驗證，而不是「檔案寫出去就算成功」
+
+- name: 先套用尚未執行的 handler（設定變更要在驗證之前生效）
+  ansible.builtin.meta: flush_handlers
+
+- name: 確認服務在跑
+  ansible.builtin.systemd_service:
+    name: "{{ mysql_service_name }}"
+    state: started
+
+- name: 讀取伺服器實際生效的設定
+  community.mysql.mysql_query:
+    query: >-
+      SELECT VERSION() AS version,
+             @@character_set_server AS charset,
+             @@collation_server AS collation,
+             @@skip_name_resolve AS skip_name_resolve,
+             @@bind_address AS bind_address,
+             @@max_allowed_packet AS max_allowed_packet
+    login_db: mysql
+    login_unix_socket: "{{ mysql_socket }}"
+    config_file: "{{ mysql_defaults_file }}"
+  register: mysql_runtime
+  changed_when: false
+
+- name: 設定必須真的生效（不是只有寫進檔案）
+  ansible.builtin.assert:
+    that:
+      - mysql_runtime.query_result[0][0].charset == mysql_charset
+      - mysql_runtime.query_result[0][0].collation == mysql_collation
+      - (mysql_runtime.query_result[0][0].skip_name_resolve | int) ==
+        ((mysql_skip_name_resolve | bool) | ternary(1, 0))
+      - (mysql_runtime.query_result[0][0].max_allowed_packet | int) >=
+        ((mysql_max_allowed_packet_mb | int) * 1024 * 1024)
+    fail_msg: >-
+      MySQL 執行期設定與預期不符：
+      charset={{ mysql_runtime.query_result[0][0].charset }}（預期 {{ mysql_charset }}）、
+      collation={{ mysql_runtime.query_result[0][0].collation }}（預期 {{ mysql_collation }}）、
+      skip_name_resolve={{ mysql_runtime.query_result[0][0].skip_name_resolve }}、
+      max_allowed_packet={{ mysql_runtime.query_result[0][0].max_allowed_packet }}。
+      最可能的原因是 {{ mysql_conf_file }} 沒有被 {{ mysql_my_cnf }} 載入，
+      或 MySQL 尚未重啟（handler 被 --skip-tags 之類略過）。
+    quiet: true
+
+- name: 版本必須是 {{ mysql_version_series }} 系列
+  ansible.builtin.assert:
+    that:
+      - mysql_runtime.query_result[0][0].version is match(mysql_version_series | regex_escape)
+    fail_msg: >-
+      伺服器版本是 {{ mysql_runtime.query_result[0][0].version }}，
+      不是 {{ mysql_version_series }} LTS 系列。
+      檢查 /etc/apt/sources.list.d/mysql.sources 的 component
+      是否為 mysql-{{ mysql_version_series }}-lts。
+    quiet: true
+  when: mysql_repo_source == 'oracle'
+
+# ── A3 的真實驗證：兩個 host 各連一次 ────────────────────────────────
+- name: 驗證應用帳號可經 TCP 127.0.0.1 登入（A3）
+  community.mysql.mysql_query:
+    query: "SELECT 1 AS ok"
+    login_host: 127.0.0.1
+    login_port: "{{ mysql_port }}"
+    login_user: "{{ mysql_app_db_user }}"
+    login_password: "{{ mysql_app_db_password }}"
+    login_db: "{{ mysql_app_db_name }}"
+    config_file: ""
+  register: mysql_app_conn_tcp
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: "'127.0.0.1' in mysql_app_user_hosts"
+
+- name: TCP 登入失敗的診斷訊息
+  ansible.builtin.assert:
+    that:
+      - mysql_app_conn_tcp.query_result is defined
+      - (mysql_app_conn_tcp.query_result[0][0].ok | default(0) | int) == 1
+    fail_msg: >-
+      應用帳號無法從 127.0.0.1 登入 {{ mysql_app_db_name }}：
+      {{ mysql_app_conn_tcp.msg | default('（無訊息）') }}
+      skip-name-resolve 之下 MySQL 不做反解，
+      '{{ mysql_app_db_user }}'@'127.0.0.1' 這筆授權必須存在。
+      請確認 mysql_app_user_hosts 同時含 localhost 與 127.0.0.1，
+      並用 `SELECT user, host FROM mysql.user WHERE user='{{ mysql_app_db_user }}'` 核對。
+    quiet: true
+  when: "'127.0.0.1' in mysql_app_user_hosts"
+
+- name: 驗證應用帳號可經 unix socket（localhost）登入（A3）
+  community.mysql.mysql_query:
+    query: "SELECT 1 AS ok"
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: "{{ mysql_app_db_user }}"
+    login_password: "{{ mysql_app_db_password }}"
+    login_db: "{{ mysql_app_db_name }}"
+    config_file: ""
+  register: mysql_app_conn_socket
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: "'localhost' in mysql_app_user_hosts"
+
+- name: socket 登入失敗的診斷訊息
+  ansible.builtin.assert:
+    that:
+      - mysql_app_conn_socket.query_result is defined
+      - (mysql_app_conn_socket.query_result[0][0].ok | default(0) | int) == 1
+    fail_msg: >-
+      應用帳號無法經 unix socket 登入 {{ mysql_app_db_name }}
+      （對應 '{{ mysql_app_db_user }}'@'localhost'）：
+      {{ mysql_app_conn_socket.msg | default('（無訊息）') }}
+    quiet: true
+  when: "'localhost' in mysql_app_user_hosts"
+
+- name: 摘要
+  ansible.builtin.debug:
+    msg: >-
+      MySQL {{ mysql_runtime.query_result[0][0].version }} 就緒：
+      db={{ mysql_app_db_name }}
+      user={{ mysql_app_db_user }}@[{{ mysql_app_user_hosts | join(', ') }}]
+      bind={{ mysql_runtime.query_result[0][0].bind_address }}
+      charset={{ mysql_runtime.query_result[0][0].charset }}/{{ mysql_runtime.query_result[0][0].collation }}
+      backup={{ (mysql_backup_enabled | bool) | ternary(mysql_backup_dir ~ '（保留 ' ~ mysql_backup_retention_days ~ ' 天）', '停用') }}

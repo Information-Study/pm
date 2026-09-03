@@ -1,0 +1,120 @@
+---
+# 所有不變式集中在這裡，5 秒內失敗，而不是在 apt / composer install 之後才炸。
+
+- name: 斷言 ansible-core 版本
+  ansible.builtin.assert:
+    that:
+      - ansible_version.full is version('2.17', '>=')
+    fail_msg: >-
+      需要 ansible-core >= 2.17，目前是 {{ ansible_version.full }}。
+      deb822_repository 需要 2.15、systemd_service 需要 2.17。
+    quiet: true
+
+- name: 斷言 facts 已收集且為 Debian 系
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] is defined
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution_release'] is defined
+      - ansible_facts['distribution_release'] | length > 0
+    fail_msg: >-
+      本 role 只支援 Debian 系（Ubuntu / Debian），且需要 gather_facts: true。
+      目前 os_family={{ ansible_facts['os_family'] | default('（facts 未收集）') }}。
+    quiet: true
+
+- name: 斷言關鍵識別字非空且安全（後續會拿去組路徑與 systemd unit 名）
+  ansible.builtin.assert:
+    that:
+      - app_slug is match('^[a-z0-9][a-z0-9_-]*$')
+      - php_version is match('^[0-9]+\.[0-9]+$')
+      - deploy_user | length > 0
+      - deploy_group | length > 0
+      - web_user | length > 0
+      - web_group | length > 0
+    fail_msg: >-
+      app_slug（{{ app_slug | default('') }}）必須符合 ^[a-z0-9][a-z0-9_-]*$，
+      php_version（{{ php_version | default('') }}）必須是 x.y，
+      deploy_user / deploy_group / web_user / web_group 皆不可為空。
+    quiet: true
+
+# ---- A2 ---------------------------------------------------------------------
+- name: 斷言 disable_functions 不含 proc_open
+  ansible.builtin.assert:
+    that:
+      - "'proc_open' not in php_disable_functions"
+      - "'proc_get_status' not in php_disable_functions"
+      - "'proc_close' not in php_disable_functions"
+    fail_msg: >-
+      php_disable_functions 含有 proc_open 家族的函式。
+      本專案的 backend/composer.json 有 post-autoload-dump
+      （@php artisan package:discover、@php artisan filament:upgrade），
+      這些腳本經 Symfony Process 呼叫 proc_open。禁掉之後 composer install 會直接死於
+      "The Process class relies on proc_open, which is not available on your PHP installation."
+      請把 proc_open / proc_get_status / proc_close 從 php_disable_functions 移除。
+    quiet: true
+
+# ---- A16 --------------------------------------------------------------------
+- name: 斷言上傳限制的大小關係正確
+  ansible.builtin.assert:
+    that:
+      - (app_max_upload_mb | int) > 0
+      - (php_post_max_size_mb | int) >= (php_upload_max_filesize_mb | int)
+      - (php_memory_limit_mb | int) > (php_post_max_size_mb | int)
+    fail_msg: >-
+      上傳限制必須滿足 memory_limit > post_max_size >= upload_max_filesize。
+      目前 memory_limit={{ php_memory_limit_mb }}M、
+      post_max_size={{ php_post_max_size_mb }}M、
+      upload_max_filesize={{ php_upload_max_filesize_mb }}M。
+      提醒：nginx_client_max_body_size 與 waf_request_body_limit 也要從
+      app_max_upload_mb（目前 {{ app_max_upload_mb }}）推導，且 WAF 的上限要最大，
+      否則 {{ app_max_upload_mb }}MB 附近的上傳會過了 nginx 和 PHP 才被 WAF 擋成 413。
+    quiet: true
+
+# ---- FPM pm 參數自洽 --------------------------------------------------------
+- name: 斷言 FPM dynamic 參數自洽
+  ansible.builtin.assert:
+    that:
+      - (php_fpm_max_children | int) >= 1
+      - (php_fpm_min_spare_servers | int) >= 1
+      - (php_fpm_min_spare_servers | int) <= (php_fpm_start_servers | int)
+      - (php_fpm_start_servers | int) <= (php_fpm_max_spare_servers | int)
+      - (php_fpm_max_spare_servers | int) <= (php_fpm_max_children | int)
+    fail_msg: >-
+      FPM dynamic 參數不自洽，php-fpm 會在啟動時報
+      "start_servers must not be less than min_spare_servers" 之類的錯而拒絕啟動。
+      推導結果：max_children={{ php_fpm_max_children }}、
+      start_servers={{ php_fpm_start_servers }}、
+      min_spare={{ php_fpm_min_spare_servers }}、
+      max_spare={{ php_fpm_max_spare_servers }}
+      （memtotal={{ ansible_memtotal_mb | default('n/a') }}MB、
+      vcpus={{ ansible_processor_vcpus | default('n/a') }}）。
+    quiet: true
+
+- name: 斷言 OPcache JIT 設定值合法
+  ansible.builtin.assert:
+    that:
+      - php_opcache_jit in ['tracing', 'function', 'disable']
+      - php_opcache_validate_timestamps | int in [0, 1]
+      - (php_opcache_save_comments | int) == 1
+    fail_msg: >-
+      php_opcache_jit 只接受 tracing / function / disable（目前 {{ php_opcache_jit }}），
+      php_opcache_validate_timestamps 只接受 0 或 1，
+      php_opcache_save_comments 必須是 1（設 0 會拿掉 doc-comment，
+      Laravel/Filament 有元件靠反射讀註解）。
+    quiet: true
+
+# 跨 role 的重複輪替防呆：common 的 logrotate 模板裡有一段同樣針對
+# {{ php_log_dir }}/*.log 的設定，預設關閉。兩邊同時開啟的話，
+# `logrotate --debug` 會報 "duplicate log entry for /var/log/php/...."，
+# 而 common role 正好會跑那個驗證，整個 play 會停在那裡。
+- name: 斷言 php 日誌輪替沒有跟 common 重複
+  ansible.builtin.assert:
+    that:
+      - not ((php_logrotate_enabled | bool) and (common_logrotate_php_logs | default(false) | bool))
+    fail_msg: >-
+      php_logrotate_enabled 與 common_logrotate_php_logs 同時為 true，
+      兩份設定都會輪替 {{ php_log_dir }}/*.log。
+      logrotate 會報 "duplicate log entry"，common role 的
+      `logrotate --debug` 驗證會讓 play 失敗。
+      擇一關掉 —— 建議留 php role 這一份（它知道輪替後要不要 reload FPM）。
+    quiet: true

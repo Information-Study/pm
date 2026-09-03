@@ -1,0 +1,33 @@
+# {{ ansible_managed }}
+# sshd 對大多數關鍵字是「先出現的贏」，而 sshd_config 第一行就 Include 這個目錄，
+# 所以這裡的設定會蓋掉 sshd_config 本體後面的同名設定。
+{% if hardening_sshd_manage_port | bool %}
+# 注意：Ubuntu 24.04 起 ssh 走 socket activation，這個 Port 只有在
+# 停用 ssh.socket、改用傳統 ssh.service 時才會生效。
+# 實際監聽的埠由 /etc/systemd/system/ssh.socket.d/10-port.conf 決定。
+Port {{ hardening_ssh_port }}
+{% endif %}
+
+PermitRootLogin {{ hardening_sshd_permit_root_login }}
+PubkeyAuthentication {{ hardening_sshd_pubkey_authentication }}
+PasswordAuthentication {{ hardening_sshd_password_authentication }}
+PermitEmptyPasswords {{ hardening_sshd_permit_empty_passwords }}
+KbdInteractiveAuthentication {{ hardening_sshd_challenge_response }}
+
+MaxAuthTries {{ hardening_sshd_max_auth_tries }}
+MaxSessions {{ hardening_sshd_max_sessions }}
+LoginGraceTime {{ hardening_sshd_login_grace_time }}
+ClientAliveInterval {{ hardening_sshd_client_alive_interval }}
+ClientAliveCountMax {{ hardening_sshd_client_alive_count_max }}
+UseDNS {{ hardening_sshd_use_dns }}
+
+X11Forwarding {{ hardening_sshd_x11_forwarding }}
+AllowAgentForwarding {{ hardening_sshd_allow_agent_forwarding }}
+AllowTcpForwarding {{ hardening_sshd_allow_tcp_forwarding }}
+{% if hardening_sshd_allow_users | length > 0 %}
+
+AllowUsers {{ hardening_sshd_allow_users | join(' ') }}
+{% endif %}
+{% if hardening_sshd_allow_groups | length > 0 %}
+AllowGroups {{ hardening_sshd_allow_groups | join(' ') }}
+{% endif %}

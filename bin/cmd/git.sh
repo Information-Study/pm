@@ -7,7 +7,12 @@ _git_usage() {
 
   status                各 repo 的分支 / 變更 / 領先落後
   sync                  子模組 checkout 追蹤分支（解決 clone 後 detached HEAD）
-  save [-m <訊息>]      子模組 commit + 主庫 gitlink commit（一次做完）
+  commit [-m <訊息>]    提交（子模組先、主庫 gitlink 後）；未給 -m 會引導產生
+  save [-m <訊息>]      commit 的別名
+  branch list           列出三個 repo 的分支與同步狀態
+  branch new <名稱>     在三個 repo 建立並切換到同名分支
+  branch switch <名稱>  切換三個 repo 到指定分支
+  branch delete <名稱>  刪除分支（需確認；拒絕刪除當前分支與 main）
   guard install|status|remove
   remote-init [--dry-run]   用 gh 建立 Information-Study 的三個 public repo
   scan-secrets          祕密掃描（推送前自動執行）
@@ -31,7 +36,8 @@ cmd_git_main() {
     case $sub in
         status)        _git_status ;;
         sync)          _git_sync ;;
-        save)          _git_save "$@" ;;
+        commit|save)   _git_commit "$@" ;;
+        branch)        _git_branch "$@" ;;
         guard)         case ${1:-status} in
                            install) cx_guard_install ;;
                            status)  cx_guard_status ;;
@@ -71,29 +77,220 @@ _git_sync() {
     done
 }
 
-_git_save() {
-    local msg=''
-    while (( $# )); do case $1 in -m) msg=${2:?}; shift 2 ;; *) shift ;; esac; done
-    [[ -n $msg ]] || cx_die "$EX_USAGE" "需要 -m <訊息>"
-    local c changed=0
+_git_commit() {
+    local msg='' amend=0 no_verify_scan=0
+    while (( $# )); do
+        case $1 in
+            -m|--message) msg=${2:?-m 需要訊息}; shift 2 ;;
+            --amend)      amend=1; shift ;;
+            --skip-scan)  no_verify_scan=1; shift ;;
+            *)            cx_die "$EX_USAGE" "commit: 未知參數 $1" ;;
+        esac
+    done
+
+    # 沒給訊息就引導產生（Conventional Commits）
+    if [[ -z $msg && $amend -eq 0 ]]; then
+        msg=$(_git_compose_message) || return "$EX_ABORT"
+    fi
+
+    # 提交前掃一次祕密 —— 三個 repo 都是 public
+    (( no_verify_scan )) || _git_scan_secrets
+
+    cx_step "提交"
+    local c changed=0 n
+    # 子模組必須先提交：主庫的 gitlink 指向子模組的 commit，
+    # 反過來會讓 gitlink 指向一個尚不存在的 commit。
     for c in backend frontend; do
-        if [[ -n $(git -C "$CX_ROOT/$c" status --porcelain) ]]; then
+        [[ -d $CX_ROOT/$c ]] || continue
+        n=$(git -C "$CX_ROOT/$c" status --porcelain | wc -l)
+        if (( n > 0 )); then
+            git -C "$CX_ROOT/$c" status --short | sed 's/^/      /' >&2
             cx_run git -C "$CX_ROOT/$c" add -A
-            cx_run git -C "$CX_ROOT/$c" commit -q -m "$msg"
-            cx_ok "$c 已提交"; changed=1
+            if (( amend )); then
+                cx_run git -C "$CX_ROOT/$c" commit -q --amend --no-edit
+            else
+                cx_run git -C "$CX_ROOT/$c" commit -q -m "$msg"
+            fi
+            cx_ok "$c 已提交（$n 項）"
+            changed=1
         else
             cx_dim "$c 無變更"
         fi
     done
-    if [[ -n $(git -C "$CX_ROOT" status --porcelain) ]]; then
+
+    # 主庫：自身變更 + 子模組 gitlink 更新
+    n=$(git -C "$CX_ROOT" status --porcelain | wc -l)
+    if (( n > 0 )); then
+        git -C "$CX_ROOT" status --short | sed 's/^/      /' >&2
         cx_run git -C "$CX_ROOT" add -A
-        cx_run git -C "$CX_ROOT" commit -q -m "$msg"
-        cx_ok "主庫已提交（含 gitlink 更新）"
+        if (( amend )); then
+            cx_run git -C "$CX_ROOT" commit -q --amend --no-edit
+        else
+            cx_run git -C "$CX_ROOT" commit -q -m "$msg"
+        fi
+        cx_ok "主庫已提交（$n 項，含 gitlink）"
     elif (( changed )); then
-        cx_warn "子模組有變更但主庫 gitlink 未動，請檢查"
+        cx_warn "子模組已提交但主庫的 gitlink 沒有變化 —— 請確認 submodule 指標是否正確"
     else
         cx_dim "主庫無變更"
     fi
+    (( changed )) || [[ $n -gt 0 ]] || cx_warn "沒有任何東西需要提交"
+}
+
+# 引導式產生 Conventional Commits 訊息（無 TTY 時退回純文字提問）
+_git_compose_message() {
+    local -a types=(feat fix docs refactor perf test build ci chore)
+    local type scope subject
+
+    if cx_interactive; then
+        local f; f=$(mktemp)
+        local -a items=()
+        local t d
+        for t in "${types[@]}"; do
+            case $t in
+                feat) d="新功能" ;; fix) d="修正缺陷" ;; docs) d="文件" ;;
+                refactor) d="重構（不改行為）" ;; perf) d="效能" ;; test) d="測試" ;;
+                build) d="建置／相依" ;; ci) d="CI 設定" ;; chore) d="雜項" ;;
+            esac
+            items+=("$t" "$d")
+        done
+        _cx_dlg --title "提交類型" --menu "\n選擇變更類型：" 20 72 10 "${items[@]}" 2>"$f" 1>&8 \
+            || { rm -f "$f"; return 1; }
+        type=$(<"$f")
+        _cx_dlg --title "影響範圍" --inputbox "\n可留空。例如 backend / frontend / docker / ansible / cx" \
+            12 70 "" 2>"$f" 1>&8 || { rm -f "$f"; return 1; }
+        scope=$(<"$f")
+        _cx_dlg --title "摘要" --inputbox "\n一行摘要（祈使句，不加句號）：" 12 76 "" 2>"$f" 1>&8 \
+            || { rm -f "$f"; return 1; }
+        subject=$(<"$f"); rm -f "$f"
+    else
+        printf '提交類型 (%s): ' "${types[*]}" >&2
+        read -r type </dev/tty || return 1
+        printf '影響範圍（可留空）: ' >&2; read -r scope </dev/tty || return 1
+        printf '一行摘要: ' >&2;           read -r subject </dev/tty || return 1
+    fi
+
+    local ok=0 t
+    for t in "${types[@]}"; do [[ $type == "$t" ]] && ok=1; done
+    (( ok )) || { cx_error "無效的類型：$type"; return 1; }
+    [[ -n $subject ]] || { cx_error "摘要不可為空"; return 1; }
+
+    local m="$type"
+    [[ -n $scope ]] && m="$m($scope)"
+    printf '%s: %s\n' "$m" "$subject"
+}
+
+# ---------------------------------------------------------------------------
+# 分支：三個 repo 同進同出
+# ---------------------------------------------------------------------------
+_git_branch() {
+    local sub=${1:-list}; shift || true
+    case $sub in
+        list)   _git_branch_list ;;
+        new)    _git_branch_new "${1:?branch new 需要名稱}" ;;
+        switch) _git_branch_switch "${1:?branch switch 需要名稱}" ;;
+        delete) _git_branch_delete "${1:?branch delete 需要名稱}" ;;
+        *)      cx_die "$EX_USAGE" "branch: 未知子指令 $sub（list|new|switch|delete）" ;;
+    esac
+}
+
+_git_branch_list() {
+    local r slug cur
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        cur=$(git -C "$r" branch --show-current 2>/dev/null || echo '<detached>')
+        printf '\n%s%s%s  目前：%s\n' "$C_BLU" "$slug" "$C_RST" "$cur"
+        local b date up track mark
+        while IFS='|' read -r b date up track; do
+            mark='  '; [[ $b == "$cur" ]] && mark=' *'
+            printf '%s %-24s %-16s %-18s %s\n' "$mark" "$b" "$date" "${up:-（無上游）}" "$track"
+        done < <(git -C "$r" for-each-ref --sort=-committerdate refs/heads/ \
+            --format='%(refname:short)|%(committerdate:relative)|%(upstream:short)|%(upstream:track)')
+    done < <(_git_repos_order)
+    printf '\n'
+}
+
+_git_branch_check_name() {
+    local n=$1
+    [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] \
+        || cx_die "$EX_USAGE" "分支名稱只能含英數與 . _ / -，且不可以符號開頭：$n"
+    [[ $n == *..* || $n == */ || $n == *.lock ]] \
+        && cx_die "$EX_USAGE" "git 不接受的分支名稱：$n"
+    return 0
+}
+
+_git_branch_new() {
+    local n=$1; _git_branch_check_name "$n"
+    local r slug dirty=0
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        [[ -n $(git -C "$r" status --porcelain) ]] && { cx_warn "$slug 有未提交變更"; dirty=1; }
+        git -C "$r" show-ref --verify --quiet "refs/heads/$n" \
+            && cx_die "$EX_PRECOND" "$slug 已經有分支 $n"
+    done < <(_git_repos_order)
+    (( dirty )) && { cx_confirm "有未提交變更" \
+        "上列 repo 有未提交變更。\n\ngit 會把它們一起帶到新分支 $n。\n\n繼續嗎？" \
+        || return "$EX_ABORT"; }
+
+    cx_step "建立分支 $n"
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        cx_run git -C "$r" switch -c "$n"
+        cx_ok "$slug → $n"
+    done < <(_git_repos_order)
+    cx_info "三個 repo 都在 $n。提交請用： cx git commit"
+}
+
+_git_branch_switch() {
+    local n=$1; _git_branch_check_name "$n"
+    local r slug missing=()
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        git -C "$r" show-ref --verify --quiet "refs/heads/$n" || missing+=("$slug")
+    done < <(_git_repos_order)
+    if (( ${#missing[@]} )); then
+        cx_error "下列 repo 沒有分支 $n：${missing[*]}"
+        cx_dim "  要一起建立請用： cx git branch new $n"
+        return "$EX_PRECOND"
+    fi
+
+    cx_step "切換到 $n"
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        if [[ -n $(git -C "$r" status --porcelain) ]]; then
+            cx_error "$slug 有未提交變更，拒絕切換（避免變更被帶走或衝突）"
+            git -C "$r" status --short | sed 's/^/      /' >&2
+            return "$EX_PRECOND"
+        fi
+    done < <(_git_repos_order)
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        cx_run git -C "$r" switch "$n"
+        cx_ok "$slug → $n"
+    done < <(_git_repos_order)
+}
+
+_git_branch_delete() {
+    local n=$1; _git_branch_check_name "$n"
+    [[ $n == main || $n == master ]] && cx_die "$EX_USAGE" "拒絕刪除 $n"
+    local r slug cur
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        cur=$(git -C "$r" branch --show-current 2>/dev/null || echo '')
+        [[ $cur == "$n" ]] && cx_die "$EX_PRECOND" "$slug 目前就在 $n 上，請先切走"
+    done < <(_git_repos_order)
+
+    cx_confirm --danger "刪除分支 $n" \
+        "將在三個 repo 刪除分支 $n。\n\n未合併的 commit 會遺失（git 會擋，除非你再確認）。\n\n確定嗎？" \
+        || return "$EX_ABORT"
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        if git -C "$r" branch -d "$n" >/dev/null 2>&1; then
+            cx_ok "$slug 已刪除 $n"
+        else
+            cx_warn "$slug 的 $n 尚未合併，保留（要強制刪除請自行 git branch -D）"
+        fi
+    done < <(_git_repos_order)
 }
 
 # ---------------------------------------------------------------------------
@@ -183,6 +380,15 @@ _git_remote_init() {
         else
             cx_run git -C "$r" remote add origin "$url"
         fi
+        # git submodule add 建立的 origin **沒有 fetch refspec**。
+        # 少了它，push -u 只會寫 branch.<b>.remote/merge，卻建不出
+        # refs/remotes/origin/*，於是 %(upstream) 永遠是空的、
+        # git status 也看不到 ahead/behind。set-url 修不了這件事。
+        if [[ -z $(git -C "$r" config --get remote.origin.fetch || true) ]]; then
+            cx_run git -C "$r" config --add remote.origin.fetch \
+                '+refs/heads/*:refs/remotes/origin/*'
+            cx_warn "$slug 的 origin 缺少 fetch refspec，已補上"
+        fi
         cx_ok "$slug origin → $url"
     done < <(_git_repos_order)
 
@@ -224,7 +430,15 @@ _git_push() {
         local br; br=$(git -C "$r" branch --show-current)
         cx_info "推送 $slug（$br）…"
         CX_ALLOW_PUSH=1 cx_run git -C "$r" push -u origin "$br"
-        cx_ok "$slug 已推送"
+        # 驗證 remote-tracking ref 真的建立了 —— 只看 push 成功是不夠的
+        if ! git -C "$r" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null; then
+            cx_warn "$slug 沒有 refs/remotes/origin/$br，補一次 fetch"
+            cx_run git -C "$r" fetch -q origin
+        fi
+        git -C "$r" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null \
+            && cx_ok "$slug 已推送（upstream: origin/$br）" \
+            || cx_warn "$slug 已推送，但 remote-tracking ref 仍缺失"
+
     done < <(_git_repos_order)
 
     cx_ok "全部完成"

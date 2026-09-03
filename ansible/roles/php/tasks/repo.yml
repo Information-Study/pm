@@ -1,0 +1,212 @@
+---
+# ---- A6：deb822_repository 需要目標機上有 python3-debian ---------------------
+- name: 檢查 python3-debian 是否可匯入
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
+      - "-c"
+      - "import debian.deb822"
+  register: php_pydebian
+  changed_when: false
+  failed_when: false
+
+- name: python3-debian 缺失時給可行動訊息
+  ansible.builtin.assert:
+    that:
+      - php_pydebian.rc == 0
+    fail_msg: >-
+      目標機沒有 python3-debian，ansible.builtin.deb822_repository 無法執行
+      （模組會報 "Failed to import the required Python library (python-debian)"）。
+      common role 必須在任何 repo 任務之前安裝 python3-debian 與 python3-apt。
+      臨時解法：ansible -m raw -a 'apt-get update && apt-get install -y python3-debian python3-apt' <host>
+    quiet: true
+
+- name: 安裝 repo 前置套件
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - gnupg
+      - apt-transport-https
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: 建立 APT keyrings 目錄
+  ansible.builtin.file:
+    path: "{{ php_keyring_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# ============================================================================
+# Ubuntu → ondrej/php PPA
+# ============================================================================
+- name: 下載 ondrej/php PPA 簽章金鑰（Ubuntu）
+  ansible.builtin.get_url:
+    url: "{{ php_ondrej_key_url }}"
+    dest: "{{ php_ondrej_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false          # 已存在就不重抓，避免 keyserver 的 Comment header 造成假 changed
+    timeout: 30
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
+- name: 讀出 ondrej 金鑰指紋（Ubuntu）
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      gpg --batch --no-tty --show-keys --with-colons {{ php_ondrej_keyring | quote }}
+      | awk -F: '$1 == "fpr" { print $10 }'
+    executable: /bin/bash
+  register: php_ondrej_fpr
+  changed_when: false
+  failed_when: php_ondrej_fpr.rc != 0
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
+- name: 驗證 ondrej 金鑰指紋（Ubuntu）
+  ansible.builtin.assert:
+    that:
+      - php_ondrej_key_fingerprint in php_ondrej_fpr.stdout_lines
+    fail_msg: >-
+      {{ php_ondrej_keyring }} 的指紋不是預期的 {{ php_ondrej_key_fingerprint }}
+      （實際讀到：{{ php_ondrej_fpr.stdout_lines | join(', ') | default('（空）', true) }}）。
+      預期值取自 Launchpad API 的 signing_key_fingerprint：
+      https://api.launchpad.net/devel/~ondrej/+archive/ubuntu/php
+      在確認上游真的換鑰之前，不要放行。
+    quiet: true
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
+- name: 探測 PPA 是否有本機 codename 的 dist（Ubuntu）
+  ansible.builtin.uri:
+    url: "{{ php_ondrej_uri }}/dists/{{ php_ppa_suite }}/Release"
+    method: HEAD
+    timeout: 20
+    status_code: [200]
+  register: php_ppa_probe
+  changed_when: false
+  failed_when: false
+  when:
+    - ansible_facts['distribution'] == 'Ubuntu'
+    - php_repo_probe | bool
+
+- name: PPA 沒有這個 codename 時 fail fast（Ubuntu）
+  ansible.builtin.assert:
+    that:
+      - php_ppa_probe.status | default(0) | int == 200
+    fail_msg: >-
+      ondrej/php PPA 沒有為 codename "{{ php_ppa_suite }}" 發佈套件
+      （HEAD {{ php_ondrej_uri }}/dists/{{ php_ppa_suite }}/Release
+      回 {{ php_ppa_probe.status | default('無回應') }}）。
+      2026-09-03 實測：jammy 與 noble 回 200，resolute（26.04）回 404。
+      三選一：
+      (1) 目標機用 Ubuntu 24.04 LTS (noble) —— 本專案的預設目標；
+      (2) 等 PPA 支援該 codename 再部署；
+      (3) 明確承擔風險：設 php_ppa_suite=noble 借用 24.04 的套件
+          （不保證可用，glibc / ABI 可能不相容，務必先在 staging 驗證）。
+    quiet: true
+  when:
+    - ansible_facts['distribution'] == 'Ubuntu'
+    - php_repo_probe | bool
+
+- name: 設定 ondrej/php APT 來源（Ubuntu）
+  ansible.builtin.deb822_repository:
+    name: ondrej-php
+    types: [deb]
+    uris: "{{ php_ondrej_uri }}"
+    suites: ["{{ php_ppa_suite }}"]
+    components: [main]
+    architectures: ["{{ php_repo_architectures }}"]
+    signed_by: "{{ php_ondrej_keyring }}"
+    enabled: true
+    state: present
+  register: php_repo_ubuntu
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
+# ============================================================================
+# Debian → packages.sury.org
+# ============================================================================
+- name: 下載 sury.org 簽章金鑰（Debian）
+  ansible.builtin.get_url:
+    url: "{{ php_sury_key_url }}"
+    dest: "{{ php_sury_keyring }}"     # 二進位 keyring，副檔名必須是 .gpg
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+    timeout: 30
+  when: ansible_facts['distribution'] == 'Debian'
+
+- name: 讀出 sury 金鑰指紋（Debian）
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      gpg --batch --no-tty --show-keys --with-colons {{ php_sury_keyring | quote }}
+      | awk -F: '$1 == "fpr" { print $10 }'
+    executable: /bin/bash
+  register: php_sury_fpr
+  changed_when: false
+  failed_when: php_sury_fpr.rc != 0
+  when: ansible_facts['distribution'] == 'Debian'
+
+- name: 驗證 sury 金鑰指紋（Debian）
+  ansible.builtin.assert:
+    that:
+      - php_sury_key_fingerprint in php_sury_fpr.stdout_lines
+    fail_msg: >-
+      {{ php_sury_keyring }} 的指紋不是預期的 {{ php_sury_key_fingerprint }}
+      （實際讀到：{{ php_sury_fpr.stdout_lines | join(', ') | default('（空）', true) }}）。
+      預期值為 DEB.SURY.ORG Automatic Signing Key <deb@sury.org>，2026-09-03 實測。
+    quiet: true
+  when: ansible_facts['distribution'] == 'Debian'
+
+- name: 探測 sury 是否有本機 codename 的 dist（Debian）
+  ansible.builtin.uri:
+    url: "{{ php_sury_uri }}dists/{{ php_sury_suite }}/Release"
+    method: HEAD
+    timeout: 20
+    status_code: [200]
+  register: php_sury_probe
+  changed_when: false
+  failed_when: false
+  when:
+    - ansible_facts['distribution'] == 'Debian'
+    - php_repo_probe | bool
+
+- name: sury 沒有這個 codename 時 fail fast（Debian）
+  ansible.builtin.assert:
+    that:
+      - php_sury_probe.status | default(0) | int == 200
+    fail_msg: >-
+      packages.sury.org 沒有為 codename "{{ php_sury_suite }}" 發佈套件
+      （HEAD {{ php_sury_uri }}dists/{{ php_sury_suite }}/Release
+      回 {{ php_sury_probe.status | default('無回應') }}）。
+      2026-09-03 實測：bookworm 與 trixie 回 200，forky 回 404。
+      請改用受支援的 Debian 版本，或明確設定 php_sury_suite 借用較舊的 codename
+      （需自行承擔 ABI 風險）。
+    quiet: true
+  when:
+    - ansible_facts['distribution'] == 'Debian'
+    - php_repo_probe | bool
+
+- name: 設定 sury.org APT 來源（Debian）
+  ansible.builtin.deb822_repository:
+    name: sury-php
+    types: [deb]
+    uris: "{{ php_sury_uri }}"
+    suites: ["{{ php_sury_suite }}"]
+    components: [main]
+    architectures: ["{{ php_repo_architectures }}"]
+    signed_by: "{{ php_sury_keyring }}"
+    enabled: true
+    state: present
+  register: php_repo_debian
+  when: ansible_facts['distribution'] == 'Debian'
+
+- name: 來源有變動時更新 APT 快取
+  ansible.builtin.apt:
+    update_cache: true
+  when: >-
+    (php_repo_ubuntu.changed | default(false)) or
+    (php_repo_debian.changed | default(false))

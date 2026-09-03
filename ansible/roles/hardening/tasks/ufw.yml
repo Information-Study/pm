@@ -1,0 +1,95 @@
+---
+- name: UFW | 安裝
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    install_recommends: false
+  register: hardening_ufw_apt
+  until: hardening_ufw_apt is succeeded
+  retries: "{{ common_apt_retries | default(30) | int }}"
+  delay: "{{ common_apt_delay | default(10) | int }}"
+
+# 先算出「實際會被放行的 TCP 埠」，包含進階規則裡的。
+- name: UFW | 彙整放行的 TCP 埠
+  ansible.builtin.set_fact:
+    hardening_ufw_effective_tcp_ports: >-
+      {{ (hardening_ufw_allowed_tcp_ports | map('string') | list)
+         + (hardening_ufw_rules
+            | selectattr('port', 'defined')
+            | selectattr('rule', 'defined')
+            | selectattr('rule', 'equalto', 'allow')
+            | map(attribute='port') | map('string') | list) }}
+
+# 這是整個 role 最容易把自己鎖在門外的地方，所以先擋。
+- name: UFW | SSH 埠必須在放行清單內
+  ansible.builtin.assert:
+    that:
+      - (hardening_ssh_port | string) in hardening_ufw_effective_tcp_ports
+    quiet: true
+    fail_msg: >-
+      要啟用 ufw（預設政策 incoming={{ hardening_ufw_default_incoming }}），
+      但 SSH 埠 {{ hardening_ssh_port }} 不在放行清單
+      {{ hardening_ufw_effective_tcp_ports }} 裡面。
+      這樣做的下一秒你就連不進來了。
+      修正：把 {{ hardening_ssh_port }} 加進 hardening_ufw_allowed_tcp_ports。
+
+- name: UFW | 提醒：應用埠不該對外
+  ansible.builtin.debug:
+    msg: >-
+      放行清單：{{ hardening_ufw_effective_tcp_ports | join(', ') }}。
+      PM2（3000+）、php-fpm（9000）、MySQL（3306）不應該出現在這裡 ——
+      它們要綁 127.0.0.1，由 nginx 反向代理。
+  when: >-
+    hardening_ufw_effective_tcp_ports
+    | intersect(['3000', '3001', '3306', '9000', '8080'])
+    | length > 0
+
+# 破壞性操作：會清掉所有既有規則（含別人手動加的）。預設關閉。
+- name: UFW | 重設所有規則（破壞性，預設關閉）
+  community.general.ufw:
+    state: reset
+  when: hardening_ufw_reset | bool
+
+- name: UFW | 預設政策
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: "incoming", policy: "{{ hardening_ufw_default_incoming }}" }
+    - { direction: "outgoing", policy: "{{ hardening_ufw_default_outgoing }}" }
+    - { direction: "routed", policy: "{{ hardening_ufw_default_routed }}" }
+  loop_control:
+    label: "{{ item.direction }}={{ item.policy }}"
+
+# 先開規則、最後才 enable。順序反過來的話，enable 的那一瞬間連線就斷了。
+- name: UFW | 放行 TCP 埠
+  community.general.ufw:
+    rule: allow
+    port: "{{ item | string }}"
+    proto: tcp
+    comment: "{{ app_slug }} managed"
+  loop: "{{ hardening_ufw_allowed_tcp_ports }}"
+  loop_control:
+    label: "tcp/{{ item }}"
+
+- name: UFW | 進階規則
+  community.general.ufw:
+    rule: "{{ item.rule | default('allow') }}"
+    port: "{{ item.port | default(omit) }}"
+    proto: "{{ item.proto | default(omit) }}"
+    src: "{{ item.src | default(omit) }}"
+    dest: "{{ item.dest | default(omit) }}"
+    interface: "{{ item.interface | default(omit) }}"
+    direction: "{{ item.direction | default(omit) }}"
+    comment: "{{ item.comment | default(app_slug ~ ' managed') }}"
+  loop: "{{ hardening_ufw_rules }}"
+  loop_control:
+    label: "{{ item.rule | default('allow') }} {{ item.port | default('') }} {{ item.src | default('') }}"
+
+- name: UFW | 記錄等級
+  community.general.ufw:
+    logging: "{{ hardening_ufw_logging }}"
+
+- name: UFW | 啟用
+  community.general.ufw:
+    state: enabled

@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: common
+  author: pm
+  description: 基礎套件、時區/locale、部署使用者、目錄骨架與日誌目錄。必須排在所有其他 role 之前。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [common, bootstrap]
+
+dependencies: []

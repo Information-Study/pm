@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: mysql
+  namespace: pm
+  author: pm infra
+  description: MySQL 8.4 LTS（Oracle APT 來源）、應用資料庫與雙 host 授權、mysqldump 備份
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+  galaxy_tags:
+    - mysql
+    - database
+
+dependencies: []

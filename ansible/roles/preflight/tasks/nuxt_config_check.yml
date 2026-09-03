@@ -1,0 +1,42 @@
+---
+- name: "前端 | {{ preflight_nuxt.label }} 是否有 nuxt.config.ts"
+  ansible.builtin.stat:
+    path: "{{ preflight_nuxt.path }}"
+  delegate_to: "{{ preflight_nuxt.host }}"
+  become: "{{ preflight_nuxt.escalate }}"
+  register: preflight_nuxt_stat
+
+- name: "前端 | {{ preflight_nuxt.label }} 讀取 nuxt.config.ts"
+  ansible.builtin.slurp:
+    src: "{{ preflight_nuxt.path }}"
+  delegate_to: "{{ preflight_nuxt.host }}"
+  become: "{{ preflight_nuxt.escalate }}"
+  register: preflight_nuxt_slurp
+  when: preflight_nuxt_stat.stat.exists | default(false)
+
+- name: "前端 | {{ preflight_nuxt.label }} ssr 必須由 process.env.NUXT_SSR 決定（A20）"
+  ansible.builtin.assert:
+    that:
+      # 必須真的讀環境變數
+      - "(preflight_nuxt_slurp.content | b64decode) is search('process\\.env\\.NUXT_SSR')"
+      # 不可以在設定物件裡寫死 ssr: true / ssr: false
+      # （用 (?m)^\s* 錨定行首，才不會誤判註解裡提到的字樣）
+      - "not ((preflight_nuxt_slurp.content | b64decode) is search('(?m)^\\s*ssr\\s*:\\s*(true|false)'))"
+    quiet: true
+    fail_msg: >-
+      {{ preflight_nuxt.label }} 的 {{ preflight_nuxt.path }} 沒有讓 ssr 跟著 process.env.NUXT_SSR 走。
+      三種模式（ssr / spa / static）都靠這個環境變數切換：
+        const ssr = process.env.NUXT_SSR !== 'false'
+        export default defineNuxtConfig({ ssr, ... })
+      寫死 ssr: false 的話，frontend_mode=ssr 會在 npm ci 與大半個 build 跑完之後
+      才產出一個沒有 SSR 的 .output —— 而且不會有任何錯誤訊息。
+  when:
+    - preflight_nuxt_stat.stat.exists | default(false)
+    - preflight_nuxt_slurp is not skipped
+
+- name: "前端 | {{ preflight_nuxt.label }} 尚未有 nuxt.config.ts（第一次部署時屬正常）"
+  ansible.builtin.debug:
+    msg: >-
+      跳過：{{ preflight_nuxt.path }} 不存在。
+      目標端要等 deploy role clone 之後才會有；控制端則代表你不是在 repo 內執行。
+  when: not (preflight_nuxt_stat.stat.exists | default(false))

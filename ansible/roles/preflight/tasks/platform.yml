@@ -1,0 +1,80 @@
+---
+- name: 平台 | 必須是 Debian 家族（apt）
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['pkg_mgr'] == 'apt'
+    quiet: true
+    fail_msg: >-
+      本 playbook 只支援 Debian 家族（apt）。
+      偵測到 os_family={{ ansible_facts['os_family'] }} / pkg_mgr={{ ansible_facts['pkg_mgr'] }}。
+
+- name: 平台 | 目標端必須是 Python 3
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['python']['version']['major'] | int == 3
+    quiet: true
+    fail_msg: "目標端 Python 不是 3.x：{{ ansible_facts['python_version'] | default('unknown') }}"
+
+- name: 平台 | Ubuntu 版本矩陣
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution_version'] in preflight_supported_ubuntu_versions
+    quiet: true
+    fail_msg: >-
+      只支援 Ubuntu {{ preflight_supported_ubuntu_versions | join(' / ') }}，
+      偵測到 {{ ansible_facts['distribution_version'] }}（{{ ansible_facts['distribution_release'] }}）。
+      要放寬請改 preflight_supported_ubuntu_versions，但請先確認
+      PHP 8.5（ondrej PPA）與 MyGuard 都有對應這個 codename 的套件庫。
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
+# A4：Debian 沒有 mysql-server 這個套件（bookworm/trixie 的 default-mysql-server 是 MariaDB）。
+- name: 平台 | Debian 必須明確指定 mysql_repo_source=oracle（A4）
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution_major_version'] in preflight_supported_debian_versions
+      - mysql_repo_source is defined
+      - mysql_repo_source == 'oracle'
+    quiet: true
+    fail_msg: >-
+      Debian {{ ansible_facts['distribution_major_version'] }} 的套件庫裡沒有 Oracle 的 mysql-server
+      （default-mysql-server 指到 MariaDB，與 MySQL 8.4 不是同一個東西）。
+      要在 Debian 上跑，必須在 group_vars/all 明確設定：
+        mysql_repo_source: oracle
+        mysql_version_series: "8.4"
+      讓 mysql role 去掛 repo.mysql.com 並鎖 8.4 系列。
+      支援的 Debian 主版本：{{ preflight_supported_debian_versions | join(' / ') }}。
+  when: ansible_facts['distribution'] == 'Debian'
+
+# A4：Ubuntu noble 的 mysql-server 是 8.0.x，不是 8.4 LTS。要 8.4 就只能走 Oracle repo。
+- name: 平台 | MySQL 8.1 以上只能來自 Oracle repo（A4）
+  ansible.builtin.assert:
+    that:
+      - (mysql_repo_source | default('oracle')) == 'oracle'
+    quiet: true
+    fail_msg: >-
+      要求的 MySQL 系列是 {{ mysql_version_series | default('8.4') }}，但 mysql_repo_source
+      是「{{ mysql_repo_source | default('oracle') }}」。
+      Ubuntu 24.04 發行版套件庫的 mysql-server 是 8.0.x，拿不到 8.4 LTS。
+      修正：group_vars/all 設 mysql_repo_source: oracle（由 mysql role 掛 repo.mysql.com），
+      或把 mysql_version_series 降成 "8.0" 並接受 8.0.x。
+  when: (mysql_version_series | default('8.4')) is version('8.1', '>=')
+
+- name: 平台 | mysql_repo_source 只能是 oracle 或 distro
+  ansible.builtin.assert:
+    that:
+      - (mysql_repo_source | default('oracle')) in ['oracle', 'distro']
+    quiet: true
+    fail_msg: "mysql_repo_source 只接受 oracle 或 distro，目前是「{{ mysql_repo_source }}」。"
+
+# MyGuard 的來源行寫死 arch=amd64；非 amd64 會裝不到 WAF 套件。
+- name: 平台 | CPU 架構（MyGuard APT 只提供 amd64）
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['architecture'] == 'x86_64'
+    quiet: true
+    fail_msg: >-
+      偵測到架構 {{ ansible_facts['architecture'] }}，但 MyGuard 的 apt 來源行是 arch=amd64。
+      在 arm64 上會安裝不到 ModSecurity/Coraza 模組，nginx role 會在中途才失敗。
+      若你已確認 deb.myguard.nl 有對應架構，設 preflight_allow_non_amd64: true 再跑。
+  when: not (preflight_allow_non_amd64 | bool)

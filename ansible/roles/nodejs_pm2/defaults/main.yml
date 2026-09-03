@@ -1,0 +1,93 @@
+---
+# ============================================================================
+# roles/nodejs_pm2/defaults/main.yml
+#
+# Node 24 (Active LTS, Krypton) + PM2。
+# PM2 一律 fork 模式 —— 見 templates/ecosystem.config.cjs.j2 檔頭的說明（A10）。
+# ============================================================================
+
+app_slug: pm
+app_root: "/srv/{{ app_slug }}"
+app_shared_dir: "{{ app_root }}/shared"
+# PM2 / queue / schedule 的輸出都在這裡。common role 已經建好，
+# 也已經有對應的 logrotate（{{ app_log_dir }}/*.log），本 role 不要再寫一份。
+app_log_dir: "/var/log/{{ app_slug }}"
+deploy_user: deploy
+deploy_group: deploy
+deploy_user_home: "/home/{{ deploy_user }}"
+web_group: www-data
+
+# 前端的 release 佈局（由 common 建骨架、deploy 換 symlink；這裡只是保底值）
+frontend_root: "{{ app_root }}/frontend"
+frontend_current_path: "{{ frontend_root }}/current"
+
+# ---- Node ------------------------------------------------------------------
+# 24 是 Active LTS，維護到 2028-04-30。26 在 2026-10 之前還是 Current，不要跳。
+nodejs_major: 24
+nodejs_repo_uri: "https://deb.nodesource.com/node_{{ nodejs_major }}.x"
+# NodeSource 新版倉庫是「發行版無關」的，suite 固定叫 nodistro
+#（2026-09-03 實測 dists/nodistro/Release：Suite: nodistro、Components: main、
+#  Architectures: amd64 arm64 armhf x86_64）。不要填 noble / bookworm。
+nodejs_repo_suite: nodistro
+nodejs_repo_components: [main]
+nodejs_key_url: "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key"
+# 主鑰指紋，2026-09-03 實測（uid: NSolid <nsolid-gpg@nodesource.com>）。
+nodejs_key_fingerprint: "6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+nodejs_keyring: "/etc/apt/keyrings/nodesource.gpg"
+nodejs_repo_manage: true
+nodejs_repo_probe: true
+nodejs_apt_pin_priority: 1001      # 壓過發行版自帶的 nodejs（noble 是 18.x）
+# 留空 = 裝倉庫裡最新的 24.x。要釘死就填完整 apt 版本字串，例如 "24.20.0-1nodesource1"。
+nodejs_package_version: ""
+nodejs_bin: /usr/bin/node
+npm_bin: /usr/bin/npm
+
+# ---- PM2 -------------------------------------------------------------------
+pm2_version: "7.0.4"
+pm2_bin: /usr/bin/pm2
+# 必須等於 deploy_user_home/.pm2 —— `pm2 startup --hp <home>` 寫出的 systemd unit
+# 會把 PM2_HOME 推導成 <home>/.pm2，這個推導寫死在 PM2 裡改不了。assert.yml 有擋。
+pm2_home: "{{ deploy_user_home }}/.pm2"
+pm2_ecosystem_dir: "{{ app_shared_dir }}/pm2"
+pm2_ecosystem_path: "{{ pm2_ecosystem_dir }}/ecosystem.config.cjs"
+pm2_systemd_unit: "pm2-{{ deploy_user }}"
+pm2_max_memory_restart: "512M"
+pm2_kill_timeout: 5000
+pm2_listen_timeout: 8000
+# 崩潰迴圈時指數退避（設了這個，restart_delay 會被忽略，所以不另外設）
+pm2_exp_backoff_restart_delay: 500
+pm2_max_restarts: 10
+# 模式切換 / 縮放實例數之後，把不再需要的 process 清掉。
+# 這是「刪除」動作，因此有三重 gate：這個開關、tasks 內的 when、
+# 以及名稱必須完全符合 ^{{ frontend_app_prefix }}-[0-9]+$ 的正則。
+# 不打開的話，從 ssr 切到 static 之後舊 process 會繼續佔著 3000 埠。
+pm2_prune_stale_apps: true
+
+# ---- 前端模式 ---------------------------------------------------------------
+# A20：預設 ssr。本專案的 frontend/nuxt.config.ts 已寫成
+#   const ssr = process.env.NUXT_SSR !== 'false'
+# （不是舊版那種寫死 ssr: false），三種模式都實測過：
+#   ssr    → nuxt build                    → .output/server/index.mjs → PM2 fork
+#   spa    → NUXT_SSR=false nuxt build     → .output/server/index.mjs → PM2 fork
+#   static → NUXT_SSR=false nuxt generate  → .output/public/          → Nginx 直送，不起 PM2
+# preflight role 仍應 grep 一次 nuxt.config.ts 確認，讓錯誤在 5 秒內出現，
+# 而不是等 npm ci 跑完才發現。
+frontend_mode: ssr
+frontend_host: "127.0.0.1"
+frontend_port: 3000
+# 要水平擴充就開多個 fork（絕不 cluster），每個綁 frontend_port + i，
+# nginx upstream 用 least_conn。不要用 'max'：容器 / cgroup 底下 CPU 數會被誤讀。
+frontend_instances: 1
+frontend_app_prefix: "{{ app_slug }}-frontend"
+frontend_entry: "{{ frontend_current_path }}/.output/server/index.mjs"
+frontend_static_root: "{{ frontend_current_path }}/.output/public"
+# 空字串 = 同源。原生拓撲跟 Docker 一樣都有反向代理在前，
+# / 給前端、/api|/admin|/up|/storage 給 PHP，所以同源是正確預設。
+frontend_public_api_base_url: ""
+frontend_extra_env: {}
+
+# ---- logrotate --------------------------------------------------------------
+# 刻意沒有。common role 的 /etc/logrotate.d/{{ app_slug }} 已經涵蓋
+# {{ app_log_dir }}/*.log（含 PM2 的 out/err），而且用的是 copytruncate。
+# 在這裡再寫一份會讓 logrotate 報 "duplicate log entry"，
+# common 的 `logrotate --debug` 驗證會直接讓 play 失敗。

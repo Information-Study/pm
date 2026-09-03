@@ -1,0 +1,25 @@
+---
+# 安裝：
+#   cd ansible && ansible-galaxy collection install -r requirements.yml
+#
+# A17：ansible.cfg 的 collections_path 已把 ~/.ansible/collections 列回搜尋路徑，
+# 所以用預設安裝位置即可；若你要裝進 repo 內的 ./collections（已被 .gitignore 排除），
+# 加 -p ./collections 也一樣找得到。
+#
+# 版本下限的理由：
+#   ansible.posix     — authorized_key / sysctl / mount
+#   community.general — ufw / timezone / locale_gen
+#   community.mysql   — mysql_user / mysql_db（mysql role 用；3.10 起對 MySQL 8.4 的
+#                       caching_sha2_password 與 8.4 移除的舊語法處理較完整）
+#   community.crypto  — 自簽憑證 / TLS 相關輔助（nginx + certbot role 用）
+collections:
+  - name: ansible.posix
+    version: ">=1.5.4"
+  - name: community.general
+    version: ">=9.0.0"
+  - name: community.mysql
+    version: ">=3.10.0"
+  - name: community.crypto
+    version: ">=2.20.0"
+
+roles: []

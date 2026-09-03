@@ -1,0 +1,116 @@
+---
+# 寫入 /etc/ssh/sshd_config.d/ 的片段而不是改 sshd_config 本體。
+# Ubuntu / Debian 的 sshd_config 第一行就是 Include /etc/ssh/sshd_config.d/*.conf，
+# 而 sshd 對大多數關鍵字是「先出現的贏」，所以片段會蓋掉後面的預設值。
+- name: SSHD | 確認 sshd_config 有 Include sshd_config.d
+  ansible.builtin.command:
+    cmd: "/usr/bin/grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\\.d/\\*\\.conf' /etc/ssh/sshd_config"
+  register: hardening_sshd_include
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: SSHD | 沒有 Include 就不要動（避免寫了一個永遠不會被讀到的檔案）
+  ansible.builtin.assert:
+    that:
+      - hardening_sshd_include.rc == 0
+    quiet: true
+    fail_msg: >-
+      /etc/ssh/sshd_config 裡沒有 "Include /etc/ssh/sshd_config.d/*.conf"。
+      這個 role 只寫片段、不改 sshd_config 本體，所以在這種機器上會完全沒有效果。
+      請先手動在 sshd_config 的「第一行」加上該 Include（位置很重要：sshd 是先出現的贏），
+      或把 hardening_sshd_enabled 關掉。
+
+- name: SSHD | 套用強化設定
+  block:
+    - name: SSHD | 寫入強化片段
+      ansible.builtin.template:
+        src: sshd-hardening.conf.j2
+        dest: "/etc/ssh/sshd_config.d/60-{{ app_slug }}-hardening.conf"
+        owner: root
+        group: root
+        mode: "0600"
+        # 刻意不用 validate: sshd -t -f %s。
+        # 那會把片段當成一份完整設定去檢查，而真正會出事的組合
+        #（例如與 sshd_config 本體的關鍵字衝突）只有「整份一起看」才驗得出來。
+        # 所以改成：寫完之後立刻對「完整設定」跑一次 sshd -t，失敗就 rescue 撤回。
+      register: hardening_sshd_fragment
+      notify: Reload sshd
+
+    - name: SSHD | 驗證完整設定（sshd -t，不加 -f）
+      ansible.builtin.command:
+        cmd: /usr/sbin/sshd -t
+      register: hardening_sshd_test
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: SSHD | 設定必須通過驗證
+      ansible.builtin.assert:
+        that:
+          - hardening_sshd_test.rc == 0
+        quiet: true
+        fail_msg: "sshd -t 失敗：{{ hardening_sshd_test.stderr | default('') }}"
+      when: not ansible_check_mode
+
+  rescue:
+    # 有 gate 的移除：只在「這次執行真的寫了這個檔案」時才撤回，而且只撤這一個檔案。
+    - name: SSHD | 驗證失敗，撤回本次寫入的片段
+      ansible.builtin.file:
+        path: "/etc/ssh/sshd_config.d/60-{{ app_slug }}-hardening.conf"
+        state: absent
+      when:
+        - hardening_sshd_fragment is defined
+        - hardening_sshd_fragment is changed
+
+    - name: SSHD | 確認撤回後設定恢復正常
+      ansible.builtin.command:
+        cmd: /usr/sbin/sshd -t
+      register: hardening_sshd_test_after
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: SSHD | 中止（handler 不會被執行，現行 sshd 不受影響）
+      ansible.builtin.fail:
+        msg: >-
+          sshd 設定驗證失敗，已把本次寫入的片段移除。
+          撤回後 sshd -t 的結果：rc={{ hardening_sshd_test_after.rc }}
+          {{ hardening_sshd_test_after.stderr | default('') }}
+          原始錯誤：{{ hardening_sshd_test.stderr | default('') }}
+          注意：ansible.cfg 的 force_handlers 必須維持 False —— 否則這裡中止之後
+          handler 仍會去 reload sshd，等於拿壞掉的設定重啟服務。
+
+- name: SSHD | 改埠（Ubuntu 24.04 起需要同時覆寫 ssh.socket）
+  when: hardening_sshd_manage_port | bool
+  block:
+    - name: SSHD | 檢查是否為 socket activation
+      ansible.builtin.stat:
+        path: /usr/lib/systemd/system/ssh.socket
+      register: hardening_ssh_socket_unit
+
+    - name: SSHD | 建立 ssh.socket 的 drop-in 目錄
+      ansible.builtin.file:
+        path: /etc/systemd/system/ssh.socket.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: hardening_ssh_socket_unit.stat.exists
+
+    - name: SSHD | 覆寫 ssh.socket 的 ListenStream
+      ansible.builtin.template:
+        src: ssh-socket-override.conf.j2
+        dest: /etc/systemd/system/ssh.socket.d/10-port.conf
+        owner: root
+        group: root
+        mode: "0644"
+      when: hardening_ssh_socket_unit.stat.exists
+      notify: Restart ssh socket
+
+    - name: SSHD | 提醒：防火牆與 inventory 都要跟著改
+      ansible.builtin.debug:
+        msg: >-
+          SSH 埠改成 {{ hardening_ssh_port }}。
+          請確認 (1) hardening_ufw_allowed_tcp_ports 已包含它、
+          (2) inventory 的 ansible_port 已更新、(3) 手上還有另一條可用的連線。

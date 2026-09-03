@@ -1,0 +1,61 @@
+---
+# A16：四個上傳限制必須從單一變數 app_max_upload_mb 推導，且順序必須是
+#   php_upload_max_filesize <= php_post_max_size <= nginx_client_max_body_size < waf_request_body_limit
+# 否則 26–32 MB 這種尺寸會「過了 nginx、也過了 PHP」，最後才被 WAF 擋掉並回 413，
+# 而且錯誤訊息完全指不到真正的原因。
+#
+# 這裡不重新定義那四個變數，只把「實際會生效的值」換算成 bytes 來驗證關係。
+# 對應 role 沒定義時，用 preflight_*_overhead_mb 推導出預期值 —— 這組加成也是
+# php / nginx / waf role 應該採用的公式。
+
+- name: 上傳限制 | app_max_upload_mb 必須是合理的整數
+  ansible.builtin.assert:
+    that:
+      - app_max_upload_mb is defined
+      - (app_max_upload_mb | int) >= 1
+      - (app_max_upload_mb | int) <= 2048
+    quiet: true
+    fail_msg: >-
+      app_max_upload_mb =「{{ app_max_upload_mb | default('<未定義>') }}」不合理（要 1..2048）。
+      這是四個上傳限制的唯一來源，不要分開設。
+
+- name: 上傳限制 | 換算成 bytes
+  ansible.builtin.set_fact:
+    preflight_bytes_app: "{{ ((app_max_upload_mb | int) * 1048576) | int }}"
+    preflight_bytes_php_upload: >-
+      {{ (php_upload_max_filesize
+          | default((app_max_upload_mb | int) ~ 'M')) | human_to_bytes }}
+    preflight_bytes_php_post: >-
+      {{ (php_post_max_size
+          | default(((app_max_upload_mb | int) + (preflight_post_overhead_mb | int)) ~ 'M')) | human_to_bytes }}
+    preflight_bytes_nginx_body: >-
+      {{ (nginx_client_max_body_size
+          | default(((app_max_upload_mb | int) + (preflight_nginx_overhead_mb | int)) ~ 'm')) | human_to_bytes }}
+    preflight_bytes_waf_body: >-
+      {{ (waf_request_body_limit
+          | default(((app_max_upload_mb | int) + (preflight_waf_overhead_mb | int)) * 1048576)) | human_to_bytes }}
+
+- name: 上傳限制 | 四個值的大小順序（A16）
+  ansible.builtin.assert:
+    that:
+      - (preflight_bytes_php_upload | int) >= (preflight_bytes_app | int)
+      - (preflight_bytes_php_post | int) >= (preflight_bytes_php_upload | int)
+      - (preflight_bytes_nginx_body | int) > 0
+      - (preflight_bytes_nginx_body | int) >= (preflight_bytes_php_post | int)
+      - (preflight_bytes_waf_body | int) > (preflight_bytes_nginx_body | int)
+      - (preflight_bytes_waf_body | int) <= (preflight_waf_body_limit_max_bytes | int)
+    quiet: true
+    fail_msg: >-
+      上傳限制的大小順序不對（單位：bytes）：
+        app_max_upload_mb           = {{ preflight_bytes_app }}
+        php upload_max_filesize     = {{ preflight_bytes_php_upload }}
+        php post_max_size           = {{ preflight_bytes_php_post }}
+        nginx client_max_body_size  = {{ preflight_bytes_nginx_body }}
+        waf SecRequestBodyLimit     = {{ preflight_bytes_waf_body }}
+      必須滿足 app <= php_upload <= php_post <= nginx_body < waf_body <= 1 GiB。
+      正確做法是全部從 app_max_upload_mb 推導：
+        php_upload_max_filesize    = "{{ app_max_upload_mb }}M"
+        php_post_max_size          = "{{ (app_max_upload_mb | int) + (preflight_post_overhead_mb | int) }}M"
+        nginx_client_max_body_size = "{{ (app_max_upload_mb | int) + (preflight_nginx_overhead_mb | int) }}m"
+        waf_request_body_limit     = {{ ((app_max_upload_mb | int) + (preflight_waf_overhead_mb | int)) * 1048576 }}
+      （nginx 的 0 代表不限制，本專案不接受 —— 那等於把限制的責任整包丟給 WAF。）

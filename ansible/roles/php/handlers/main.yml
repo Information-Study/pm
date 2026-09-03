@@ -1,0 +1,13 @@
+---
+# 到 handler 執行的時候，configure.yml 已經確保服務是 started，
+# 所以 reloaded 不會遇到「unit 未啟動」的失敗。
+- name: 重載 php-fpm
+  ansible.builtin.systemd_service:
+    name: "{{ php_fpm_service }}"
+    state: reloaded
+
+- name: 重啟 php-fpm
+  ansible.builtin.systemd_service:
+    name: "{{ php_fpm_service }}"
+    state: restarted
+    enabled: true

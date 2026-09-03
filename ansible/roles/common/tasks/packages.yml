@@ -1,0 +1,38 @@
+---
+# apt 模組本身需要 python3-apt。缺的時候 apt 模組會自己先用 apt-get 補裝
+# （"Updating cache and auto-installing missing dependency: python3-apt"），
+# 但我們仍然把它明確列進 common_base_packages，因為後面的 role 依賴它「一定在」。
+- name: 套件 | 更新 apt 索引
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ common_apt_cache_valid_time | int }}"
+  register: common_apt_cache
+  until: common_apt_cache is succeeded
+  retries: "{{ common_apt_retries | int }}"
+  delay: "{{ common_apt_delay | int }}"
+
+- name: 套件 | 安裝基礎套件（含 python3-debian / python3-apt，A6）
+  ansible.builtin.apt:
+    name: "{{ common_base_packages + common_extra_packages }}"
+    state: present
+    install_recommends: "{{ common_apt_install_recommends | bool }}"
+  register: common_apt_base
+  until: common_apt_base is succeeded
+  retries: "{{ common_apt_retries | int }}"
+  delay: "{{ common_apt_delay | int }}"
+
+# A6 的實際驗收：python3-debian 沒有真的裝起來的話，之後每一個
+# ansible.builtin.deb822_repository 任務都會失敗，而且錯誤訊息只會說
+# "Could not import python modules: debian.deb822"。在這裡就擋掉。
+- name: 套件 | 驗證 python3-debian 可被 import（A6）
+  ansible.builtin.command:
+    cmd: "{{ ansible_facts['python']['executable'] }} -c 'import debian.deb822'"
+  register: common_check_deb822
+  changed_when: false
+  failed_when: common_check_deb822.rc != 0
+  check_mode: false
+
+- name: 套件 | 記錄 cron.service 是否存在（給 handler 判斷用）
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/system/cron.service
+  register: common_cron_unit

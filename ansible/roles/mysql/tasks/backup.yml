@@ -1,0 +1,57 @@
+---
+# roles/mysql/tasks/backup.yml —— mysqldump + cron
+# 清理舊備份用 find -maxdepth 1 -type f -name '<prefix>-*' -mtime +N -delete，
+# 作用範圍被目錄、深度、檔名樣式三重限制住；腳本內另有絕對路徑與
+# 保留天數的執行期檢查。任何情況都不會出現無界的遞迴刪除。
+
+- name: 建立備份目錄
+  ansible.builtin.file:
+    path: "{{ mysql_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: 建立備份記錄檔目錄
+  ansible.builtin.file:
+    path: "{{ mysql_backup_log | dirname }}"
+    state: directory
+    owner: root
+    group: adm
+    mode: "0750"
+
+- name: 安裝備份腳本
+  ansible.builtin.template:
+    src: mysql-backup.sh.j2
+    dest: "{{ mysql_backup_script }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: 檢查備份腳本語法
+  ansible.builtin.command:
+    argv: [bash, -n, "{{ mysql_backup_script }}"]
+  register: mysql_backup_syntax
+  changed_when: false
+  failed_when: mysql_backup_syntax.rc != 0
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: 設定備份排程（gate：mysql_backup_enabled）
+  ansible.builtin.cron:
+    name: "{{ app_slug | default('pm') }} mysql backup"
+    user: root
+    cron_file: "{{ app_slug | default('pm') }}-mysql-backup"
+    minute: "{{ mysql_backup_minute }}"
+    hour: "{{ mysql_backup_hour }}"
+    job: "{{ mysql_backup_script }} >> {{ mysql_backup_log }} 2>&1"
+    state: "{{ (mysql_backup_enabled | bool) | ternary('present', 'absent') }}"
+
+- name: 設定備份記錄輪替
+  ansible.builtin.template:
+    src: logrotate-mysql-backup.j2
+    dest: "/etc/logrotate.d/{{ app_slug | default('pm') }}-mysql-backup"
+    owner: root
+    group: root
+    mode: "0644"
+  when: mysql_backup_logrotate | bool

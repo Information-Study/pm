@@ -1,0 +1,12 @@
+# ⚠ 本 repo 是 PUBLIC。inventory 與 vault 密碼絕不可進版控。
+inventory/hosts.yml
+inventory/host_vars/
+inventory/group_vars/*.yml
+!inventory/group_vars/all.yml
+!inventory/group_vars/*.yml.example
+*.vault
+.vault_pass*
+vault_pass*
+collections/
+*.retry
+facts_cache/

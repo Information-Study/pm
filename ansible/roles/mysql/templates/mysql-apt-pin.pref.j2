@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# A4：Ubuntu 的 mysql-server 是 8.0.x，Debian 的 default-mysql-server 是 MariaDB。
+# 把 repo.mysql.com 的 MySQL 套件釘在最高優先權，確保拿到
+# {{ mysql_version_series }} LTS 而不是發行版版本。
+Package: mysql-* libmysql* libmysqlclient* mysql-community-* mysql-client* mysql-server*
+Pin: origin {{ mysql_repo_base_url | urlsplit('hostname') }}
+Pin-Priority: {{ mysql_repo_pin_priority | int }}

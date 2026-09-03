@@ -1,0 +1,23 @@
+---
+# A20：三種前端模式全部依賴 nuxt.config.ts 讀 process.env.NUXT_SSR。
+# 舊版寫死 ssr: false 的話，ssr 模式會在 npm ci + 半個 build（好幾分鐘）之後才發現不對。
+# 這裡在 5 秒內就擋掉。
+#
+# 檢查兩個地方：
+#   1. 控制端 repo（ansible/ 的上一層就是 repo 根目錄）—— 第一次部署時唯一能檢查的來源
+#   2. 目標端 current release —— clone 還沒發生時不存在，不存在就跳過（不是失敗）
+- name: 前端 | 檢查 nuxt.config.ts 的 ssr 開關
+  ansible.builtin.include_tasks: nuxt_config_check.yml
+  loop:
+    - label: "控制端"
+      path: "{{ preflight_frontend_config_controller_path }}"
+      host: "localhost"
+      escalate: false
+    - label: "目標端"
+      path: "{{ preflight_frontend_config_remote_path }}"
+      host: "{{ inventory_hostname }}"
+      escalate: true
+  loop_control:
+    loop_var: preflight_nuxt
+    label: "{{ preflight_nuxt.label }}：{{ preflight_nuxt.path }}"
+  when: preflight_check_nuxt_config | bool

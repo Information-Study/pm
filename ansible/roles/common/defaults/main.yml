@@ -1,0 +1,150 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# common —— 每台主機都要有的基礎：套件、時區/locale、部署使用者、目錄骨架、日誌目錄。
+#
+# 本檔的前半段是「共用核心變數的正本」。實務上請把它們提升到
+# inventory/group_vars/all/main.yml（優先權高於 role defaults），這裡的值只是預設。
+# roles/preflight/defaults/main.yml 有一份鏡像，改這裡就要同步改那裡。
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── 共用核心：專案識別 ───────────────────────────────────────────────────────
+app_name: "pm"
+app_slug: "pm"                    # 路徑、systemd unit 名、log 目錄名都用它
+app_env: "production"
+app_domain: ""                    # ← 必填。preflight 會擋佔位值
+app_timezone: "Asia/Taipei"
+
+# ── 共用核心：目錄骨架（A8）──────────────────────────────────────────────────
+# releases/ + shared/ + current symlink 的版面，前後端各一套。
+app_root: "/srv/{{ app_slug }}"
+# 前後端共用的 shared（nodejs_pm2 的 ecosystem.config.cjs 放在 {{ app_shared_dir }}/pm2）
+app_shared_dir: "{{ app_root }}/shared"
+backend_root: "{{ app_root }}/backend"
+backend_releases_dir: "{{ backend_root }}/releases"
+backend_shared_dir: "{{ backend_root }}/shared"
+backend_current_path: "{{ backend_root }}/current"
+# 別名：nodejs_pm2 / deploy role 用的是不帶 _path 的名字。定義成同一個來源，
+# 才不會出現「改了一個、另一個還指著舊路徑」。
+backend_current: "{{ backend_current_path }}"
+frontend_root: "{{ app_root }}/frontend"
+frontend_releases_dir: "{{ frontend_root }}/releases"
+frontend_shared_dir: "{{ frontend_root }}/shared"
+frontend_current_path: "{{ frontend_root }}/current"
+frontend_current: "{{ frontend_current_path }}"
+
+# ── 共用核心：狀態與日誌（A9）────────────────────────────────────────────────
+app_state_dir: "/var/lib/{{ app_slug }}"
+frontend_mode_state_file: "{{ app_state_dir }}/frontend_mode"
+app_log_dir: "/var/log/{{ app_slug }}"
+php_log_dir: "/var/log/php"       # php-fpm 的 error_log / slowlog；缺這個目錄 FPM 起不來
+
+# ── 共用核心：使用者 ─────────────────────────────────────────────────────────
+deploy_user: "deploy"
+deploy_group: "deploy"
+web_user: "www-data"              # php-fpm / nginx worker 的執行身分
+web_group: "www-data"             # nginx / php-fpm 執行身分的群組
+
+# ── 共用核心：前端模式 ───────────────────────────────────────────────────────
+# A20：nuxt.config.ts 已經是 `const ssr = process.env.NUXT_SSR !== 'false'`，
+# 所以預設可以放心用 ssr。preflight 每次都會再 grep 確認一次。
+frontend_mode: "ssr"
+
+# ── 共用核心：上傳限制的唯一來源（A16）──────────────────────────────────────
+# php / nginx / waf 的四個值都必須從這個變數推導，不要各設各的。
+app_max_upload_mb: 32
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 以下是 common role 自己的旋鈕
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── apt ─────────────────────────────────────────────────────────────────────
+common_apt_cache_valid_time: 3600
+# 雲端映像常常在開機後跑 unattended-upgrades，會抓著 dpkg 鎖不放。
+common_apt_retries: 30
+common_apt_delay: 10
+common_apt_install_recommends: false
+
+# A6：deb822_repository 模組需要目標端有 python3-debian；apt 模組本身需要 python3-apt。
+# 這兩個必須在「任何 repo 任務之前」裝好，所以 common 一定要排在 php / mysql / nginx 之前。
+common_base_packages:
+  - python3-debian          # A6：ansible.builtin.deb822_repository 的必要條件
+  - python3-apt             # A6：ansible.builtin.apt 的必要條件
+  - python3-pymysql         # community.mysql 的必要條件（mysql role 會用）
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - apt-transport-https
+  - git
+  - acl                     # become_user 到非特權帳號時，暫存檔要靠 setfacl 交接
+  - rsync
+  - unzip                   # composer 解壓縮 dist 需要
+  - tar
+  - xz-utils
+  - locales
+  - tzdata
+  - cron
+  - logrotate
+  - jq
+common_extra_packages: []
+
+# ── locale / 時區 ───────────────────────────────────────────────────────────
+common_locales:
+  - "en_US.UTF-8"
+  - "zh_TW.UTF-8"
+common_default_locale: "en_US.UTF-8"   # 系統預設 LANG；APP_LOCALE 是 Laravel 那邊的事
+common_manage_default_locale: true
+
+# ── 部署使用者 ──────────────────────────────────────────────────────────────
+# deploy_home 是正本（composer / nodejs_pm2 role 用這個名字）；
+# deploy_user_home 是別名，兩者永遠一致。
+deploy_home: "/home/{{ deploy_user }}"
+deploy_user_home: "{{ deploy_home }}"
+deploy_user_shell: "/bin/bash"
+deploy_user_extra_groups: []
+# 公鑰清單；空的就不動 authorized_keys（永遠 exclusive: false，不會刪掉既有的鑰匙）
+deploy_user_authorized_keys: []
+# 有限度的 sudo：預設關閉。打開時只給下面這幾條，不給 ALL。
+deploy_user_sudo: false
+deploy_user_sudo_commands:
+  - "/usr/bin/systemctl reload nginx.service"
+  - "/usr/bin/systemctl reload php{{ php_version | default('8.5') }}-fpm.service"
+  - "/usr/bin/systemctl restart php{{ php_version | default('8.5') }}-fpm.service"
+  - "/usr/bin/systemctl restart {{ app_slug }}-queue.service"
+  - "/usr/bin/systemctl restart {{ app_slug }}-schedule.timer"
+  - "/usr/bin/systemctl status {{ app_slug }}-queue.service"
+
+# ── 目錄骨架 ────────────────────────────────────────────────────────────────
+# 02750：setgid，讓 deploy 建出來的東西自動掛 www-data 群組；others 完全沒有權限。
+common_dir_mode: "02750"
+# 02770：Laravel storage 需要 www-data 可寫（session / cache / log / 上傳）。
+common_shared_writable_mode: "02770"
+# 先把 Laravel 的 shared/storage 樹一次建好。deploy role 只要做 symlink 即可。
+common_create_laravel_shared_tree: true
+common_extra_directories: []      # [{path: ..., mode: ..., owner: ..., group: ...}]
+
+# ── 日誌 ────────────────────────────────────────────────────────────────────
+common_log_dir_mode: "0770"
+common_logrotate_enabled: true
+common_logrotate_rotate: 14
+common_logrotate_frequency: "daily"
+# php-fpm 的 log 輪替交給 php role（它才知道要不要 reload FPM），這裡預設不碰。
+common_logrotate_php_logs: false
+
+# ── 選配：unattended-upgrades ───────────────────────────────────────────────
+# 預設關閉。理由：自動更新會在部署途中搶 dpkg 鎖，而且可能無預警重啟 php-fpm / nginx。
+common_unattended_upgrades_enabled: false
+common_unattended_upgrades_reboot: false
+common_unattended_upgrades_blacklist:
+  - "nginx"
+  - "libnginx-mod-.*"
+  - "php.*"
+  - "mysql-.*"
+  - "nodejs"
+
+# ── 選配：swap ──────────────────────────────────────────────────────────────
+# 預設關閉。打開之後只會「建立」，不會在關閉時刪除既有 swapfile（不做無 gate 的刪除）。
+common_swap_enabled: false
+common_swap_file: "/swapfile"
+common_swap_size_mb: 2048
+common_swap_swappiness: 10

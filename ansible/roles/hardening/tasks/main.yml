@@ -1,0 +1,29 @@
+---
+# 全部 opt-in。什麼都沒打開時，這個 role 只會印一行說明。
+- name: Hardening | sshd
+  ansible.builtin.import_tasks: sshd.yml
+  when: hardening_sshd_enabled | bool
+  tags: [hardening, sshd]
+
+- name: Hardening | ufw
+  ansible.builtin.import_tasks: ufw.yml
+  when: hardening_ufw_enabled | bool
+  tags: [hardening, ufw, firewall]
+
+- name: Hardening | fail2ban
+  ansible.builtin.import_tasks: fail2ban.yml
+  when: hardening_fail2ban_enabled | bool
+  tags: [hardening, fail2ban]
+
+- name: Hardening | sysctl
+  ansible.builtin.import_tasks: sysctl.yml
+  when: hardening_sysctl_enabled | bool
+  tags: [hardening, sysctl]
+
+- name: Hardening | 目前的開關狀態
+  ansible.builtin.debug:
+    msg: >-
+      hardening：sshd={{ hardening_sshd_enabled }}、ufw={{ hardening_ufw_enabled }}、
+      fail2ban={{ hardening_fail2ban_enabled }}、sysctl={{ hardening_sysctl_enabled }}。
+      全部預設關閉；要打開請一項一項來，並先用 --check --diff 確認。
+  tags: [hardening]

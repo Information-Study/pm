@@ -1,0 +1,92 @@
+---
+# roles/mysql/tasks/config.yml —— zz-app.cnf（檔名 zz- 確保最後載入）
+
+- name: 確認 {{ mysql_my_cnf }} 存在
+  ansible.builtin.stat:
+    path: "{{ mysql_my_cnf }}"
+  register: mysql_mycnf_stat
+
+- name: 找不到主設定檔就中止
+  ansible.builtin.fail:
+    msg: >-
+      {{ mysql_my_cnf }} 不存在，無法確認 {{ mysql_conf_dir }} 會不會被載入。
+      請確認安裝的是 Debian/Ubuntu 版的 MySQL 套件。
+  when:
+    - not mysql_mycnf_stat.stat.exists
+    - not ansible_check_mode
+
+- name: 建立設定片段目錄
+  ansible.builtin.file:
+    path: "{{ mysql_conf_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: 讀取主設定檔
+  ansible.builtin.slurp:
+    src: "{{ mysql_my_cnf }}"
+  register: mysql_mycnf_raw
+  when: mysql_mycnf_stat.stat.exists
+
+- name: 解析 !includedir
+  ansible.builtin.set_fact:
+    mysql_mycnf_includedirs: >-
+      {{ (mysql_mycnf_raw.content | b64decode).splitlines()
+         | select('search', '^\s*!includedir')
+         | map('regex_replace', '^\s*!includedir\s+', '')
+         | map('regex_replace', '\s*$', '')
+         | map('regex_replace', '/+$', '')
+         | list }}
+  when: mysql_mycnf_stat.stat.exists
+
+- name: mysql_conf_dir 必須真的被 my.cnf include（否則設定寫了等於沒寫）
+  ansible.builtin.assert:
+    that:
+      - (mysql_conf_dir | regex_replace('/+$', '')) in mysql_mycnf_includedirs
+    fail_msg: >-
+      {{ mysql_my_cnf }} 的 !includedir 只有
+      {{ mysql_mycnf_includedirs | join(', ') | default('（無）') }}，
+      不包含 {{ mysql_conf_dir }}。
+      寫進去的 zz-app.cnf 不會被載入（字元集、bind-address、skip-name-resolve
+      全部靜默失效）。請把 mysql_conf_dir 覆寫成上列其中一個目錄。
+    quiet: true
+  when: mysql_mycnf_stat.stat.exists
+
+- name: 寫入 zz-app.cnf
+  ansible.builtin.template:
+    src: zz-app.cnf.j2
+    dest: "{{ mysql_conf_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart mysql
+  register: mysql_conf_written
+
+- name: 驗證設定可被 mysqld 接受
+  when:
+    - not ansible_check_mode
+    - mysql_conf_written is changed
+  block:
+    - name: mysqld --validate-config
+      ansible.builtin.command:
+        argv: ["{{ mysql_mysqld_bin }}", --user=mysql, --validate-config]
+      register: mysql_validate_config
+      changed_when: false
+      failed_when: mysql_validate_config.rc != 0
+  rescue:
+    - name: 設定無效時移除本次寫入的片段（gate：mysql_config_rollback_on_invalid，預設 false）
+      ansible.builtin.file:
+        path: "{{ mysql_conf_file }}"
+        state: absent
+      when: mysql_config_rollback_on_invalid | bool
+
+    - name: 回報 mysqld 的實際錯誤
+      ansible.builtin.fail:
+        msg: >-
+          {{ mysql_conf_file }} 無法通過 mysqld --validate-config：
+          {{ (mysql_validate_config.stderr | default('')) ~ ' ' ~ (mysql_validate_config.stdout | default('')) }}
+          （本次{{ (mysql_config_rollback_on_invalid | bool) | ternary('已移除該檔，MySQL 重啟後會回到上一版設定',
+          '保留該檔未動；若要讓失敗時自動移除，設定 mysql_config_rollback_on_invalid=true') }}）
+          常見原因：具名時區未載入 tz 表、innodb_buffer_pool_size 小於 128M、
+          mysql_extra_mysqld_options 拼錯選項名。

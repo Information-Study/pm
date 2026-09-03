@@ -1,0 +1,16 @@
+---
+- name: 前置斷言
+  ansible.builtin.import_tasks: assert.yml
+  tags: [nodejs, pm2, nodejs_assert]
+
+- name: 設定 NodeSource APT 來源並安裝 Node
+  ansible.builtin.import_tasks: nodejs.yml
+  tags: [nodejs, nodejs_install]
+
+- name: 安裝 PM2 並掛上 systemd
+  ansible.builtin.import_tasks: pm2.yml
+  tags: [nodejs, pm2, pm2_install]
+
+- name: 產生 ecosystem 並對齊 PM2 process 狀態
+  ansible.builtin.import_tasks: ecosystem.yml
+  tags: [nodejs, pm2, pm2_ecosystem]

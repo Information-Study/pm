@@ -1,0 +1,45 @@
+---
+# common 必須排在 php / mysql / nginx / deploy 之前：
+#   * A6：deb822_repository 需要 python3-debian，任何 repo 任務之前就要裝好
+#   * A8：目錄骨架要在 deploy clone 之前建好且 owner 是 deploy
+#   * A9：/var/log/php 要在 php-fpm 啟動之前存在
+- name: Common | 平台前置檢查（沒跑 preflight 時的保險）
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - app_slug is match('^[a-z][a-z0-9_-]{1,31}$')
+      - app_root is match('^/..*')
+      - deploy_user not in ['root', 'www-data']
+    quiet: true
+    fail_msg: "common role 的前提沒滿足，請先跑 preflight role。"
+  tags: [common]
+
+- name: Common | 基礎套件（A6）
+  ansible.builtin.import_tasks: packages.yml
+  tags: [common, packages]
+
+- name: Common | 時區與 locale
+  ansible.builtin.import_tasks: locale_time.yml
+  tags: [common, locale]
+
+- name: Common | 部署使用者與群組
+  ansible.builtin.import_tasks: users.yml
+  tags: [common, users]
+
+- name: Common | 目錄骨架（A8）
+  ansible.builtin.import_tasks: directories.yml
+  tags: [common, directories]
+
+- name: Common | 日誌目錄與輪替（A9）
+  ansible.builtin.import_tasks: logging.yml
+  tags: [common, logging]
+
+- name: Common | unattended-upgrades（選配）
+  ansible.builtin.import_tasks: unattended_upgrades.yml
+  when: common_unattended_upgrades_enabled | bool
+  tags: [common, unattended]
+
+- name: Common | swap（選配）
+  ansible.builtin.import_tasks: swap.yml
+  when: common_swap_enabled | bool
+  tags: [common, swap]

@@ -1,0 +1,74 @@
+---
+# www-data 在 Debian/Ubuntu 的 base-passwd 就有，這一步通常是 no-op；
+# 但最小化映像偶爾沒有，而目錄骨架的 group 全靠它。不指定 gid，避免撞到既有 gid。
+- name: 使用者 | 確保 {{ web_group }} 群組存在
+  ansible.builtin.group:
+    name: "{{ web_group }}"
+    state: present
+    system: true
+
+- name: 使用者 | 建立部署群組
+  ansible.builtin.group:
+    name: "{{ deploy_group }}"
+    state: present
+
+- name: 使用者 | 建立部署使用者
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    # append: true —— 只加不減，不會把既有的次要群組洗掉
+    groups: "{{ [web_group] + deploy_user_extra_groups }}"
+    append: true
+    shell: "{{ deploy_user_shell }}"
+    home: "{{ deploy_user_home }}"
+    create_home: true
+    system: false
+    state: present
+
+- name: 使用者 | 家目錄權限
+  ansible.builtin.file:
+    path: "{{ deploy_user_home }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "0750"
+
+- name: 使用者 | .ssh 目錄
+  ansible.builtin.file:
+    path: "{{ deploy_user_home }}/.ssh"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "0700"
+
+# exclusive: false —— 絕不刪除既有的公鑰（沒有 gate 的刪除一律不做）。
+- name: 使用者 | 佈署 SSH 公鑰
+  ansible.posix.authorized_key:
+    user: "{{ deploy_user }}"
+    key: "{{ item }}"
+    state: present
+    exclusive: false
+    manage_dir: false
+  loop: "{{ deploy_user_authorized_keys }}"
+  loop_control:
+    label: "{{ item.split(' ')[2] | default(item[:24]) }}"
+  when: deploy_user_authorized_keys | length > 0
+
+- name: 使用者 | 有限度的 sudo 規則
+  ansible.builtin.template:
+    src: sudoers-deploy.j2
+    dest: "{{ common_sudoers_file }}"
+    owner: root
+    group: root
+    mode: "0440"
+    # 這裡用 validate 是對的：visudo -cf 檢查的就是單一 sudoers 片段。
+    # （對比 A12：nginx -t -c 會把片段當成完整主設定，那種才不能用。）
+    validate: "/usr/sbin/visudo -cf %s"
+  when: deploy_user_sudo | bool
+
+# 有 gate 的移除：只在明確關閉時、且只針對本 role 自己產生的那一個檔案。
+- name: 使用者 | 關閉 sudo 時移除本 role 產生的規則檔
+  ansible.builtin.file:
+    path: "{{ common_sudoers_file }}"
+    state: absent
+  when: not (deploy_user_sudo | bool)

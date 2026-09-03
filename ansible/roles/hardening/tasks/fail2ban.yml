@@ -1,0 +1,82 @@
+---
+# Ubuntu 24.04 / Debian 12+ 的預設安裝有兩個坑：
+#   1. 這些系統預設沒有 /var/log/auth.log（只有 journald），
+#      而 fail2ban 的 sshd jail 預設要去讀它 → 服務起不來。
+#      解法是 backend = systemd，而那需要 python3-systemd 這個套件。
+#   2. 設定寫在 jail.local 會蓋掉整份 jail.conf 的意圖；
+#      寫進 jail.d/*.local 才是可疊加、也不會動到發行版檔案的做法。
+- name: fail2ban | 安裝（含 systemd backend 需要的 python3-systemd）
+  ansible.builtin.apt:
+    name:
+      - fail2ban
+      - python3-systemd
+    state: present
+    install_recommends: false
+  register: hardening_f2b_apt
+  until: hardening_f2b_apt is succeeded
+  retries: "{{ common_apt_retries | default(30) | int }}"
+  delay: "{{ common_apt_delay | default(10) | int }}"
+
+- name: fail2ban | nginx jail 需要的 log 檔是否存在
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ hardening_fail2ban_nginx_error_log }}"
+    - "{{ hardening_fail2ban_nginx_access_log }}"
+  register: hardening_f2b_nginx_logs
+  when: hardening_fail2ban_jails_nginx | bool
+
+- name: fail2ban | nginx jail 的 log 檔必須先存在
+  ansible.builtin.assert:
+    that:
+      - hardening_f2b_nginx_logs.results | rejectattr('stat.exists') | list | length == 0
+    quiet: true
+    fail_msg: >-
+      hardening_fail2ban_jails_nginx 打開了，但下列 log 檔還不存在：
+      {{ hardening_f2b_nginx_logs.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}。
+      fail2ban 找不到 logpath 會啟動失敗。請先讓 nginx role 跑完，或把這個開關關掉。
+  when:
+    - hardening_fail2ban_jails_nginx | bool
+    - hardening_f2b_nginx_logs is not skipped
+
+- name: fail2ban | 寫入 jail 設定
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: "/etc/fail2ban/jail.d/50-{{ app_slug }}.local"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+
+# 設定寫壞的話 fail2ban 會啟動失敗，而 systemd 只會說 "exit-code"。
+# 這裡先用 -t 驗一次，錯誤訊息才看得懂。
+- name: fail2ban | 驗證設定
+  ansible.builtin.command:
+    cmd: /usr/bin/fail2ban-client -t
+  register: hardening_f2b_test
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: fail2ban | 設定必須通過驗證
+  ansible.builtin.assert:
+    that:
+      - hardening_f2b_test.rc == 0
+    quiet: true
+    fail_msg: >-
+      fail2ban 設定驗證失敗：
+      {{ hardening_f2b_test.stdout | default('') }} {{ hardening_f2b_test.stderr | default('') }}
+  when: not ansible_check_mode
+
+- name: fail2ban | 啟用並啟動
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    enabled: true
+    state: started
+
+- name: fail2ban | 提醒 ignoreip
+  ansible.builtin.debug:
+    msg: >-
+      ignoreip = {{ (hardening_fail2ban_ignoreip + hardening_fail2ban_ignoreip_extra) | join(' ') }}。
+      如果控制端（或你的辦公室出口）不在裡面，密碼打錯幾次就會把自己封掉
+      （解封：fail2ban-client set sshd unbanip <IP>）。

@@ -1,0 +1,36 @@
+# {{ ansible_managed }}
+# 放在 jail.d/ 而不是 jail.local：可疊加，也不會覆蓋發行版的 jail.conf。
+
+[DEFAULT]
+bantime  = {{ hardening_fail2ban_bantime }}
+findtime = {{ hardening_fail2ban_findtime }}
+maxretry = {{ hardening_fail2ban_maxretry }}
+ignoreip = {{ (hardening_fail2ban_ignoreip + hardening_fail2ban_ignoreip_extra) | join(' ') }}
+{% if hardening_ufw_enabled | bool %}
+# 有 ufw 就用 ufw 下規則，避免 iptables 規則跟 ufw 的鏈互相打架。
+banaction = ufw
+banaction_allports = ufw
+{% else %}
+banaction = iptables-multiport
+{% endif %}
+
+[sshd]
+enabled  = true
+# backend = systemd 是必要的：Ubuntu 24.04 / Debian 12+ 預設沒有 /var/log/auth.log，
+# 用預設 backend 會讓 fail2ban 因為找不到 logpath 而啟動失敗。
+# 這個 backend 需要 python3-systemd（已在 tasks 裡一起安裝）。
+backend  = systemd
+port     = {{ hardening_ssh_port }}
+maxretry = {{ hardening_fail2ban_maxretry }}
+{% if hardening_fail2ban_jails_nginx | bool %}
+
+[nginx-http-auth]
+enabled = true
+port    = http,https
+logpath = {{ hardening_fail2ban_nginx_error_log }}
+
+[nginx-botsearch]
+enabled = true
+port    = http,https
+logpath = {{ hardening_fail2ban_nginx_access_log }}
+{% endif %}

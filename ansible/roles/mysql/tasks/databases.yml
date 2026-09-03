@@ -1,0 +1,86 @@
+---
+# roles/mysql/tasks/databases.yml —— 應用資料庫、雙 host 授權、test schema
+
+- name: 建立應用程式資料庫
+  community.mysql.mysql_db:
+    name: "{{ mysql_app_db_name }}"
+    encoding: "{{ mysql_charset }}"
+    collation: "{{ mysql_collation }}"
+    state: present
+    login_unix_socket: "{{ mysql_socket }}"
+    config_file: "{{ mysql_defaults_file }}"
+
+# A3 —— 兩個 host 都要建。skip-name-resolve 之下 MySQL 不做反解：
+#   後端 .env 用 DB_HOST=127.0.0.1 連進來時，比對的是字面 '127.0.0.1'，
+#   只有 'pm'@'localhost' 會直接 1045 Access denied；
+#   反過來用 socket（DB_HOST=localhost）連時比對的是 'localhost'。
+- name: 建立應用程式帳號（localhost 與 127.0.0.1 兩筆）
+  community.mysql.mysql_user:
+    name: "{{ mysql_app_db_user }}"
+    host: "{{ item }}"
+    password: "{{ mysql_app_db_password }}"
+    priv: "{{ mysql_app_priv }}"
+    update_password: "{{ mysql_app_password_update }}"
+    state: present
+    login_unix_socket: "{{ mysql_socket }}"
+    config_file: "{{ mysql_defaults_file }}"
+  loop: "{{ mysql_app_user_hosts }}"
+  loop_control:
+    label: "{{ mysql_app_db_user }}@{{ item }}"
+  no_log: true
+
+# ── A19：test schema ────────────────────────────────────────────────
+# DROP DATABASE 不可逆。三重 gate：
+#   (1) mysql_drop_test_db 預設 false
+#   (2) schema 必須存在
+#   (3) 該 schema 的 table 數必須為 0
+# 一次查詢同時取回 schema 數與 table 數（單一 query，避免多 query 與
+# positional_args 的搭配歧義）
+- name: 檢查 {{ mysql_test_db_name }} schema 的狀態
+  community.mysql.mysql_query:
+    query: >-
+      SELECT
+        (SELECT COUNT(*) FROM information_schema.schemata
+          WHERE schema_name = %s) AS schema_count,
+        (SELECT COUNT(*) FROM information_schema.tables
+          WHERE table_schema = %s) AS table_count
+    positional_args:
+      - "{{ mysql_test_db_name }}"
+      - "{{ mysql_test_db_name }}"
+    login_db: mysql
+    login_unix_socket: "{{ mysql_socket }}"
+    config_file: "{{ mysql_defaults_file }}"
+  register: mysql_test_db_state
+  changed_when: false
+  when: mysql_drop_test_db | bool
+
+- name: 記錄 test schema 的判斷結果
+  ansible.builtin.set_fact:
+    mysql_test_db_exists: "{{ (mysql_test_db_state.query_result[0][0].schema_count | int) > 0 }}"
+    mysql_test_db_tables: "{{ mysql_test_db_state.query_result[0][0].table_count | int }}"
+  when:
+    - mysql_drop_test_db | bool
+    - mysql_test_db_state.query_result is defined
+
+- name: 有資料表就不准刪（要刪請人工確認）
+  ansible.builtin.fail:
+    msg: >-
+      schema '{{ mysql_test_db_name }}' 內有
+      {{ mysql_test_db_tables }} 張資料表，拒絕執行 DROP DATABASE。
+      請先人工確認那些資料表可以丟棄（並做一次 mysqldump），
+      清空後再重跑，或把 mysql_drop_test_db 設回 false。
+  when:
+    - mysql_drop_test_db | bool
+    - mysql_test_db_exists | default(false) | bool
+    - (mysql_test_db_tables | default(0) | int) > 0
+
+- name: 移除空的 {{ mysql_test_db_name }} schema（gate：mysql_drop_test_db，預設 false）
+  community.mysql.mysql_db:
+    name: "{{ mysql_test_db_name }}"
+    state: absent
+    login_unix_socket: "{{ mysql_socket }}"
+    config_file: "{{ mysql_defaults_file }}"
+  when:
+    - mysql_drop_test_db | bool
+    - mysql_test_db_exists | default(false) | bool
+    - (mysql_test_db_tables | default(0) | int) == 0

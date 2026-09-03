@@ -1,0 +1,37 @@
+---
+# preflight：全部是斷言，沒有任何會改變狀態的任務。
+# 放 `always` tag 是刻意的 —— 就算只跑 `--tags nginx`，安全檢查也要先過。
+- name: Preflight | 控制端（ansible-core 版本與 collection）
+  ansible.builtin.import_tasks: controller.yml
+  tags: [preflight, always]
+
+- name: Preflight | 平台矩陣（發行版 / 架構 / 套件管理器）
+  ansible.builtin.import_tasks: platform.yml
+  tags: [preflight, always]
+
+- name: Preflight | 變數健檢
+  ansible.builtin.import_tasks: variables.yml
+  tags: [preflight, always]
+
+- name: Preflight | 上傳限制推導（A16）
+  ansible.builtin.import_tasks: uploads.yml
+  tags: [preflight, always]
+
+- name: Preflight | 前端 nuxt.config.ts（A20）
+  ansible.builtin.import_tasks: frontend.yml
+  tags: [preflight, always]
+
+- name: Preflight | 主機資源
+  ansible.builtin.import_tasks: resources.yml
+  tags: [preflight, always]
+
+- name: Preflight | 全部通過
+  ansible.builtin.debug:
+    msg: >-
+      preflight OK：{{ inventory_hostname }}
+      / {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+      / {{ ansible_facts['architecture'] }}
+      / frontend_mode={{ frontend_mode }}
+      / app_root={{ app_root }}
+      / 上傳上限 {{ app_max_upload_mb }} MB
+  tags: [preflight, always]

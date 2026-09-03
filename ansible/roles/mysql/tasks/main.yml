@@ -1,0 +1,44 @@
+---
+# roles/mysql/tasks/main.yml
+# 流程：assert → repo → install → config → secure → databases → backup → verify
+# 順序是刻意的：
+#   * repo 在 install 之前（A4：發行版拿不到 8.4 LTS）
+#   * /root/.my.cnf 在 install 之前寫（A18，見 install.yml 第一個任務）
+#   * verify 在最後，實際用應用帳號從 127.0.0.1 連一次（A3 的真實驗證）
+
+- name: 前置檢查
+  ansible.builtin.import_tasks: assert.yml
+  tags: [mysql, mysql-assert]
+
+- name: 設定 Oracle MySQL APT 來源
+  ansible.builtin.import_tasks: repo.yml
+  when: mysql_repo_source == 'oracle'
+  tags: [mysql, mysql-repo]
+
+- name: 安裝 MySQL
+  ansible.builtin.import_tasks: install.yml
+  tags: [mysql, mysql-install]
+
+- name: 寫入伺服器設定
+  ansible.builtin.import_tasks: config.yml
+  when: mysql_installed_ok | default(false) | bool
+  tags: [mysql, mysql-config]
+
+- name: root 帳號與安全強化
+  ansible.builtin.import_tasks: secure.yml
+  when: mysql_installed_ok | default(false) | bool
+  tags: [mysql, mysql-secure]
+
+- name: 應用程式資料庫與帳號
+  ansible.builtin.import_tasks: databases.yml
+  when: mysql_installed_ok | default(false) | bool
+  tags: [mysql, mysql-db]
+
+- name: 備份腳本與排程
+  ansible.builtin.import_tasks: backup.yml
+  tags: [mysql, mysql-backup]
+
+- name: 驗證
+  ansible.builtin.import_tasks: verify.yml
+  when: mysql_installed_ok | default(false) | bool
+  tags: [mysql, mysql-verify]

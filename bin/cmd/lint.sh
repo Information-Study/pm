@@ -7,7 +7,15 @@
 # ansible 一旦可用，請改跑真正的 --syntax-check，本工具只是補位。
 
 cmd_lint_main() {
+    case ${1:-} in
+        -h|--help)
+            printf '用法：cx lint [目錄]\n\n' >&2
+            printf '  Ansible 靜態檢查。預設檢查 ansible/。\n' >&2
+            printf '  這是 ansible-playbook --syntax-check 的替代品，不是等價物。\n' >&2
+            return 0 ;;
+    esac
     local target="${1:-$CX_ROOT/ansible}"
+    [[ $target == /* ]] || target=$(cx_resolve "$target")
     [[ -d $target ]] || cx_die "$EX_PRECOND" "找不到 $target"
 
     if cx_have ansible-playbook; then

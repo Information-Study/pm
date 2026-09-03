@@ -1,0 +1,16 @@
+---
+# 時區換掉之後 cron 需要重啟才會用新的 TZ 算排程。
+# 只有在 cron.service 真的存在時才動（容器映像可能沒有）。
+- name: Restart cron
+  ansible.builtin.systemd_service:
+    name: cron
+    state: restarted
+  # 注意寫法：Ansible 的 undefined 是 StrictUndefined，對未定義變數做屬性存取會直接拋錯，
+  # 光靠 | default(false) 救不回來（例如只用 --tags locale 跑、packages.yml 沒執行時）。
+  when:
+    - common_cron_unit is defined
+    - common_cron_unit.stat.exists | default(false)
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true

@@ -1,0 +1,99 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# hardening —— 每一項都是 opt-in，預設全關。
+#
+# 為什麼預設全關：這個 role 的每一項都能把你自己鎖在門外（ufw 擋掉 22、
+# sshd 關掉密碼登入而你還沒放公鑰、fail2ban 把控制端的 IP 封掉）。
+# 打開之前請先確認 inventory 裡的連線方式，並用 --check --diff 跑一次。
+#
+# 建議的打開順序：
+#   1. hardening_sshd_enabled（先確認公鑰能登入，再考慮關密碼）
+#   2. hardening_ufw_enabled（確認 hardening_ssh_port 有在放行清單裡）
+#   3. hardening_fail2ban_enabled（先把控制端 IP 放進 ignoreip）
+#   4. hardening_sysctl_enabled
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── UFW ─────────────────────────────────────────────────────────────────────
+hardening_ufw_enabled: false
+# 破壞性：ufw --force reset 會清掉「所有」既有規則（包含別人手動加的）。
+hardening_ufw_reset: false
+hardening_ufw_default_incoming: "deny"
+hardening_ufw_default_outgoing: "allow"
+hardening_ufw_default_routed: "deny"
+hardening_ufw_logging: "low"
+# 只開這三個。PM2 的 3000/3001、php-fpm 的 9000、MySQL 的 3306 都不對外
+# —— 它們應該綁在 127.0.0.1，由 nginx 反向代理。
+hardening_ufw_allowed_tcp_ports:
+  - 22
+  - 80
+  - 443
+# 進階規則：[{rule: allow, port: "3306", proto: tcp, src: "10.0.0.0/8", comment: "internal db"}]
+hardening_ufw_rules: []
+# ufw 規則與 sshd 設定共用這個埠號，避免兩邊寫不一樣。
+hardening_ssh_port: 22
+
+# ── fail2ban ────────────────────────────────────────────────────────────────
+hardening_fail2ban_enabled: false
+hardening_fail2ban_bantime: "1h"
+hardening_fail2ban_findtime: "10m"
+hardening_fail2ban_maxretry: 5
+# 一定要包含你自己的出口 IP，否則打錯幾次密碼就把控制端封掉了。
+hardening_fail2ban_ignoreip:
+  - "127.0.0.1/8"
+  - "::1"
+hardening_fail2ban_ignoreip_extra: []
+# nginx 的 jail 需要對應的 log 檔存在，否則 fail2ban 會啟動失敗。
+# 等 nginx role 跑完、確認 log 路徑之後再打開。
+hardening_fail2ban_jails_nginx: false
+hardening_fail2ban_nginx_error_log: "/var/log/nginx/error.log"
+hardening_fail2ban_nginx_access_log: "/var/log/nginx/access.log"
+
+# ── sshd ────────────────────────────────────────────────────────────────────
+hardening_sshd_enabled: false
+# 預設值刻意保守：不關密碼登入、不改埠。要收緊請「先確認公鑰可用」再逐項打開。
+hardening_sshd_permit_root_login: "prohibit-password"
+hardening_sshd_password_authentication: "yes"
+hardening_sshd_pubkey_authentication: "yes"
+hardening_sshd_permit_empty_passwords: "no"
+hardening_sshd_challenge_response: "no"
+hardening_sshd_x11_forwarding: "no"
+hardening_sshd_allow_agent_forwarding: "no"
+hardening_sshd_allow_tcp_forwarding: "no"
+hardening_sshd_max_auth_tries: 4
+hardening_sshd_max_sessions: 10
+hardening_sshd_login_grace_time: 30
+hardening_sshd_client_alive_interval: 300
+hardening_sshd_client_alive_count_max: 2
+hardening_sshd_use_dns: "no"
+# 空清單 = 不寫 AllowUsers / AllowGroups（寫錯會直接把所有人擋在外面）。
+hardening_sshd_allow_users: []
+hardening_sshd_allow_groups: []
+# Ubuntu 24.04 起 ssh 預設是 socket activation，改埠必須同時覆寫 ssh.socket，
+# 只改 sshd_config 的 Port 是沒有用的。要改埠請把這個打開。
+hardening_sshd_manage_port: false
+
+# ── sysctl ──────────────────────────────────────────────────────────────────
+hardening_sysctl_enabled: false
+# 注意：若核心關閉了 IPv6，請把 net.ipv6.* 幾行從這個字典移除，否則 sysctl 會失敗。
+hardening_sysctl_settings:
+  net.ipv4.tcp_syncookies: "1"
+  net.ipv4.conf.all.rp_filter: "1"
+  net.ipv4.conf.default.rp_filter: "1"
+  net.ipv4.conf.all.accept_redirects: "0"
+  net.ipv4.conf.default.accept_redirects: "0"
+  net.ipv4.conf.all.secure_redirects: "0"
+  net.ipv4.conf.all.send_redirects: "0"
+  net.ipv4.conf.default.send_redirects: "0"
+  net.ipv4.conf.all.accept_source_route: "0"
+  net.ipv4.conf.default.accept_source_route: "0"
+  net.ipv4.conf.all.log_martians: "1"
+  net.ipv4.icmp_echo_ignore_broadcasts: "1"
+  net.ipv4.icmp_ignore_bogus_error_responses: "1"
+  net.ipv6.conf.all.accept_redirects: "0"
+  net.ipv6.conf.default.accept_redirects: "0"
+  net.ipv6.conf.all.accept_source_route: "0"
+  kernel.randomize_va_space: "2"
+  fs.protected_hardlinks: "1"
+  fs.protected_symlinks: "1"
+  fs.protected_fifos: "1"
+  fs.protected_regular: "2"

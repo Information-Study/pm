@@ -1,0 +1,41 @@
+---
+# A17：ansible-core 版本。ansible_version 是控制端的版本，任何主機上都讀得到。
+# 刻意不用 run_once —— 在 serial 底下 run_once 的作用域只有當前 batch（A15），
+# 而這種純斷言重複跑也不會有副作用。
+- name: 控制端 | ansible-core 版本下限
+  ansible.builtin.assert:
+    that:
+      - ansible_version.full is version(preflight_min_ansible_version, '>=')
+    quiet: true
+    fail_msg: >-
+      需要 ansible-core >= {{ preflight_min_ansible_version }}，目前是 {{ ansible_version.full }}。
+      理由：ansible.builtin.deb822_repository 需要 2.15、ansible.builtin.systemd_service 需要 2.17。
+      修正：pipx install --force 'ansible-core>=2.17'   或   pip install -U 'ansible-core>=2.17'
+
+- name: 控制端 | 列出已安裝的 collection
+  ansible.builtin.command:
+    cmd: ansible-galaxy collection list
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: preflight_galaxy_list
+  when: preflight_check_collections | bool
+
+- name: 控制端 | 必要 collection 必須找得到（A17：collections_path 設定錯就會找不到）
+  ansible.builtin.assert:
+    that:
+      - item in (preflight_galaxy_list.stdout | default(''))
+    quiet: true
+    fail_msg: >-
+      找不到 collection「{{ item }}」。
+      修正：cd ansible && ansible-galaxy collection install -r requirements.yml
+      若已經裝過卻仍找不到，檢查 ansible.cfg 的 collections_path 是不是把預設路徑蓋掉了 ——
+      它是「取代」而不是「附加」，必須寫成
+      ./collections:~/.ansible/collections:/usr/share/ansible/collections
+  loop: "{{ preflight_required_collections }}"
+  when:
+    - preflight_check_collections | bool
+    - preflight_galaxy_list is not skipped
+    - (preflight_galaxy_list.rc | default(1)) == 0

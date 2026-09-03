@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: composer
+  author: pm
+  description: >-
+    從 GitHub release 取得並以 sha256 校驗 composer.phar，安裝到 /usr/local/bin/composer。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [composer, php]
+dependencies: []

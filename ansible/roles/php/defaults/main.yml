@@ -1,0 +1,235 @@
+---
+# ============================================================================
+# roles/php/defaults/main.yml
+#
+# 這裡的值是 role 可獨立執行的「保底值」。role defaults 是 Ansible 中優先權
+# 最低的一層，group_vars/all.yml 與 inventory 都會蓋過它，所以在這裡重複宣告
+# 共用變數是安全的（也讓 `ansible-playbook --tags php` 能單獨跑）。
+# ============================================================================
+
+# ---- 共用變數（正式值來自 group_vars/all.yml）------------------------------
+app_slug: pm
+app_root: "/srv/{{ app_slug }}"
+deploy_user: deploy
+deploy_group: deploy
+# web_user / web_group 是 common role 定義的「php-fpm 與 nginx worker 的執行身分」。
+# common 把 backend/shared/storage 建成 02770 deploy:{{ web_group }}，
+# 也就是說 FPM 必須以 web_user 執行才寫得進 Laravel 的 storage。
+# 改動這兩個值要連 common 一起改，否則會得到
+#   "The stream or file .../storage/logs/laravel.log could not be opened in append mode"
+web_user: www-data
+web_group: www-data
+
+# ---- A16：上傳限制的單一來源 ------------------------------------------------
+# 鏈：app_max_upload_mb
+#       → php_upload_max_filesize / php_post_max_size   （本 role）
+#       → nginx_client_max_body_size                     （nginx role）
+#       → waf_request_body_limit                         （waf role，必須最大）
+# 四個值若各自寫死，26–32MB 的上傳會在通過 nginx 與 PHP 之後才被 WAF 擋成 413。
+app_max_upload_mb: 64
+php_upload_max_filesize_mb: "{{ app_max_upload_mb | int }}"
+# post_max_size 必須 >= upload_max_filesize，且要留表單其他欄位的空間。
+# +8 這個加成跟 preflight 的 preflight_post_overhead_mb 是同一個數字，
+# preflight/tasks/uploads.yml 會用它換算 bytes 再驗一次大小順序，兩邊必須一致。
+php_post_overhead_mb: 8
+php_post_max_size_mb: "{{ (app_max_upload_mb | int) + (php_post_overhead_mb | int) }}"
+# memory_limit 必須 > post_max_size，否則大檔上傳會在 PHP 內部 OOM。
+php_memory_limit_mb: 512
+
+php_upload_max_filesize: "{{ php_upload_max_filesize_mb | int }}M"
+php_post_max_size: "{{ php_post_max_size_mb | int }}M"
+php_memory_limit: "{{ php_memory_limit_mb | int }}M"
+
+# ---- 版本與路徑 -------------------------------------------------------------
+php_version: "8.5"
+php_fpm_service: "php{{ php_version }}-fpm"
+php_fpm_binary: "/usr/sbin/php-fpm{{ php_version }}"
+php_cli_binary: "/usr/bin/php{{ php_version }}"
+php_conf_root: "/etc/php/{{ php_version }}"
+php_fpm_conf_d: "{{ php_conf_root }}/fpm/conf.d"
+php_cli_conf_d: "{{ php_conf_root }}/cli/conf.d"
+php_fpm_pool_d: "{{ php_conf_root }}/fpm/pool.d"
+# 日誌目錄。common role 也會建這個目錄（common_log_directories），
+# 屬性必須跟它一致，否則兩個 role 會每次互相翻對方的 owner/mode。
+# common 用 owner=deploy_user、group=web_group、mode=common_log_dir_mode(0770)。
+php_log_dir: /var/log/php
+php_log_dir_owner: "{{ deploy_user }}"
+php_log_dir_group: "{{ web_group }}"
+php_log_dir_mode: "0770"
+php_fpm_socket: "/run/php/php{{ php_version }}-fpm-{{ app_slug }}.sock"
+
+# ---- 套件清單 ---------------------------------------------------------------
+# 必要套件：任何一個找不到就 fail fast。
+php_packages_required:
+  - "php{{ php_version }}-common"
+  - "php{{ php_version }}-fpm"
+  - "php{{ php_version }}-cli"
+  - "php{{ php_version }}-intl"      # Filament v5 硬性需求（ext-intl）
+  - "php{{ php_version }}-mbstring"
+  - "php{{ php_version }}-xml"
+  - "php{{ php_version }}-curl"
+  - "php{{ php_version }}-zip"
+  - "php{{ php_version }}-gd"
+  - "php{{ php_version }}-bcmath"
+  - "php{{ php_version }}-mysql"
+  - "php{{ php_version }}-readline"
+  - "php{{ php_version }}-soap"
+
+# 選用套件：APT 裡沒有就靜靜略過（會印 debug 說明），不會讓 play 失敗。
+#
+# php8.5-opcache 刻意放在這裡。2026-09-03 實測 ondrej PPA（noble）與
+# packages.sury.org（trixie）的套件索引：
+#   php8.0-opcache … php8.4-opcache  存在
+#   php8.5-opcache                    不存在
+# PHP 8.5 的 OPcache 已編進 php8.5-common（本機 `php -m` 有 Zend OPcache，
+# 但 /etc/php/8.5/mods-available/ 底下沒有 opcache.ini，也沒有 opcache.so）。
+# 把 php8.5-opcache 寫死在必要清單會得到
+#   E: Unable to locate package php8.5-opcache
+# 而整個 play 停在安裝這一步。
+php_packages_optional:
+  - "php{{ php_version }}-opcache"
+
+# ---- APT repository ---------------------------------------------------------
+php_repo_manage: true
+# 上線前先 HEAD 一下 dists/<suite>/Release，避免在 apt update 才發現 codename 沒被支援。
+php_repo_probe: true
+php_keyring_dir: /etc/apt/keyrings
+php_repo_architectures: >-
+  {{ 'amd64' if ansible_architecture == 'x86_64'
+     else ('arm64' if ansible_architecture == 'aarch64' else ansible_architecture) }}
+
+# Ubuntu：ondrej/php PPA
+# 指紋來自 Launchpad API（https://api.launchpad.net/devel/~ondrej/+archive/ubuntu/php
+# 的 signing_key_fingerprint 欄位），2026-09-03 實測值。
+php_ondrej_uri: "https://ppa.launchpadcontent.net/ondrej/php/ubuntu"
+php_ondrej_key_fingerprint: "B8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6"
+php_ondrej_key_url: >-
+  https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x{{ php_ondrej_key_fingerprint }}&options=mr
+php_ondrej_keyring: "{{ php_keyring_dir }}/ondrej-php.asc"
+php_ppa_suite: "{{ ansible_distribution_release }}"
+
+# Debian：packages.sury.org
+# 指紋為 apt.gpg 主鑰（DEB.SURY.ORG Automatic Signing Key <deb@sury.org>），
+# 2026-09-03 實測。注意這個檔是二進位 keyring（第一個 byte 0x99），不是 ASCII armor，
+# 所以副檔名必須是 .gpg —— 存成 .asc 會讓 apt 報
+#   "The key(s) in the keyring ... are ignored as the file has an unsupported filetype"
+php_sury_uri: "https://packages.sury.org/php/"
+php_sury_key_fingerprint: "15058500A0235D97F5D10063B188E2B695BD4743"
+php_sury_key_url: "https://packages.sury.org/php/apt.gpg"
+php_sury_keyring: "{{ php_keyring_dir }}/sury-php.gpg"
+php_sury_suite: "{{ ansible_distribution_release }}"
+
+# ---- php.ini（只寫 fpm/conf.d，永不寫 cli/conf.d）---------------------------
+# A2：composer.json 的 post-autoload-dump 會跑
+#   @php artisan package:discover / @php artisan filament:upgrade
+# 這兩個經 Symfony Process 呼叫 proc_open。CLI 只要少了 proc_open，
+# composer install 必死於
+#   "The Process class relies on proc_open, which is not available on your PHP installation."
+# 因此：(a) 這份清單不含 proc_open；(b) 這份 ini 只進 fpm/conf.d。
+php_disable_functions:
+  - exec
+  - passthru
+  - shell_exec
+  - system
+  - popen
+
+php_expose_php: "Off"
+php_display_errors: "Off"
+php_display_startup_errors: "Off"
+php_error_reporting: "E_ALL & ~E_DEPRECATED"
+php_max_execution_time: 60
+php_max_input_time: 60
+# Filament 的表單/表格一次送很多欄位，1000 的預設值容易被吃掉。
+php_max_input_vars: 5000
+php_timezone: "Asia/Taipei"
+# Laravel 用 try_files $uri /index.php?$query_string 走前端控制器，不依賴 PATH_INFO，
+# 所以關掉 fix_pathinfo 是安全的；若 nginx 改用 fastcgi_split_path_info 才需要設回 1。
+php_cgi_fix_pathinfo: 0
+php_realpath_cache_size: "4096k"
+php_realpath_cache_ttl: 600
+php_session_cookie_secure: "1"
+php_session_cookie_samesite: "Lax"
+php_extra_ini: {}          # 額外 key: value，直接附加到 99-app.ini 尾端
+
+# ---- OPcache / JIT ----------------------------------------------------------
+# PHP 8.5 的 OPcache 是內建的，**不要** 寫 zend_extension=opcache.so
+#（會得到 "Cannot load Zend OPcache - it was already loaded"）。
+# 只有 8.0–8.4 這種需要 phpX.Y-opcache 套件的版本才要打開下面這個開關。
+php_opcache_load_zend_extension: false
+php_opcache_enable: 1
+php_opcache_enable_cli: 0
+php_opcache_memory_consumption: 256
+php_opcache_interned_strings_buffer: 32
+php_opcache_max_accelerated_files: 20000
+# 預設保守：validate_timestamps=1 + revalidate_freq=0（每次請求 stat 一下）。
+#
+# 設成 0 會快一點，但必須同時滿足兩個前提，否則部署後會繼續服務舊 release 的程式碼：
+#   1. nginx 必須用 fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name
+#      （不能用 $document_root —— 那是 current symlink 的字面路徑，OPcache 認不出換版）；
+#   2. deploy role 換 symlink 後必須 reload php-fpm。
+# 這兩件事分屬 nginx role 與 deploy role，本 role 無法保證，所以預設不打開。
+php_opcache_validate_timestamps: 1
+php_opcache_revalidate_freq: 0
+# 必須是 1。設 0 會拿掉 doc-comment，Laravel/Filament 有元件依賴反射讀註解。
+php_opcache_save_comments: 1
+# tracing | function | disable。要回退時設 disable（jit_buffer_size 會一併寫 0）。
+php_opcache_jit: "tracing"
+php_opcache_jit_buffer_size: "64M"
+
+# ---- FPM pool ---------------------------------------------------------------
+# pool 以 web_user（www-data）執行，跟 common role 的目錄佈局對齊：
+#   程式碼    owner=deploy、group=web_group、02750  → www-data 只能讀，不能改程式碼
+#   storage   owner=deploy、group=web_group、02770  → www-data 可寫
+# 這樣一來 web 端被打穿也改不掉 release 裡的檔案。
+# 若要改成以 deploy 執行，common 的 02770 就變成多餘，但安全性會下降。
+php_fpm_user: "{{ web_user }}"
+php_fpm_group: "{{ web_group }}"
+php_fpm_pool_name: "{{ app_slug }}"
+
+# 由 vCPU 與記憶體推導；三個 spare 值互相夾擠，保證
+# min_spare <= start <= max_spare <= max_children。
+php_fpm_reserved_mb: 1024          # 留給 MySQL / nginx / node / OS
+php_fpm_process_mb: 64             # 單一 FPM child 的估計 RSS
+php_fpm_memory_budget_mb: >-
+  {{ [((ansible_memtotal_mb | default(2048) | int) - (php_fpm_reserved_mb | int)), 256] | max }}
+php_fpm_max_children_cap: "{{ (ansible_processor_vcpus | default(2) | int) * 8 }}"
+php_fpm_max_children: >-
+  {{ [[((php_fpm_memory_budget_mb | int) // (php_fpm_process_mb | int)),
+       (php_fpm_max_children_cap | int)] | min, 4] | max }}
+php_fpm_max_spare_servers: >-
+  {{ [((ansible_processor_vcpus | default(2) | int) * 3), (php_fpm_max_children | int)] | min }}
+php_fpm_min_spare_servers: >-
+  {{ [[(ansible_processor_vcpus | default(2) | int), 1] | max,
+      (php_fpm_max_spare_servers | int)] | min }}
+php_fpm_start_servers: >-
+  {{ [[((ansible_processor_vcpus | default(2) | int) * 2), (php_fpm_min_spare_servers | int)] | max,
+      (php_fpm_max_spare_servers | int)] | min }}
+
+php_fpm_max_requests: 500
+php_fpm_process_idle_timeout: "10s"
+php_fpm_request_terminate_timeout: "60s"
+php_fpm_request_slowlog_timeout: "10s"
+php_fpm_listen_backlog: 511
+# clear_env=yes 是安全預設；但這樣 child 連 PATH 都沒有，exec 類呼叫會找不到執行檔，
+# 所以顯式補一個最小 PATH。
+php_fpm_clear_env: "yes"
+php_fpm_env_path: "/usr/local/bin:/usr/bin:/bin"
+# open_basedir 預設留空（不輸出該行）。它很容易把 vendor/ 或 /tmp 擋掉造成難查的錯誤。
+php_fpm_open_basedir: ""
+# /fpm-status 與 /fpm-ping 預設不開。要開的話 nginx 必須用 allow/deny 限制來源。
+php_fpm_status_enabled: false
+php_fpm_status_path: "/fpm-status"
+php_fpm_ping_path: "/fpm-ping"
+
+# 刪除 distro 預設的 www pool。這是一個「刪除」動作，因此同時有：
+#   (1) 這個變數當開關；(2) tasks 內的 when；(3) 路徑完整性的 assert。
+php_fpm_disable_default_pool: true
+
+# ---- logrotate --------------------------------------------------------------
+# php-fpm 的 error_log / slowlog 由本 role 輪替。
+# common role 的 logrotate 模板有一段一樣的 {{ php_log_dir }}/*.log，
+# 但預設關閉（common_logrotate_php_logs: false），就是為了不跟這裡重複。
+# 兩邊同時開啟會讓 `logrotate --debug` 報 "duplicate log entry"，
+# 而 common 正好會跑那個驗證 —— play 會直接失敗。assert.yml 有擋。
+php_logrotate_enabled: true
+php_logrotate_rotate: 14

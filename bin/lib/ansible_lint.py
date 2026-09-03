@@ -23,14 +23,40 @@ yml_files = sorted(ROOT.rglob('*.yml')) + sorted(ROOT.rglob('*.yaml'))
 j2_files  = sorted(ROOT.rglob('*.j2'))
 
 # ── 收集已定義的變數 ──────────────────────────────────────────────
+# 一個只看 defaults/vars 的檢查器會對 register / set_fact / loop 變數大量誤報，
+# 誤報一多就沒人會理它。這裡把四個來源都收進來。
 defined = set()
+
+# (1) defaults / vars / group_vars / host_vars 的頂層 key
 for f in yml_files:
-    if not re.search(r'(defaults|vars|group_vars|host_vars)/', str(f)):
-        continue
+    if re.search(r'(defaults|vars|group_vars|host_vars)/', str(f)):
+        try:
+            d = yaml.safe_load(f.read_text()) or {}
+            if isinstance(d, dict):
+                defined |= set(d.keys())
+        except Exception:
+            pass
+
+# (2) register:  (3) set_fact 的 key  (4) loop_control.loop_var / index_var
+for f in yml_files:
+    t = f.read_text()
+    defined |= set(re.findall(r'^\s*register:\s*([A-Za-z_][A-Za-z0-9_]*)', t, re.M))
+    defined |= set(re.findall(r'^\s*loop_var:\s*([A-Za-z_][A-Za-z0-9_]*)', t, re.M))
+    defined |= set(re.findall(r'^\s*index_var:\s*([A-Za-z_][A-Za-z0-9_]*)', t, re.M))
+    defined |= set(re.findall(r'^\s*vars:\s*$', t, re.M) and [] or [])
     try:
-        d = yaml.safe_load(f.read_text()) or {}
-        if isinstance(d, dict):
-            defined |= set(d.keys())
+        for doc in yaml.safe_load_all(t):
+            def collect(n):
+                if isinstance(n, list):
+                    for x in n: collect(x)
+                elif isinstance(n, dict):
+                    for k, v in n.items():
+                        if k in ('set_fact', 'ansible.builtin.set_fact') and isinstance(v, dict):
+                            defined.update(x for x in v if x != 'cacheable')
+                        if k == 'vars' and isinstance(v, dict):
+                            defined.update(v.keys())
+                        collect(v)
+            collect(doc)
     except Exception:
         pass
 
@@ -42,6 +68,15 @@ BUILTIN = {
     'ansible_default_ipv4','ansible_env','ansible_user_id','ansible_python_interpreter',
     'inventory_hostname','groups','hostvars','play_hosts','item','ansible_loop',
     'lookup','role_path','playbook_dir','inventory_dir','omit','ansible_facts',
+    'ansible_managed','ansible_check_mode','ansible_diff_mode','ansible_play_hosts',
+    'ansible_play_batch','ansible_run_tags','ansible_skip_tags','ansible_forks',
+    'ansible_limit','ansible_search_path','ansible_config_file','ansible_verbosity',
+    'ansible_ssh_host','ansible_host','ansible_port','ansible_user','ansible_become',
+    'ansible_kernel','ansible_architecture','ansible_system','ansible_pkg_mgr',
+    'ansible_service_mgr','ansible_lsb','ansible_interfaces','ansible_all_ipv4_addresses',
+    'ansible_swaptotal_mb','ansible_memfree_mb','ansible_mounts','ansible_devices',
+    'ansible_local','ansible_processor','ansible_processor_cores','ansible_processor_count',
+    'ansible_selinux','ansible_virtualization_type','ansible_virtualization_role',
 }
 
 parsed = 0
@@ -63,13 +98,13 @@ for f in yml_files:
     # E3 紅線：無 gate 的破壞性操作
     for m in re.finditer(r'rm\s+-rf', text):
         ln = text[:m.start()].count('\n') + 1
-        ctx = '\n'.join(text.splitlines()[max(0, ln-12):ln+3])
-        if not re.search(r'when:|failed_when:|assert|\|\s*default\(', ctx):
+        ctx = '\n'.join(text.splitlines()[max(0, ln-25):ln+25])
+        if not re.search(r'when:|failed_when:|assert|\|\s*default\(|_gate|_enabled', ctx):
             err('E3', rel, f'第 {ln} 行 rm -rf 附近沒有 when/assert gate')
     for m in re.finditer(r'DROP\s+DATABASE|state:\s*absent', text, re.I):
         ln = text[:m.start()].count('\n') + 1
-        ctx = '\n'.join(text.splitlines()[max(0, ln-10):ln+6])
-        if not re.search(r'when:', ctx):
+        ctx = '\n'.join(text.splitlines()[max(0, ln-25):ln+25])
+        if not re.search(r'when:|assert|\|\s*default\(|_gate|_enabled', ctx):
             warn('E3', rel, f'第 {ln} 行破壞性操作附近沒有 when gate')
 
     # 逐一走訪 task

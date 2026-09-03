@@ -1,0 +1,199 @@
+---
+- name: 變數 | 專案識別（app_slug 會被拿去當路徑、systemd unit 名、log 目錄名）
+  ansible.builtin.assert:
+    that:
+      - app_name is defined
+      - (app_name | string | length) > 0
+      - app_slug is defined
+      - app_slug is match('^[a-z][a-z0-9_-]{1,31}$')
+      - app_env in ['production', 'staging', 'local']
+    quiet: true
+    fail_msg: >-
+      app_name / app_slug / app_env 有問題。
+      app_slug 必須符合 ^[a-z][a-z0-9_-]{1,31}$（目前：{{ app_slug | default('<未定義>') }}），
+      app_env 只接受 production / staging / local（目前：{{ app_env | default('<未定義>') }}）。
+
+- name: 變數 | app_domain 必須真的填過（不能留佔位值）
+  ansible.builtin.assert:
+    that:
+      - app_domain is defined
+      - (app_domain | lower) not in preflight_domain_placeholders
+      - (app_domain | lower) is match(preflight_domain_regex)
+    quiet: true
+    fail_msg: >-
+      app_domain 沒設定或還是佔位值（目前：「{{ app_domain | default('<未定義>') }}」）。
+      這個值會進 nginx server_name、APP_URL、FRONTEND_URL、SANCTUM_STATEFUL_DOMAINS 與
+      certbot 的憑證申請，錯了會在很後面才炸。
+      修正：在 inventory/group_vars/all/main.yml 設 app_domain: pm.example.org（換成你的網域）。
+
+- name: 變數 | 部署使用者
+  ansible.builtin.assert:
+    that:
+      - deploy_user is defined
+      - deploy_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - deploy_user not in ['root', 'www-data', 'nobody', 'daemon']
+      - deploy_group is defined
+      - web_group is defined
+    quiet: true
+    fail_msg: >-
+      deploy_user 不合法或用了不該用的帳號（目前：{{ deploy_user | default('<未定義>') }}）。
+      deploy_user 必須是一般使用者；用 root 會讓 release 目錄與 storage 的權限模型整個垮掉。
+
+# A1 的最上層防線：路徑一旦合法，之後 release prune 再怎麼寫都刪不到系統目錄。
+- name: 變數 | app_root 必須是安全的絕對路徑（A1 第一道防線）
+  ansible.builtin.assert:
+    that:
+      - app_root is defined
+      - app_root is match('^/')
+      - not (app_root.endswith('/'))
+      - app_root not in preflight_app_root_forbidden
+      - (app_root.strip('/').split('/') | reject('equalto', '') | list | length) >= (preflight_app_root_min_depth | int)
+      - "'..' not in app_root.split('/')"
+    quiet: true
+    fail_msg: >-
+      app_root =「{{ app_root | default('<未定義>') }}」不安全。
+      必須是絕對路徑、結尾不帶 /、不在禁用清單內、深度至少
+      {{ preflight_app_root_min_depth }} 層（例如 /srv/{{ app_slug | default('pm') }}）。
+      理由：release prune 與各種清理都以此為根，路徑太淺或渲染成空字串會變成災難。
+
+- name: 變數 | releases / shared 目錄必須位於 app_root 底下（A1 第二道防線）
+  ansible.builtin.assert:
+    that:
+      - item is defined
+      - item is match('^/')
+      - item.startswith(app_root ~ '/')
+      - (item.strip('/').split('/') | reject('equalto', '') | list | length) >= ((preflight_app_root_min_depth | int) + 1)
+    quiet: true
+    fail_msg: >-
+      「{{ item }}」不在 app_root（{{ app_root }}）底下。
+      prune / rollback 會以這些路徑為根做刪除，跑到 app_root 之外就等於在系統上亂刪。
+  loop:
+    - "{{ app_shared_dir }}"
+    - "{{ backend_root }}"
+    - "{{ backend_releases_dir }}"
+    - "{{ backend_shared_dir }}"
+    - "{{ backend_current_path }}"
+    - "{{ frontend_root }}"
+    - "{{ frontend_releases_dir }}"
+    - "{{ frontend_shared_dir }}"
+    - "{{ frontend_current_path }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: 變數 | 保留的 release 數量必須合理（A1）
+  ansible.builtin.assert:
+    that:
+      - (keep_releases | int) >= 2
+      - (keep_releases | int) <= 50
+    quiet: true
+    fail_msg: >-
+      keep_releases = {{ keep_releases }} 不合理。至少要 2（rollback 需要上一版），最多 50。
+      設成 0 或空字串會讓 prune 的邊界計算變成「全部刪掉」。
+  when: keep_releases is defined
+
+- name: 變數 | frontend_mode 只能是 ssr / spa / static
+  ansible.builtin.assert:
+    that:
+      - frontend_mode is defined
+      - frontend_mode in ['ssr', 'spa', 'static']
+    quiet: true
+    fail_msg: >-
+      frontend_mode =「{{ frontend_mode | default('<未定義>') }}」不合法，只接受 ssr / spa / static。
+        ssr    → nuxt build             → .output/server/index.mjs（PM2 fork 守護）
+        spa    → NUXT_SSR=false build   → .output/server/index.mjs（同上，但無 SSR）
+        static → NUXT_SSR=false generate→ .output/public/（Nginx 直送，不需要 PM2）
+
+- name: 變數 | 狀態檔與日誌路徑必須是絕對路徑（A9）
+  ansible.builtin.assert:
+    that:
+      - frontend_mode_state_file is match('^/')
+      - (frontend_mode_state_file | dirname) is match('^/..*')
+      - app_log_dir is match('^/..*')
+      - php_log_dir is match('^/..*')
+    quiet: true
+    fail_msg: >-
+      frontend_mode_state_file / app_log_dir / php_log_dir 必須是絕對路徑，
+      而且父目錄要能被 common role 建出來（php-fpm 少了 slowlog 目錄會直接
+      "FPM initialization failed" 起不來）。
+
+# A15：serial 之下 run_once 只在當前 batch 內生效，等同 no-op。
+# migration 必須靠 db_primary 這個 group 明確 gate，所以這個 group 的成員數必須可控。
+- name: 變數 | db_primary 群組最多一台（A15）
+  ansible.builtin.assert:
+    that:
+      - (groups['db_primary'] | default([])) | length <= 1
+    quiet: true
+    fail_msg: >-
+      inventory 的 db_primary 群組有 {{ (groups['db_primary'] | default([])) | length }} 台
+      （{{ (groups['db_primary'] | default([])) | join(', ') }}）。
+      migration 用 `when: inventory_hostname in groups['db_primary']` 來 gate，
+      多台會讓 artisan migrate 同時跑很多次。db_primary 只能有一台。
+
+- name: 變數 | 必須有一台 db_primary（否則 migration 永遠不會執行）
+  ansible.builtin.assert:
+    that:
+      - (groups['db_primary'] | default([])) | length == 1
+    quiet: true
+    fail_msg: >-
+      inventory 沒有 db_primary 群組（或群組是空的）。
+      migration 是用 groups['db_primary'] 而不是 run_once 來 gate（A15），
+      沒有這個群組的話 artisan migrate 一次都不會跑，網站會停在「資料表不存在」。
+      修正：在 inventory/hosts.yml 加
+        db_primary:
+          hosts:
+            web1:
+      或設 preflight_require_db_primary: false（你確定這次不需要跑 migration）。
+  when: preflight_require_db_primary | bool
+
+# ── 以下是「跨 role 的絆線」：只有在對應變數真的被定義時才檢查。
+#    刻意不用 default() 造出一個假值來檢查 —— 那會變成永遠通過的空斷言（A7）。 ──
+
+- name: 變數 | php_disable_functions 不可以含 proc_open（A2）
+  ansible.builtin.assert:
+    that:
+      - php_disable_functions is sequence
+      - php_disable_functions is not string
+      - "'proc_open' not in php_disable_functions"
+      - "'putenv' not in php_disable_functions"
+    quiet: true
+    fail_msg: >-
+      php_disable_functions 含 proc_open（或 putenv）。
+      本專案 backend/composer.json 有 post-autoload-dump（package:discover + filament:upgrade），
+      走 Symfony Process，需要 proc_open。禁掉的話 composer install 會直接死在
+      "The Process class relies on proc_open, which is not available on your PHP installation"。
+      而且這個 ini 只能寫進 FPM pool，不可以寫進 CLI 的 php.ini。
+  when: php_disable_functions is defined
+
+- name: 變數 | skip-name-resolve 之下必須同時授權 127.0.0.1 與 localhost（A3）
+  ansible.builtin.assert:
+    that:
+      - "'127.0.0.1' in mysql_app_user_hosts"
+      - "'localhost' in mysql_app_user_hosts"
+    quiet: true
+    fail_msg: >-
+      MySQL 開了 skip-name-resolve（mysql_skip_name_resolve=true），但 mysql_app_user_hosts
+      是 {{ mysql_app_user_hosts }}。
+      MySQL 不做反解，DB_HOST=127.0.0.1 時比對的是字面 '127.0.0.1'，
+      只建 'user'@'localhost'（走 unix socket 時才會用到）會得到 1045 Access denied。
+      兩個 host 都要建。
+  when:
+    - mysql_app_user_hosts is defined
+    - (mysql_skip_name_resolve | default(true)) | bool
+
+- name: 變數 | PM2 只能用 fork 模式（A10）
+  ansible.builtin.assert:
+    that:
+      - (pm2_exec_mode | default('fork')) == 'fork'
+      - (pm2_instances | default(1)) != 'max'
+      - (frontend_instances | default(1)) != 'max'
+      - (frontend_instances | default(1)) is not string
+      - (frontend_instances | default(1)) | int >= 1
+    quiet: true
+    fail_msg: >-
+      PM2 設定不安全：exec_mode={{ pm2_exec_mode | default('fork') }}、
+      instances={{ frontend_instances | default(pm2_instances | default(1)) }}。
+      cluster 模式走 CJS require() 載不動 Nuxt 的 ESM .mjs（ERR_REQUIRE_ESM；pm2#5946、nuxt#13916），
+      instances: 'max' 又會誤讀容器/主機的 CPU 數。
+      要水平擴充請開 N 個 fork 到 N 個埠，再讓 nginx upstream 用 least_conn。
+  when: >-
+    pm2_exec_mode is defined or pm2_instances is defined or frontend_instances is defined

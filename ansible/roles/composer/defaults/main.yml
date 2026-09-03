@@ -1,0 +1,60 @@
+---
+# ============================================================================
+# roles/composer/defaults/main.yml
+#
+# 從 GitHub release 取 composer.phar，不走 getcomposer.org。
+# 理由：getcomposer.org 在本專案的開發沙箱裡不通（且會解析到壞掉的 IPv6 卡死），
+# 而 GitHub release 是同一份檔案的官方發佈點。
+# ============================================================================
+
+app_slug: pm
+deploy_user: deploy
+deploy_group: deploy
+deploy_user_home: "/home/{{ deploy_user }}"
+php_version: "8.5"
+php_cli_binary: "/usr/bin/php{{ php_version }}"
+
+# ---- 版本鎖定 ---------------------------------------------------------------
+# 版本與 sha256 是一組的，改版本一定要一起改 sha256。取得新雜湊值的方法：
+#   V=2.10.4
+#   curl -4 -fsSL -o /tmp/c.phar \
+#     "https://github.com/composer/composer/releases/download/${V}/composer.phar"
+#   sha256sum /tmp/c.phar
+#
+# 下面這組是 2026-09-03 實際下載後算出來的（composer 2.10.3，3642137 bytes）。
+composer_version: "2.10.3"
+composer_sha256: "7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6"
+composer_download_url: >-
+  https://github.com/composer/composer/releases/download/{{ composer_version }}/composer.phar
+
+composer_bin_path: /usr/local/bin/composer
+composer_stage_dir: /usr/local/lib/composer
+composer_stage_path: "{{ composer_stage_dir }}/composer-{{ composer_version }}.phar"
+composer_download_timeout: 60
+
+# ---- 選用：GPG 驗簽 ---------------------------------------------------------
+# 預設關閉，因為它需要目標機能連到 keyserver（很多內網環境不通），
+# 而 sha256 釘死版本已經涵蓋了「拿到的檔案不是我預期的那一份」這個風險。
+# 打開的話會另外抓 composer.phar.asc 並用下面的指紋驗。
+# 指紋來自 2026-09-03 實際下載的 2.10.3 簽章檔
+#（gpg --list-packets 顯示 issuer fpr v4 161DFBE342889F01DDAC4E61CBB3D576F2A0946F，
+#  uid: contact@packagist.com）。
+composer_verify_gpg: false
+composer_gpg_fingerprint: "161DFBE342889F01DDAC4E61CBB3D576F2A0946F"
+composer_gpg_keyserver: "hkps://keyserver.ubuntu.com"
+composer_signature_url: >-
+  https://github.com/composer/composer/releases/download/{{ composer_version }}/composer.phar.asc
+
+# ---- deploy 使用者的 composer 環境 -----------------------------------------
+# COMPOSER_HOME 一定要指到 deploy 寫得進去的地方，否則 composer 會退回
+# /root/.composer 或在 HOME 不可寫時警告並停用快取，讓每次部署都重抓全部套件。
+composer_home: "{{ deploy_user_home }}/.config/composer"
+composer_cache_dir: "{{ deploy_user_home }}/.cache/composer"
+# 寫一支 /etc/profile.d 讓互動式登入也吃得到（deploy role 自己會在 environment: 明帶）。
+composer_write_profile_d: true
+composer_profile_d_path: "/etc/profile.d/{{ app_slug }}-composer.sh"
+
+# 註：composer 本體是 root:root 0755，deploy 使用者跑 `composer self-update`
+# 會直接被權限擋下（"Composer update failed: ... is not writable"），
+# 所以版本只能由本 role 的 composer_version 決定，不會在機器之間漂移。
+# 這是刻意的，不需要額外的開關變數。
