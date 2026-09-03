@@ -1,0 +1,115 @@
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# inventory/group_vars/production.yml.example
+#
+#   cp inventory/group_vars/production.yml.example inventory/group_vars/production.yml
+#   ansible-vault encrypt inventory/group_vars/production.yml
+#
+# 只寫「與 group_vars/all.yml 預設值不同」的項目。
+# production.yml（未加 .example）已在 .gitignore 內。
+#
+# 上線前的檢查清單：
+#   [ ] app_domain 的 A / AAAA 記錄已經指到這台機器（certbot HTTP-01 需要）
+#   [ ] certbot_staging 已改成 false，且先用 true 成功跑過一次
+#   [ ] vault_mysql_root_password / vault_mysql_app_password 已設定且 >= 12 字元
+#   [ ] deploy_user_authorized_keys 已放入部署用公鑰
+#   [ ] 先跑 --check --diff，再跑真的
+#   [ ] hardening 要打開的話，一項一項來，每項之間都確認 ssh 還連得進去
+# ══════════════════════════════════════════════════════════════════════════════
+
+app_env: "production"
+
+# ★ 必填
+app_domain: "pm.your-domain.tld"
+# 有 www 之類的別名就列在這裡；certbot_domains 會自動把它們一起簽進同一張憑證。
+nginx_server_aliases: []
+
+# ── TLS ───────────────────────────────────────────────────────────────────────
+tls_enable: true
+certbot_email: "ops@your-domain.tld"
+certbot_staging: false
+# HSTS：確認「憑證自動續期已經成功跑過至少一輪」之後再打開。
+# 一旦送出，瀏覽器在 max_age 內會拒絕以 http 連線，也會拒絕憑證有問題的 https，
+# 而且沒有辦法從伺服器端撤銷。
+tls_hsts_enabled: false
+tls_hsts_max_age: 15552000
+
+# ── 應用 ──────────────────────────────────────────────────────────────────────
+backend_app_debug: false
+backend_log_level: "warning"
+# 真的要寄信就換成 smtp 並把憑證放 vault。
+backend_mail_mailer: "log"
+
+# ── 前端 ──────────────────────────────────────────────────────────────────────
+frontend_mode: "ssr"
+# A10：要吃更多流量就把 fork 數調大（例如 2），nginx upstream 會產生
+# 127.0.0.1:3000 與 127.0.0.1:3001 兩個成員並用 least_conn 分流。
+# 絕不改成 cluster —— 那會 ERR_REQUIRE_ESM；也絕不用 'max'。
+# 兩個值必須一起改（site.yml 的 preflight play 有斷言）。
+pm2_instances: 2
+frontend_instances: 2
+
+# ── 部署 ──────────────────────────────────────────────────────────────────────
+backend_branch: "main"
+frontend_branch: "main"
+releases_keep: 5
+keep_releases: 5
+releases_prune: true
+deploy_backend_migrate: true
+deploy_backend_seed: false
+# 多台 web 時建議一台一台換（A15：serial 不影響 migration，
+# 因為它是用 groups['db_primary'] gate，不是 run_once）。
+# deploy_serial: 1
+
+# ── 上傳上限 ──────────────────────────────────────────────────────────────────
+# 只改這一個值，php / nginx / WAF 三邊會一起跟著推導（A16）。
+app_max_upload_mb: 32
+
+# ── 資料庫 ────────────────────────────────────────────────────────────────────
+mysql_backup_enabled: true
+mysql_backup_retention_days: 30
+# ★ 不可逆，永遠保持 false（除非你真的確認 test schema 是空的而且不需要）。
+mysql_drop_test_db: false
+# 依機器記憶體調整；預設是 memtotal 的 35%。
+# mysql_innodb_buffer_pool_mb: 2048
+
+# ── WAF ───────────────────────────────────────────────────────────────────────
+waf_enabled: true
+# ★ 只有在 staging 已經用 DetectionOnly 收過誤判、並把 rule id 整理進
+#   waf_exclusions_before 之後，才把這裡切成 On。
+#   直接上 On 的典型後果：Filament 的表單送出（大量 JSON + base64）被 CRS
+#   的 941xxx / 942xxx 判成攻擊，後台整個不能用。
+waf_rule_engine: "On"
+waf_crs_paranoia_level: 1
+waf_crs_anomaly_threshold_inbound: 5
+# A11：這裡放的規則會被寫進 exclusions-before/（在 include CRS 之前載入），
+#      因為 ctl:ruleRemoveById 只影響「同 phase 中尚未執行」的規則。
+#      多個 ctl 之間是逗號，不是分號 —— 分號會讓 ModSecurity 拒絕載入、nginx 起不來。
+#      rule id 一定要從這台機器實際的 audit log 撈，不要抄別人的。
+waf_exclusions_before: []
+#   - id: 10001
+#     comment: "Filament 後台的表單送出誤判（rule id 請從 audit log 確認後再填）"
+#     rule: |
+#       SecRule REQUEST_URI "@beginsWith /admin/" \
+#         "id:10001,phase:1,pass,nolog,ctl:ruleRemoveById=920420,ctl:ruleRemoveById=942100"
+waf_exclusions_after: []
+
+# ── Hardening ─────────────────────────────────────────────────────────────────
+# ★ 一項一項打開，每打開一項就先 --check --diff，套用後立刻另開一個 ssh 連線確認還進得去。
+#   順序：sshd（先確認公鑰能登入）→ ufw（確認 22 在放行清單）→ fail2ban（先放行控制端 IP）→ sysctl
+hardening_sshd_enabled: false
+# hardening_sshd_password_authentication: "no"    # ← 確認公鑰可用之後才改
+hardening_ufw_enabled: false
+hardening_ufw_allowed_tcp_ports: [22, 80, 443]
+hardening_fail2ban_enabled: false
+# hardening_fail2ban_ignoreip_extra: ["你的出口 IP/32"]
+hardening_sysctl_enabled: false
+
+# ── 部署帳號的公鑰 ────────────────────────────────────────────────────────────
+deploy_user_authorized_keys: []
+#   - "ssh-ed25519 AAAA... deploy@ci"
+
+# ── 祕密（一律 ansible-vault，不要明文提交）──────────────────────────────────
+# vault_mysql_root_password: "……"
+# vault_mysql_app_password: "……"
+# vault_app_key: "base64:……"    # 留空 = 首次部署自動產生並寫進 shared/.env（之後永遠沿用）

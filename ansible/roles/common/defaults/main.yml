@@ -51,6 +51,11 @@ frontend_mode: "ssr"
 
 # ── 共用核心：上傳限制的唯一來源（A16）──────────────────────────────────────
 # php / nginx / waf 的四個值都必須從這個變數推導，不要各設各的。
+# ⚠ A16 單一來源：app_max_upload_mb 與四個推導值的**正本在
+#    inventory/group_vars/all.yml**（inventory group_vars 的優先權高於 role defaults）。
+#    這裡只保留一個「role 單獨執行時的 fallback」，數值必須與正本一致。
+#    曾經在 5 個 role defaults 各放一份，其中 php 是 64、其他是 32 ——
+#    group_vars 在時看不出來，一旦沒帶 inventory 就會靜默產生 413。
 app_max_upload_mb: 32
 
 # ─────────────────────────────────────────────────────────────────────────────

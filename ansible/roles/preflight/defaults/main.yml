@@ -127,4 +127,9 @@ web_user: "www-data"
 web_group: "www-data"
 # A20：nuxt.config.ts 已經正確讀 process.env.NUXT_SSR，所以預設是 ssr。
 frontend_mode: "ssr"
+# ⚠ A16 單一來源：app_max_upload_mb 與四個推導值的**正本在
+#    inventory/group_vars/all.yml**（inventory group_vars 的優先權高於 role defaults）。
+#    這裡只保留一個「role 單獨執行時的 fallback」，數值必須與正本一致。
+#    曾經在 5 個 role defaults 各放一份，其中 php 是 64、其他是 32 ——
+#    group_vars 在時看不出來，一旦沒帶 inventory 就會靜默產生 413。
 app_max_upload_mb: 32

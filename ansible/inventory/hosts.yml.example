@@ -1,0 +1,111 @@
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# inventory/hosts.yml.example
+#
+#   cp inventory/hosts.yml.example inventory/hosts.yml
+#   $EDITOR inventory/hosts.yml          # 填 ansible_host / ansible_user
+#   ssh-keyscan -H <你的主機> >> ~/.ssh/known_hosts    # ansible.cfg 沒有關 host key 檢查
+#
+# hosts.yml 已在 .gitignore 內（含主機位址，不進版控）。
+#
+# ★★ 一個 inventory 檔 = 一個環境 ★★
+#
+#   preflight 會斷言「groups['db_primary'] 剛好一台」。groups 是「整份 inventory」
+#   的視角，--limit 不會讓它變小 —— 也就是說，把 staging 與 production 各一台
+#   資料庫寫進同一個檔，會得到 db_primary 有 2 台而直接被擋下，
+#   即使你下了 --limit staging 也一樣。
+#
+#   這個限制是刻意的：migration 用 groups['db_primary'] 來 gate（A15：serial 之下
+#   run_once 只在當前 batch 生效，等同 no-op），gate 的對象必須唯一。
+#
+#   所以下面把 production 那一組整段註解掉了。要同時管理兩個環境，請開兩個檔：
+#     cp inventory/hosts.yml.example inventory/staging.yml      # 只留 staging 那組
+#     cp inventory/hosts.yml.example inventory/production.yml   # 只留 production 那組
+#     ansible-playbook -i inventory/staging.yml    site.yml
+#     ansible-playbook -i inventory/production.yml site.yml
+#   group_vars/ 與 inventory 檔同層，兩個檔都吃得到 group_vars/all.yml、
+#   group_vars/staging.yml、group_vars/production.yml，不需要複製變數。
+#
+# ── 群組的意義 ────────────────────────────────────────────────────────────────
+#   pm_servers   site.yml 的作用對象。所有機器都要在裡面（common / hardening 對它跑）。
+#   web          跑 php-fpm / nginx / node+PM2 / deploy_* / healthcheck 的機器。
+#   db_primary   跑 MySQL、而且「由它執行 artisan migrate」的機器。剛好一台。
+#                必須同時是 web 成員，否則 deploy_backend 不會在它上面跑，
+#                migration 就一次都不會執行（site.yml 的 preflight play 會擋）。
+#   staging /    環境群組。只是拿來套 group_vars/staging.yml、group_vars/production.yml，
+#   production   不影響 role 的執行與否。
+#
+#   預設拓撲是「單機」：同一台既是 web 也是 db_primary。
+#   mysql_bind_address 與 db_host 都是 127.0.0.1，就是為了這個拓撲。
+#   要把 DB 拆到另一台，請一併覆寫 mysql_bind_address、db_host，
+#   並確認 mysql_app_user_hosts 授權的 host 對得上（A3：skip-name-resolve 之下
+#   MySQL 不做反解，比對的是連進來的字面 IP）。
+# ══════════════════════════════════════════════════════════════════════════════
+
+all:
+  children:
+
+    # ── 環境群組（對應 group_vars/staging.yml、group_vars/production.yml）──────
+    staging:
+      hosts:
+        pm-staging-1:
+          ansible_host: 203.0.113.11      # ← 換成真的 IP 或 DNS 名稱
+          ansible_user: ubuntu            # ← 有 sudo 權限的登入帳號（不是 deploy_user）
+          # ansible_port: 22
+          # ansible_ssh_private_key_file: ~/.ssh/pm_staging_ed25519
+          # ansible_become_password 請放 vault，不要寫在這裡；
+          # 或者直接用 NOPASSWD sudo 的帳號，省掉密碼。
+
+    # ── production：要用的時候把整段的註解拿掉，並且把上面的 staging 整段刪掉 ──
+    #    （兩組同時存在會讓 db_primary 變成 2 台而被 preflight 擋下，見檔頭說明）
+    # production:
+    #   hosts:
+    #     pm-prod-1:
+    #       ansible_host: 203.0.113.21
+    #       ansible_user: ubuntu
+    #       # ansible_ssh_private_key_file: ~/.ssh/pm_prod_ed25519
+
+    # ── 功能群組 ─────────────────────────────────────────────────────────────
+    # site.yml 的 hosts 是 pm_servers；web / db_primary 決定哪些 role 會在哪台跑。
+    pm_servers:
+      children:
+        staging: {}
+        # production: {}
+
+    web:
+      hosts:
+        pm-staging-1: {}
+        # pm-prod-1: {}
+
+    # ★ 剛好一台，而且必須也在 web 裡面。
+    db_primary:
+      hosts:
+        pm-staging-1: {}
+        # pm-prod-1: {}
+
+# ── 多台 web + 一台 DB 的寫法（供參考，不要與上面同時啟用）────────────────────
+#
+# all:
+#   children:
+#     production:
+#       hosts:
+#         pm-prod-web-1: {ansible_host: 203.0.113.21, ansible_user: ubuntu}
+#         pm-prod-web-2: {ansible_host: 203.0.113.22, ansible_user: ubuntu}
+#     pm_servers:
+#       children:
+#         production: {}
+#     web:
+#       hosts:
+#         pm-prod-web-1: {}
+#         pm-prod-web-2: {}
+#     db_primary:
+#       hosts:
+#         pm-prod-web-1: {}     # 只有這台跑 MySQL 與 artisan migrate
+#
+# 這個拓撲另外要處理（否則 web-2 連不到資料庫）：
+#   * mysql_bind_address 改成內網位址，並在 hardening_ufw_rules 開放內網 3306
+#   * db_host 指向那個位址
+#   * mysql_app_user_hosts 加上 web-2 的內網 IP（A3：不會做反解）
+#   * Laravel 的 session / cache 走 database（本專案預設就是），
+#     多台之間才不會各自為政
+#   * 部署順序建議 deploy_serial: 1，一台一台換，避免同時全掛

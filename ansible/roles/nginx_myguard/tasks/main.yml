@@ -1,0 +1,45 @@
+---
+# 順序是刻意的：
+#   assert    → 變數與版本不變式（A16 / A17）
+#   repo      → MyGuard APT（common 已裝好 python3-debian，A6）
+#   packages  → 套件名防禦性解析（A7）→ 安裝 → load_module
+#   facts     → nginx 版本、vhost 佈局、WAF 指令可用性
+#   waf       → CRS 偵測與 exclusions（A11）
+#   render    → tls_detect（A5）→ conf.d/snippets → vhost（A12：片段不驗證）
+#   flush     → 在 verify 之前把 nginx -t / reload 沖掉
+#   verify    → 完整 nginx -t + 真實 HTTP 請求 + WAF 阻擋測試
+
+- name: 前置斷言（版本、變數、A16 上傳鏈）
+  ansible.builtin.import_tasks: assert.yml
+  tags: [nginx, nginx_assert]
+
+- name: 設定 MyGuard APT 來源
+  ansible.builtin.import_tasks: repo.yml
+  when: nginx_myguard_repo_manage | bool
+  tags: [nginx, nginx_repo]
+
+- name: 解析並安裝套件（A7：真的探測，不是示意）
+  ansible.builtin.import_tasks: packages.yml
+  tags: [nginx, nginx_install]
+
+- name: 偵測 nginx 版本與設定佈局
+  ansible.builtin.import_tasks: facts.yml
+  tags: [nginx, nginx_config]
+
+- name: WAF 規則佈局（A11 載入順序）
+  ansible.builtin.import_tasks: waf.yml
+  when: waf_enabled | bool
+  tags: [nginx, nginx_waf]
+
+- name: 渲染設定與 vhost（A5 憑證偵測 + A12 片段不驗證）
+  ansible.builtin.import_tasks: render.yml
+  tags: [nginx, nginx_config, nginx_vhost]
+
+- name: 立即套用設定變更
+  # verify 要用真實請求測 WAF，所以離開 role 之前必須先把 reload 沖掉。
+  ansible.builtin.meta: flush_handlers
+  tags: [nginx, nginx_config, nginx_vhost]
+
+- name: 驗證
+  ansible.builtin.import_tasks: verify.yml
+  tags: [nginx, nginx_verify]

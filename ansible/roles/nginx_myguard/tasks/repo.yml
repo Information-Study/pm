@@ -1,0 +1,224 @@
+---
+# ============================================================================
+# MyGuard APT（https://deb.myguard.nl/）
+# 站台給的設定方式（原文）：
+#   apt-get -y install lsb-release ca-certificates curl
+#   install -d -m 0755 /etc/apt/keyrings
+#   curl -fsSL https://deb.myguard.nl/deb.myguard.nl.gpg | tee /etc/apt/keyrings/deb.myguard.nl.gpg
+#   CODENAME=$(lsb_release -cs)
+#   echo "deb [arch=amd64 signed-by=...] https://deb.myguard.nl/apt/dists/$CODENAME $CODENAME main"
+#
+# 兩個要小心的地方：
+#   1. 那個 URI 佈局很不尋常（suite 與路徑同名），所以安裝前一定要探測 Release。
+#   2. 直接把下載內容 tee 成 .gpg 是賭它是二進位 keyring。若其實是 ASCII armor，
+#      apt 會報 "the file has an unsupported filetype" 而整台機器的 apt 全掛。
+#      下面用 grep 判斷格式，是 armor 就 dearmor。
+# ============================================================================
+
+- name: 來源 | A6 前置：確認 python3-debian 可匯入
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts['python']['executable'] | default('/usr/bin/python3') }}"
+      - "-c"
+      - "import debian.deb822"
+  register: nginx_pydebian
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: 來源 | python3-debian 缺失時給可行動訊息（A6）
+  ansible.builtin.assert:
+    that:
+      - nginx_pydebian.rc == 0
+    quiet: true
+    fail_msg: >-
+      目標機沒有 python3-debian，ansible.builtin.deb822_repository 無法執行。
+      common role 必須排在本 role 之前並安裝 python3-debian 與 python3-apt。
+      臨時解法：ansible -m raw -a 'apt-get update && apt-get install -y python3-debian python3-apt' <host>
+
+- name: 來源 | 安裝前置套件
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - apt-transport-https
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  register: nginx_repo_prereq
+  until: nginx_repo_prereq is succeeded
+  retries: "{{ nginx_apt_retries | int }}"
+  delay: "{{ nginx_apt_delay | int }}"
+
+- name: 來源 | 建立 APT keyrings 目錄
+  ansible.builtin.file:
+    path: "{{ nginx_myguard_keyring | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: 來源 | 下載 MyGuard 簽章金鑰到暫存位置
+  ansible.builtin.get_url:
+    url: "{{ nginx_myguard_key_url }}"
+    dest: "/tmp/.{{ app_slug }}-myguard-key.download"
+    owner: root
+    group: root
+    mode: "0600"
+    timeout: 30
+    force: true
+  register: nginx_myguard_key_dl
+
+# ASCII armor 存成 .gpg 會讓 apt 忽略整個來源並在每次 apt update 印警告；
+# 反過來把二進位 keyring 再 dearmor 一次則會失敗。所以先判斷格式。
+- name: 來源 | 依實際格式正規化金鑰（armor 就 dearmor）
+  ansible.builtin.shell:
+    cmd: |
+      set -Eeuo pipefail
+      src="/tmp/.{{ app_slug }}-myguard-key.download"
+      dst="{{ nginx_myguard_keyring }}"
+      tmp="${dst}.new"
+      if grep -qa 'BEGIN PGP PUBLIC KEY BLOCK' "$src"; then
+        gpg --batch --yes --dearmor -o "$tmp" "$src"
+      else
+        cp -f "$src" "$tmp"
+      fi
+      chmod 0644 "$tmp"
+      if [ -f "$dst" ] && cmp -s "$tmp" "$dst"; then
+        rm -f "$tmp"
+        echo UNCHANGED
+      else
+        mv -f "$tmp" "$dst"
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  register: nginx_myguard_key_norm
+  changed_when: "'CHANGED' in nginx_myguard_key_norm.stdout"
+  failed_when: nginx_myguard_key_norm.rc != 0
+  check_mode: false
+
+- name: 來源 | 移除金鑰暫存檔
+  ansible.builtin.file:
+    path: "/tmp/.{{ app_slug }}-myguard-key.download"
+    state: absent
+
+- name: 來源 | 讀出金鑰指紋
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      gpg --batch --no-tty --show-keys --with-colons {{ nginx_myguard_keyring | quote }}
+      | awk -F: '$1 == "fpr" { print $10 }'
+    executable: /bin/bash
+  register: nginx_myguard_fpr
+  changed_when: false
+  failed_when: nginx_myguard_fpr.rc != 0
+  check_mode: false
+
+# 我沒有 MyGuard 金鑰指紋的可信來源，所以不編造一個假的白名單。
+# 預設行為是「印出來給你自己核對」；把指紋填進
+# nginx_myguard_key_fingerprints_allowed 之後就會變成強制比對。
+- name: 來源 | 顯示實際指紋（白名單為空時請自行核對）
+  ansible.builtin.debug:
+    msg: >-
+      {{ nginx_myguard_keyring }} 的指紋：{{ nginx_myguard_fpr.stdout_lines | join(', ') }}。
+      nginx_myguard_key_fingerprints_allowed 目前是空的 → 未做比對。
+      請自行從 https://{{ nginx_myguard_host }}/ 的官方管道確認後填入該變數，
+      或設 nginx_myguard_require_key_pin: true 強制要求釘指紋。
+  when: nginx_myguard_key_fingerprints_allowed | length == 0
+
+- name: 來源 | 強制要求釘指紋時擋下未釘的情況
+  ansible.builtin.assert:
+    that:
+      - nginx_myguard_key_fingerprints_allowed | length > 0
+    quiet: true
+    fail_msg: >-
+      nginx_myguard_require_key_pin=true 但 nginx_myguard_key_fingerprints_allowed 是空的。
+      實際讀到的指紋是：{{ nginx_myguard_fpr.stdout_lines | join(', ') }}。
+      確認來源無誤後把它填進變數再重跑。
+  when: nginx_myguard_require_key_pin | bool
+
+- name: 來源 | 比對金鑰指紋
+  ansible.builtin.assert:
+    that:
+      - nginx_myguard_fpr.stdout_lines | select('in', nginx_myguard_key_fingerprints_allowed) | list | length > 0
+    quiet: true
+    fail_msg: >-
+      {{ nginx_myguard_keyring }} 的指紋不在白名單內。
+      實際：{{ nginx_myguard_fpr.stdout_lines | join(', ') }}
+      允許：{{ nginx_myguard_key_fingerprints_allowed | join(', ') }}
+      在確認上游真的換鑰之前，不要放行。
+  when: nginx_myguard_key_fingerprints_allowed | length > 0
+
+- name: 來源 | 探測 MyGuard 是否有本機 codename 的 dist
+  ansible.builtin.uri:
+    url: "{{ nginx_myguard_uri }}/dists/{{ nginx_myguard_suite }}/Release"
+    method: HEAD
+    timeout: 20
+    status_code: [200]
+  register: nginx_myguard_probe
+  changed_when: false
+  failed_when: false
+  when: nginx_myguard_repo_probe | bool
+
+- name: 來源 | 探測失敗時 fail fast（給可行動的選項）
+  ansible.builtin.assert:
+    that:
+      - (nginx_myguard_probe.status | default(0) | int) == 200
+    quiet: true
+    fail_msg: >-
+      MyGuard 沒有回應 codename "{{ nginx_myguard_suite }}" 的 Release
+      （HEAD {{ nginx_myguard_uri }}/dists/{{ nginx_myguard_suite }}/Release
+      回 {{ nginx_myguard_probe.status | default('無回應') }}）。
+      注意這個 URI 佈局本身就不尋常（suite 與路徑同名），apt 實際會抓
+      {{ nginx_myguard_uri }}/dists/{{ nginx_myguard_suite }}/Release。
+      三個可行選項：
+      (1) 對照 https://{{ nginx_myguard_host }}/ 的最新說明覆寫 nginx_myguard_uri；
+      (2) 該 codename 尚未支援 → 設 nginx_myguard_suite=noble 借用 24.04 的套件
+          （自行承擔 ABI 風險，務必先在 staging 驗證）；
+      (3) 設 nginx_myguard_repo_manage=false，退回發行版的 nginx，
+          WAF 套件改由 Ubuntu universe 提供（noble 有 libnginx-mod-http-modsecurity
+          與 modsecurity-crs）—— packages.yml 的解析邏輯照樣適用。
+  when: nginx_myguard_repo_probe | bool
+
+- name: 來源 | 設定 MyGuard APT 來源
+  ansible.builtin.deb822_repository:
+    name: "{{ nginx_myguard_host | replace('.', '-') }}"
+    types: [deb]
+    uris: "{{ nginx_myguard_uri }}"
+    suites: ["{{ nginx_myguard_suite }}"]
+    components: "{{ nginx_myguard_components }}"
+    architectures: ["{{ nginx_myguard_architectures }}"]
+    signed_by: "{{ nginx_myguard_keyring }}"
+    enabled: true
+    state: present
+  register: nginx_myguard_repo
+
+# Pin: origin <hostname> 是用「來源主機名」比對，不需要知道 repo 的 Origin/Label 欄位
+#（那兩個欄位我無法從這裡確認）。>1000 才會允許相對發行版套件的降版。
+- name: 來源 | apt pin：讓 MyGuard 的 nginx 壓過發行版
+  ansible.builtin.copy:
+    dest: "{{ nginx_myguard_pin_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      Package: *
+      Pin: origin {{ nginx_myguard_host }}
+      Pin-Priority: {{ nginx_myguard_pin_priority }}
+  register: nginx_myguard_pinned
+  when: nginx_myguard_pin | bool
+
+- name: 來源 | 有變動就更新 APT 快取
+  ansible.builtin.apt:
+    update_cache: true
+  register: nginx_repo_update
+  until: nginx_repo_update is succeeded
+  retries: "{{ nginx_apt_retries | int }}"
+  delay: "{{ nginx_apt_delay | int }}"
+  when: >-
+    (nginx_myguard_repo.changed | default(false)) or
+    (nginx_myguard_pinned.changed | default(false)) or
+    (nginx_myguard_key_norm.changed | default(false))

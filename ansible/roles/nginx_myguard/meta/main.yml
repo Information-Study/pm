@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: nginx_myguard
+  author: pm
+  description: >-
+    MyGuard APT 的 nginx + ModSecurity/Coraza + CRS，含 Laravel/Nuxt 雙來源 vhost。
+    必須排在 common / php / nodejs_pm2 之後、certbot 之前。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [nginx, modsecurity, waf, crs]
+
+# 刻意不宣告 dependencies：common / php / nodejs_pm2 的順序由 site.yml 的 roles 清單
+# 決定。寫成 dependencies 會讓 --tags 過濾時被重複執行。
+dependencies: []

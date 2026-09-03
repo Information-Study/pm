@@ -1,0 +1,35 @@
+---
+# handler 的執行順序 = 本檔的「定義順序」，跟 notify 的先後無關。
+# 因此「驗證」必須定義在「重載/重啟」之前，否則會拿著壞掉的設定去 reload。
+# ansible.cfg 的 force_handlers=False 進一步保證：驗證失敗時後面的 handler 不會執行。
+#
+# A12：這裡用的是不帶 -c 的 nginx -t，驗的是「完整主設定 + 所有 include」。
+# 絕不對單一 vhost 片段用 nginx -t -c <片段> —— -c 會把片段當成完整主設定，
+# 沒有 events{} 區塊就直接 emerg，好好的 vhost 永遠寫不進去。
+
+- name: 驗證 nginx 設定
+  ansible.builtin.command:
+    argv:
+      - "{{ nginx_binary }}"
+      - "-t"
+  register: nginx_handler_config_test
+  changed_when: false
+  failed_when: nginx_handler_config_test.rc != 0
+  check_mode: false
+  listen:
+    - nginx reload
+    - nginx restart
+
+- name: 重載 nginx
+  ansible.builtin.systemd_service:
+    name: "{{ nginx_service }}"
+    state: reloaded
+  listen: nginx reload
+
+# 動態模組（load_module）只能在啟動時載入，reload 是不夠的 —— 換模組一定要 restart。
+- name: 重啟 nginx
+  ansible.builtin.systemd_service:
+    name: "{{ nginx_service }}"
+    state: restarted
+    enabled: true
+  listen: nginx restart

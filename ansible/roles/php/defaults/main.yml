@@ -26,13 +26,18 @@ web_group: www-data
 #       → nginx_client_max_body_size                     （nginx role）
 #       → waf_request_body_limit                         （waf role，必須最大）
 # 四個值若各自寫死，26–32MB 的上傳會在通過 nginx 與 PHP 之後才被 WAF 擋成 413。
-app_max_upload_mb: 64
-php_upload_max_filesize_mb: "{{ app_max_upload_mb | int }}"
+# ⚠ A16 單一來源：app_max_upload_mb 與四個推導值的**正本在
+#    inventory/group_vars/all.yml**（inventory group_vars 的優先權高於 role defaults）。
+#    這裡只保留一個「role 單獨執行時的 fallback」，數值必須與正本一致。
+#    曾經在 5 個 role defaults 各放一份，其中 php 是 64、其他是 32 ——
+#    group_vars 在時看不出來，一旦沒帶 inventory 就會靜默產生 413。
+app_max_upload_mb: 32
+app_upload_post_overhead_mb: 8
+php_upload_max_filesize_mb: "{{ app_max_upload_mb | int }}"   # = 正本
 # post_max_size 必須 >= upload_max_filesize，且要留表單其他欄位的空間。
 # +8 這個加成跟 preflight 的 preflight_post_overhead_mb 是同一個數字，
 # preflight/tasks/uploads.yml 會用它換算 bytes 再驗一次大小順序，兩邊必須一致。
-php_post_overhead_mb: 8
-php_post_max_size_mb: "{{ (app_max_upload_mb | int) + (php_post_overhead_mb | int) }}"
+php_post_max_size_mb: "{{ (app_max_upload_mb | int) + (app_upload_post_overhead_mb | int) }}"
 # memory_limit 必須 > post_max_size，否則大檔上傳會在 PHP 內部 OOM。
 php_memory_limit_mb: 512
 

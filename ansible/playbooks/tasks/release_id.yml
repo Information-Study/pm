@@ -1,0 +1,67 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# playbooks/tasks/release_id.yml
+#
+# 由 site.yml 與 playbooks/deploy-only.yml 共用（import_tasks）。
+# 兩邊寫的相對路徑不同（site.yml 在 ansible/、deploy-only.yml 在 ansible/playbooks/），
+# 但都會解析到本檔：
+#   site.yml         → playbooks/tasks/release_id.yml
+#   deploy-only.yml  → tasks/release_id.yml
+#
+# 為什麼不用 lookup('pipe', 'date +%Y%m%d-%H%M%S')：
+#   1. pipe lookup 在控制端執行，而且是「每個 host 各求值一次」。秒針一跨過去，
+#      同一次部署就會出現兩個不同的 release_id —— backend 與 frontend 的
+#      release 目錄名對不起來，rollback 也就沒有一個共同的 id 可以指。
+#   2. --check 模式下 lookup 照樣會執行外部指令，行為與實跑不一致。
+#   3. 它讓 playbook 依賴控制端有 date(1) 且輸出格式如預期。
+#
+# 改用：site.yml 的第一個 play 在控制端（localhost）以 ansible_date_time 算一次，
+# 之後所有 host 都從 hostvars['localhost'] 取同一個值。
+# 若操作者用 --limit 把控制端 play 濾掉了，就退回目標端自己的 ansible_date_time
+# （單台部署時完全等價；多台時會各自帶自己的時間戳，下面的 debug 會把差異印出來）。
+#
+# 也可以直接指定：ansible-playbook site.yml -e release_id=20260903-181200
+# （extra-vars 優先權最高，下面兩個 set_fact 都會因為 `is not defined` 而跳過）
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: release_id | 沿用控制端 play 算好的值（全部主機共用同一個 id）
+  ansible.builtin.set_fact:
+    release_id: "{{ hostvars['localhost']['pm_release_id'] }}"
+  when:
+    - release_id is not defined
+    - "'localhost' in hostvars"
+    - hostvars['localhost']['pm_release_id'] is defined
+  tags: [always]
+
+- name: release_id | 退回目標端自己的時間戳（--limit 略過控制端 play 時）
+  ansible.builtin.set_fact:
+    release_id: "{{ ansible_date_time.iso8601_basic_short | replace('T', '-') }}"
+  when: release_id is not defined
+  tags: [always]
+
+# release_id 會被直接拼成目錄名（{{ backend_releases_dir }}/{{ release_id }}），
+# 所以它的字元集必須是安全的（A1：路徑相關的一切都要有防線）。
+- name: release_id | 格式檢查（會被當成目錄名，A1）
+  ansible.builtin.assert:
+    that:
+      - release_id is string
+      - (release_id | length) >= 8
+      - (release_id | length) <= 64
+      - release_id is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - "'..' not in release_id"
+      - "'/' not in release_id"
+    quiet: true
+    fail_msg: >-
+      release_id =「{{ release_id | default('<未定義>') }}」不合法。
+      它會被拼成 {{ backend_releases_dir | default('<releases>') }}/<release_id>，
+      所以只允許 [A-Za-z0-9._-]、開頭必須是英數、長度 8..64、不可含 '..' 或 '/'。
+      預設格式是 YYYYMMDD-HHMMSS（例：20260903-181200）。
+  tags: [always]
+
+- name: release_id | 本次部署使用的 release_id
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} → release_id={{ release_id }}
+      （backend: {{ backend_releases_dir }}/{{ release_id }}、
+      frontend: {{ frontend_releases_dir }}/{{ release_id }}）
+  tags: [always]

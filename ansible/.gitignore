@@ -1,12 +1,57 @@
-# ⚠ 本 repo 是 PUBLIC。inventory 與 vault 密碼絕不可進版控。
-inventory/hosts.yml
-inventory/host_vars/
-inventory/group_vars/*.yml
-!inventory/group_vars/all.yml
-!inventory/group_vars/*.yml.example
-*.vault
-.vault_pass*
-vault_pass*
-collections/
+# ══════════════════════════════════════════════════════════════════════════════
+# ansible/.gitignore
+#
+# 原則：*.example 進版控（那是範本），真實檔案不進版控（含主機位址與祕密）。
+#
+# 注意 gitignore(5) 的規則：父目錄一旦被排除，就無法再 re-include 子檔案
+# （git 甚至不會進去讀巢狀 .gitignore）。所以下面刻意「不」寫
+#   /inventory/
+# 這種整個目錄的排除，而是逐個檔案樣式排除。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 真實 inventory（含主機位址、登入帳號）────────────────────────────────────
+# 只排除 inventory/ 第一層的 *.yml / *.yaml / *.ini；
+# * 不會跨過 /，所以 inventory/group_vars/ 底下的檔案不受影響。
+# 而且 *.yml 不會匹配到 *.yml.example，範本仍然進版控。
+/inventory/*.yml
+/inventory/*.yaml
+/inventory/*.ini
+/inventory/host_vars/
+
+# ── group_vars ───────────────────────────────────────────────────────────────
+# all.yml 是共用預設值，要進版控（不含任何祕密）。
+# 環境別的檔案含網域、email、通常還整檔被 ansible-vault 加密過，不進版控。
+/inventory/group_vars/staging.yml
+/inventory/group_vars/production.yml
+/inventory/group_vars/*/
+/inventory/group_vars/vault*.yml
+/inventory/group_vars/*vault.yml
+
+# ── vault 密碼檔（絕對不能進版控）────────────────────────────────────────────
+.vault_pass
+.vault-pass
+.vault_password
+vault_pass
+vault_pass.txt
+*.vaultpass
+.vault_pass.*
+
+# ── ansible-galaxy 安裝的相依（由 requirements.yml 還原）─────────────────────
+# ansible.cfg 的 collections_path 已把 ./collections 放在第一順位（A17），
+# 但這個目錄是可重建的產物，不進版控。
+#   cd ansible && ansible-galaxy collection install -r requirements.yml
+/collections/
+/roles/galaxy/
+/.galaxy_install_info
+
+# ── 執行產物 ─────────────────────────────────────────────────────────────────
 *.retry
-facts_cache/
+/.ansible/
+/fact_cache/
+/facts.d/
+*.log
+
+# ── 編輯器 / 系統 ────────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+*~

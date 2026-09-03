@@ -1,0 +1,176 @@
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# ansible/playbooks/deploy-only.yml —— 只換程式碼，不碰系統層
+#
+# 用法（一律在 ansible/ 目錄底下執行，ansible.cfg 的相對路徑才對得上）：
+#   cd ansible
+#   ansible-playbook -i inventory/hosts.yml playbooks/deploy-only.yml --check --diff
+#   ansible-playbook -i inventory/hosts.yml playbooks/deploy-only.yml
+#
+#   # 指定 release id（預設由控制端時間產生）
+#   -e release_id=20260903-181200
+#   # 只部署某一台
+#   -e deploy_hosts=pm-prod-web-2
+#   # 跳過 preflight（不建議；那是唯一會在 5 秒內擋下 A20 之類問題的地方）
+#   -e deploy_only_preflight=false
+#
+# 跑的是 deploy_backend → deploy_frontend → healthcheck，其餘 role 全部跳過。
+# 前提：site.yml 至少完整跑過一次（PHP / MySQL / Node / nginx 都已經在）。
+# 下面的 pre_tasks 會實際 stat 一遍，不成立就以可行動的訊息 fail fast，
+# 而不是讓 deploy role 在 composer install 那一步才莫名其妙失敗。
+#
+# 什麼時候該用 site.yml 而不是這支：
+#   * 改了 php_* / nginx_* / waf_* / mysql_* / pm2_* 任何設定變數
+#   * 改了 frontend_mode（模式切換要 nginx 與 PM2 一起換）
+#   * 改了 app_max_upload_mb（A16：四個值要一起重新推導）
+#   * 憑證第一次簽發之後（要把 vhost 從 snakeoil 切到正式憑證，A5）
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# Play 0：控制端算出唯一的 release_id（理由見 playbooks/tasks/release_id.yml 檔頭）
+- name: pm | 產生本次部署的 release_id（控制端算一次）
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+  tags: [always]
+  tasks:
+    - name: release_id | 以控制端時間產生（YYYYMMDD-HHMMSS）
+      ansible.builtin.set_fact:
+        pm_release_id: "{{ ansible_date_time.iso8601_basic_short | replace('T', '-') }}"
+      when: pm_release_id is not defined
+
+    - name: release_id | 顯示
+      ansible.builtin.debug:
+        msg: "本次部署 release_id = {{ pm_release_id }}"
+
+
+# Play 1：preflight（不改狀態）+ 系統層存在性檢查
+- name: pm | 部署前檢查
+  hosts: "{{ deploy_hosts | default('web') }}"
+  gather_facts: true
+  become: true
+  any_errors_fatal: true
+
+  vars:
+    deploy_only_preflight: true
+
+  roles:
+    # preflight 只做斷言。留著它才能在 5 秒內擋下 A20（nuxt.config.ts 寫死 ssr）、
+    # A16（上傳限制順序）、A1（app_root 不安全）這類問題，
+    # 而不是等 npm ci 跑完好幾分鐘之後才失敗。
+    - role: preflight
+      tags: [preflight, always]
+      when: deploy_only_preflight | bool
+
+  tasks:
+    - name: 系統層 | 確認 site.yml 已經跑過（deploy-only 不會安裝任何東西）
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ app_root }}"
+        - "{{ backend_releases_dir }}"
+        - "{{ backend_shared_dir }}"
+        - "{{ frontend_releases_dir }}"
+        - "{{ app_shared_dir }}"
+        - "{{ php_cli_binary }}"
+        - "{{ composer_bin_path }}"
+        - "{{ nodejs_bin }}"
+        - "{{ npm_bin }}"
+        - "{{ pm2_bin }}"
+      loop_control:
+        label: "{{ item }}"
+      register: deploy_only_layer
+
+    - name: 系統層 | 缺任何一項就 fail fast（附上缺的清單）
+      ansible.builtin.assert:
+        that:
+          - (deploy_only_layer.results | rejectattr('stat.exists') | list | length) == 0
+        quiet: true
+        fail_msg: >-
+          系統層還沒建立完成，下列路徑不存在：
+          {{ deploy_only_layer.results | rejectattr('stat.exists') | map(attribute='item') | join('、') }}
+          deploy-only.yml 只換程式碼，不會安裝 PHP / Node / composer / PM2，
+          也不會建立 releases 與 shared 的目錄骨架（A8：骨架必須先由 common role
+          以 owner={{ deploy_user }} 建好，否則 deploy 以非 root 身分 clone 會得到
+          "could not create work tree dir: Permission denied"）。
+          修正：先跑一次完整的
+            cd ansible && ansible-playbook -i inventory/hosts.yml site.yml
+
+    # A2 的最後一道關卡搬到這裡再驗一次：CLI 少了 proc_open，
+    # composer install 會死在 post-autoload-dump（package:discover / filament:upgrade）。
+    # 這個檢查 0.1 秒，比讓 composer 跑到一半才失敗划算太多。
+    - name: 系統層 | PHP CLI 必須有 proc_open（A2）
+      ansible.builtin.command:
+        argv:
+          - "{{ php_cli_binary }}"
+          - "-r"
+          - "echo function_exists('proc_open') ? 'yes' : 'no';"
+      register: deploy_only_proc_open
+      changed_when: false
+      failed_when: false
+
+    - name: 系統層 | proc_open 不見了就 fail fast（A2）
+      ansible.builtin.assert:
+        that:
+          - deploy_only_proc_open.rc == 0
+          - (deploy_only_proc_open.stdout | trim) == 'yes'
+        quiet: true
+        fail_msg: >-
+          {{ php_cli_binary }} 缺少 proc_open
+          （rc={{ deploy_only_proc_open.rc }}，輸出「{{ deploy_only_proc_open.stdout | default('') | trim }}」）。
+          本專案 backend/composer.json 的 post-autoload-dump 會跑
+          @php artisan package:discover 與 @php artisan filament:upgrade，
+          兩者都經 Symfony Process 呼叫 proc_open，少了它 composer install 必死於
+          "The Process class relies on proc_open, which is not available on your PHP installation."
+          原因幾乎都是 disable_functions 的 ini 被放進了
+          {{ '/etc/php/' ~ php_version ~ '/cli/conf.d' }} —— 它只能放進 fpm/conf.d。
+          修正：cd ansible && ansible-playbook -i inventory/hosts.yml site.yml --tags php
+
+
+# Play 2：只跑應用層
+- name: pm | 部署程式碼（deploy_backend → deploy_frontend → healthcheck）
+  hosts: "{{ deploy_hosts | default('web') }}"
+  gather_facts: true
+  become: true
+  serial: "{{ deploy_serial | default('100%') }}"
+  any_errors_fatal: "{{ deploy_any_errors_fatal | default(true) }}"
+
+  pre_tasks:
+    - name: 取得本次部署的 release_id
+      ansible.builtin.import_tasks: tasks/release_id.yml
+
+    - name: 部署計畫
+      ansible.builtin.debug:
+        msg:
+          - "主機       : {{ inventory_hostname }}"
+          - "release_id : {{ release_id }}"
+          - "backend    : {{ backend_repo }}@{{ backend_branch }}"
+          - "frontend   : {{ frontend_repo }}@{{ frontend_branch }}（mode={{ frontend_mode }}）"
+          - "migration  : {{ '會執行（本機是 db_primary）' if (inventory_hostname in (groups['db_primary'] | default([]))) else '不執行（本機不是 db_primary）' }}"
+          - "保留 release : {{ releases_keep }} 個（prune={{ releases_prune }}）"
+
+  roles:
+    # A15：migration 在 deploy_backend 內部用
+    #   when: inventory_hostname in groups['db_primary']
+    # gate，不是 run_once —— serial 之下 run_once 只在當前 batch 生效，等同 no-op。
+    # 本 playbook 從頭到尾沒有任何 run_once。
+    - role: deploy_backend
+      tags: [deploy, deploy_backend, app]
+
+    - role: deploy_frontend
+      tags: [deploy, deploy_frontend, app]
+
+    - role: healthcheck
+      tags: [healthcheck, app]
+      when: healthcheck_enabled | bool
+
+  post_tasks:
+    - name: 部署完成
+      ansible.builtin.debug:
+        msg:
+          - "主機       : {{ inventory_hostname }}"
+          - "release_id : {{ release_id }}"
+          - "入口       : {{ 'https' if (tls_enable | bool) else 'http' }}://{{ app_domain }}/"
+          - "出事要回滾 : ansible-playbook playbooks/rollback.yml            # 先列出可用版本"
+          - "             ansible-playbook playbooks/rollback.yml -e rollback_to=<上一版 id>"

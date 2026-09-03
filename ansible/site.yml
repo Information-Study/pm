@@ -1,0 +1,334 @@
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# ansible/site.yml —— pm 的完整原生部署
+#
+# 執行（一律在 ansible/ 目錄底下）：
+#   cd ansible
+#   ansible-galaxy collection install -r requirements.yml
+#   ansible-playbook -i inventory/hosts.yml site.yml --check --diff     # 先看
+#   ansible-playbook -i inventory/hosts.yml site.yml                    # 再跑
+#
+# 常用切面：
+#   --tags preflight            只跑斷言（不改任何狀態）
+#   --tags system               只跑系統層（common/php/mysql/node/nginx/certbot）
+#   --tags deploy               只換程式碼（等同 playbooks/deploy-only.yml，但會帶到系統層的 handler）
+#   --tags nginx                憑證第一次簽發之後，把 vhost 從 snakeoil 切到正式憑證
+#   -e release_id=20260903-181200   指定 release id（預設由控制端時間產生）
+#
+# role 順序（不可任意調換，理由寫在各段註解）：
+#   preflight → common → php → composer → mysql → nodejs_pm2
+#   → nginx_myguard → certbot → deploy_backend → deploy_frontend
+#   → healthcheck → hardening
+#
+# 本檔不含任何對遠端 repo 的推送動作（紅線 1）；所有刪除動作都在 role 內部，且都有變數 gate。
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Play 0：在控制端算出「本次部署唯一的 release_id」
+#
+# 為什麼要獨立一個 play：ansible_date_time 是「每台主機自己的時間」。
+# 直接在目標端各算各的，秒針一跨過去 backend 與 frontend 就會落在不同的
+# release 目錄，rollback 也沒有一個共同的 id 可以指。
+# 在控制端算一次、其他 play 從 hostvars['localhost'] 取，才是單一來源。
+#
+# 刻意不用 lookup('pipe', 'date …')：pipe 是每個 host 各求值一次，
+# 而且在 --check 底下也照樣執行外部指令（行為與實跑不一致）。
+# ──────────────────────────────────────────────────────────────────────────────
+- name: pm | 產生本次部署的 release_id（控制端算一次）
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+  tags: [always]
+  tasks:
+    - name: release_id | 以控制端時間產生（YYYYMMDD-HHMMSS）
+      ansible.builtin.set_fact:
+        pm_release_id: "{{ ansible_date_time.iso8601_basic_short | replace('T', '-') }}"
+      when: pm_release_id is not defined
+
+    - name: release_id | 顯示
+      ansible.builtin.debug:
+        msg: >-
+          本次部署 release_id = {{ pm_release_id }}
+          （要指定別的：-e release_id=<id>；要回滾：playbooks/rollback.yml）
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Play 1：preflight —— 只斷言，不改變目標端任何狀態
+#
+# 為什麼獨立成一個 play 而不是塞進下面的 roles 開頭：
+#   下面那個 play 允許 serial。serial 之下，batch 1 會「整個部署完」才輪到 batch 2，
+#   所以 batch 2 的 preflight 會在 batch 1 已經改完機器之後才跑。
+#   把 preflight 拉出來成一個不分批的 play，就能保證「所有主機都通過檢查」
+#   才開始動任何一台。
+#
+# any_errors_fatal: true —— 檢查階段沒有妥協空間，一台不合格就全部停下。
+# ──────────────────────────────────────────────────────────────────────────────
+- name: pm | preflight（全部主機都通過才開始動手）
+  hosts: pm_servers
+  gather_facts: true
+  become: true
+  any_errors_fatal: true
+  tags: [always]
+
+  roles:
+    - role: preflight
+      tags: [preflight, always]
+
+  tasks:
+    # ── 以下是 preflight role 涵蓋範圍之外、屬於「編排層」的斷言 ──
+
+    # A15 的延伸：migration 是在 deploy_backend 內用
+    #   when: inventory_hostname in groups['db_primary']
+    # gate 的。如果 db_primary 那台根本不在 web 群組（也就是不會跑 deploy_backend），
+    # migration 就一次都不會執行，而且不會有任何錯誤訊息 —— 網站會停在
+    # "Base table or view not found"。這裡先擋下來。
+    - name: 編排 | db_primary 必須同時是 web 群組成員（否則 migration 永遠不會跑，A15）
+      ansible.builtin.assert:
+        that:
+          - ((groups['db_primary'] | default([])) | difference(groups['web'] | default([]))) | length == 0
+        quiet: true
+        fail_msg: >-
+          db_primary = {{ groups['db_primary'] | default([]) | join(', ') }}，
+          web = {{ groups['web'] | default([]) | join(', ') }}。
+          db_primary 有成員不在 web 裡面。
+          migration 寫在 deploy_backend role 內、用 groups['db_primary'] gate（A15：
+          serial 之下 run_once 只在當前 batch 生效，等同 no-op，所以不能用 run_once）。
+          deploy_backend 只在 web 群組執行 —— db_primary 不在 web 就等於沒人跑 migration。
+          修正：把 db_primary 那台也放進 web，或改由專用的 db play 執行 migration。
+
+    # pm2_instances 與 frontend_instances 在 group_vars/all.yml 用 YAML anchor 綁在一起。
+    # 環境別的檔案若只覆寫其中一個，PM2 起 N 個 process 但 nginx upstream 只有 M 個
+    # （或反過來），症狀是「間歇性 502」，很難查。
+    - name: 編排 | pm2_instances 必須等於 frontend_instances（A10）
+      ansible.builtin.assert:
+        that:
+          - (pm2_instances | int) == (frontend_instances | int)
+          - (pm2_instances | int) >= 1
+          - (pm2_exec_mode | default('fork')) == 'fork'
+        quiet: true
+        fail_msg: >-
+          pm2_instances={{ pm2_instances }}、frontend_instances={{ frontend_instances }}、
+          pm2_exec_mode={{ pm2_exec_mode | default('fork') }}。
+          兩個實例數必須相同（nginx upstream 的成員數是照 frontend_instances 產生的，
+          PM2 起的 process 數是照 pm2_instances），而 exec_mode 只能是 fork ——
+          cluster 走 CJS require() 載不動 Nuxt 的 ESM .mjs（ERR_REQUIRE_ESM）。
+          要水平擴充：把兩個值一起調大，每個 fork 綁 frontend_port + i，
+          nginx upstream 用 {{ nginx_upstream_balancer | default('least_conn') }}。
+
+    # A5 的 fail fast：tls_enable 打開卻沒填 certbot_email 的話，
+    # 整條流程要跑到最後的 certbot role 才會失敗（前面已經裝完 PHP / MySQL / Node）。
+    # 這裡 5 秒內擋掉。
+    - name: 編排 | tls_enable 時 certbot_email 必填（A5：不要等到 certbot role 才失敗）
+      ansible.builtin.assert:
+        that:
+          - (certbot_email | default('') | trim | length) > 0
+          - certbot_email is match('^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$')
+        quiet: true
+        fail_msg: >-
+          tls_enable=true 但 certbot_email =「{{ certbot_email | default('') }}」不是有效的 email。
+          Let's Encrypt 用它寄憑證到期通知；沒有它 certbot 會在最後一步失敗，
+          而那時 PHP / MySQL / Node / nginx 都已經裝完了。
+          修正：在 group_vars/{{ app_env }}.yml 設 certbot_email: ops@your-domain。
+          （純內網、沒有公開網域的環境請設 tls_enable: false，
+          nginx 會維持 snakeoil 憑證或純 HTTP。）
+      when: tls_enable | bool
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Play 2：系統層 + 應用層
+#
+# ── serial 的取捨（A15）─────────────────────────────────────────────────────
+# 預設 deploy_serial = "100%"，也就是「不分批」。
+# 想要滾動部署就把它設成 1 或 "50%"。但請記住：
+#   ★ serial 一旦不是 100%，run_once 的作用域就變成「當前 batch」，等同 no-op。
+#     batch 1 跑一次、batch 2 再跑一次，而且兩次都會宣稱自己是 run_once。
+#   ★ 因此本專案的 migration 絕不用 run_once，一律用
+#       when: inventory_hostname in groups['db_primary']
+#     來 gate（preflight 已斷言 db_primary 只有一台，且必須是 web 成員）。
+#   ★ 本 playbook 從頭到尾沒有任何 run_once。要新增「只做一次」的任務時，
+#     請比照 migration 用群組 gate，不要用 run_once。
+#
+# ── any_errors_fatal 的取捨 ─────────────────────────────────────────────────
+# 預設 true。
+#   優點：不會留下「A 機新版、B 機舊版」的半吊子艦隊；DB migration 已經跑過、
+#         但某台的程式碼還是舊的，是最難收拾的狀態。
+#   代價：任一台在中途失敗，後面的 role 在「所有」主機上都不會執行。
+#         A5 講的正是這個坑 —— nginx role 因為引用尚不存在的憑證而 nginx -t emerg，
+#         any_errors_fatal 讓 certbot 永遠跑不到，於是憑證永遠不會出現，死結。
+#         解法不是關掉 any_errors_fatal，而是讓 nginx role 用 ssl-cert 的
+#         snakeoil 憑證開機（憑證不存在不再構成失敗），憑證出現後再切換。
+#   單台部署時這個開關沒有差別。
+#   多台、且可以接受部分成功時，改用 max_fail_percentage（與 any_errors_fatal
+#   語意衝突，兩者只能擇一，所以這裡不同時設定）。
+#
+# ── 覆寫這兩個值時請用 extra-vars ────────────────────────────────────────────
+#   serial / any_errors_fatal 是 play 層關鍵字，Ansible 在建立 play 時就要決定它們，
+#   那個時間點還沒有 host context，group_vars 不保證讀得到。
+#   extra-vars 一定讀得到，所以要改請這樣下：
+#     ansible-playbook site.yml -e deploy_serial=1
+#     ansible-playbook site.yml -e deploy_any_errors_fatal=false
+#   （寫在 group_vars 也不會壞 —— 讀不到時會落回 | default() 的 100% / true。）
+# ──────────────────────────────────────────────────────────────────────────────
+- name: pm | 系統層與應用層部署
+  hosts: pm_servers
+  gather_facts: true
+  become: true
+  serial: "{{ deploy_serial | default('100%') }}"
+  any_errors_fatal: "{{ deploy_any_errors_fatal | default(true) }}"
+
+  pre_tasks:
+    - name: 取得本次部署的 release_id
+      ansible.builtin.import_tasks: playbooks/tasks/release_id.yml
+
+    - name: 部署計畫
+      ansible.builtin.debug:
+        msg:
+          - "主機          : {{ inventory_hostname }}（{{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}）"
+          - "角色          : web={{ inventory_hostname in (groups['web'] | default([])) }} db_primary={{ inventory_hostname in (groups['db_primary'] | default([])) }}"
+          - "release_id    : {{ release_id }}"
+          - "網域          : {{ app_domain }}（TLS={{ tls_enable }}、certbot_staging={{ certbot_staging }}）"
+          - "前端模式      : {{ frontend_mode }}（instances={{ frontend_instances }}、port={{ frontend_port }}+）"
+          - "上傳上限      : {{ app_max_upload_mb }} MB → php {{ php_post_max_size }} / nginx {{ nginx_client_max_body_size }} / waf {{ waf_request_body_limit }} bytes"
+          - "保留 release  : {{ releases_keep }} 個（prune={{ releases_prune }}）"
+          - "WAF           : enabled={{ waf_enabled }} engine={{ waf_rule_engine }}"
+
+  roles:
+    # ── 系統層 ────────────────────────────────────────────────────────────
+    # common 必須第一個：
+    #   A6：deb822_repository 需要目標端有 python3-debian、apt 模組需要 python3-apt，
+    #       這兩個要在「任何 repo 任務之前」裝好。
+    #   A8：releases/ shared/ current 的目錄骨架要先建好且 owner=deploy，
+    #       否則 deploy_frontend 以 deploy 身分 clone 時父目錄是 root:root 0755，
+    #       會得到 "could not create work tree dir: Permission denied"。
+    #   A9：/var/log/php 要在 php-fpm 啟動之前存在，否則 FPM 會
+    #       "Unable to create or open slowlog(...)" → "FPM initialization failed"。
+    - role: common
+      tags: [common, system]
+
+    # php 在 composer 之前：composer role 會先驗 CLI 有沒有 proc_open（A2）。
+    - role: php
+      tags: [php, system]
+      when: inventory_hostname in (groups['web'] | default([]))
+
+    - role: composer
+      tags: [php, composer, system]
+      when: inventory_hostname in (groups['web'] | default([]))
+
+    # A4：Ubuntu noble 的 mysql-server 是 8.0.x，Debian 的 default-mysql-server
+    #     是 MariaDB。要 8.4 LTS 只能走 repo.mysql.com（mysql_repo_source=oracle）。
+    # 只在 db_primary 安裝。mysql_bind_address 預設 127.0.0.1，
+    # 所以預設拓撲是「web 與 db 同一台」。要拆開請一併覆寫
+    # mysql_bind_address、db_host，以及 mysql_app_user_hosts（A3 的雙 host 授權）。
+    - role: mysql
+      tags: [mysql, db, system]
+      when: inventory_hostname in (groups['db_primary'] | default([]))
+
+    # nodejs_pm2 不分前端模式都要跑：
+    #   static 模式一樣需要 Node/npm 才能 nuxt generate，
+    #   而 role 內的 ecosystem 任務會在 static 模式產生空的 app 清單並收掉舊 process。
+    - role: nodejs_pm2
+      tags: [nodejs, pm2, system]
+      when: inventory_hostname in (groups['web'] | default([]))
+
+    # A5：nginx 排在 certbot 之前，所以 vhost 一定會在「憑證還不存在」的情況下被寫出來。
+    #     nginx role 必須用 ssl-cert 套件的 snakeoil 憑證開機
+    #     （/etc/ssl/certs/ssl-cert-snakeoil.pem），用 stat 判斷
+    #     {{ tls_cert_fullchain }} 是否存在來決定要引用哪一組。
+    #     否則 nginx -t 會 emerg，而 any_errors_fatal 會讓 certbot 永遠跑不到。
+    # A12：vhost 片段不要用 validate: nginx -t -c %s（-c 會把片段當成完整主設定，
+    #     沒有 events{} 就 emerg）。片段不驗證，最後跑一次 nginx -t（不加 -c）。
+    - role: nginx_myguard
+      tags: [nginx, waf, system]
+      when: inventory_hostname in (groups['web'] | default([]))
+
+    # certbot 必須在 nginx 之後（webroot / nginx plugin 需要 nginx 已經在服務 :80）。
+    # 第一次簽發成功之後，vhost 還指著 snakeoil —— 本 play 的 post_tasks 會偵測並提醒
+    # 再跑一次 `--tags nginx`。（理想上 certbot role 應該 notify nginx 的重新渲染 handler。）
+    - role: certbot
+      tags: [certbot, tls, system]
+      when:
+        - inventory_hostname in (groups['web'] | default([]))
+        - tls_enable | bool
+
+    # ── 應用層 ────────────────────────────────────────────────────────────
+    # deploy_backend 內部：clone → composer install → shared/.env symlink →
+    # storage symlink → migration（gate 在 groups['db_primary']，A15）→
+    # optimize → 換 current symlink → reload php-fpm → prune 舊 release（A1）。
+    - role: deploy_backend
+      tags: [deploy, deploy_backend, app]
+      when: inventory_hostname in (groups['web'] | default([]))
+
+    # deploy_frontend 內部：clone → npm ci → 依 frontend_mode build/generate →
+    # 換 current symlink → ssr/spa 時 pm2 startOrReload、static 時 reload nginx →
+    # prune 舊 release（A1）。
+    - role: deploy_frontend
+      tags: [deploy, deploy_frontend, app]
+      when: inventory_hostname in (groups['web'] | default([]))
+
+    - role: healthcheck
+      tags: [healthcheck, app]
+      when:
+        - inventory_hostname in (groups['web'] | default([]))
+        - healthcheck_enabled | bool
+
+    # hardening 放最後：ufw / fail2ban / sshd 任何一項設錯都可能把控制端擋在門外，
+    # 放在最後至少保證前面的部署已經完成。全部旋鈕預設關閉。
+    - role: hardening
+      tags: [hardening]
+
+  post_tasks:
+    # ── A5 的收尾檢查 ───────────────────────────────────────────────────────
+    # 第一次部署的順序必然是：nginx（憑證不存在 → snakeoil）→ certbot（簽發成功）。
+    # 於是「憑證已經有了，但 nginx 還指著 snakeoil」是完全正常的中間狀態。
+    # 這裡用 `nginx -T`（dump 實際載入的設定，不是讀檔）來偵測，
+    # 不依賴 nginx role 用哪個檔名放 vhost。
+    - name: TLS | 正式憑證是否已經簽發
+      ansible.builtin.stat:
+        path: "{{ tls_cert_fullchain }}"
+      register: pm_tls_cert
+      when:
+        - tls_enable | bool
+        - inventory_hostname in (groups['web'] | default([]))
+
+    - name: TLS | dump nginx 目前實際載入的設定（不加 -c，A12）
+      ansible.builtin.command:
+        argv:
+          - "{{ nginx_binary }}"
+          - "-T"
+      register: pm_nginx_dump
+      changed_when: false
+      failed_when: false
+      when:
+        - tls_enable | bool
+        - inventory_hostname in (groups['web'] | default([]))
+        - pm_tls_cert.stat.exists | default(false)
+
+    - name: TLS | 憑證已簽發但 nginx 還在用 snakeoil（A5：再跑一次 --tags nginx）
+      ansible.builtin.debug:
+        msg: >-
+          注意：{{ tls_cert_fullchain }} 已經存在，但 nginx 目前載入的設定裡沒有引用它
+          —— 也就是還在用 snakeoil 自簽憑證，瀏覽器會顯示憑證錯誤。
+          這是第一次部署的正常中間狀態（nginx role 跑在 certbot 之前，
+          當時憑證還不存在，只能先用 snakeoil 讓 443 起得來）。
+          修正：cd ansible && ansible-playbook -i inventory/hosts.yml site.yml --tags nginx
+          （nginx role 會 stat 到正式憑證並切換過去，然後 nginx -t + reload）。
+      when:
+        - tls_enable | bool
+        - pm_nginx_dump is defined
+        - pm_nginx_dump is not skipped
+        - (pm_nginx_dump.rc | default(1)) == 0
+        - tls_cert_fullchain not in (pm_nginx_dump.stdout | default(''))
+
+    - name: 部署完成
+      ansible.builtin.debug:
+        msg:
+          - "主機       : {{ inventory_hostname }}"
+          - "release_id : {{ release_id }}"
+          - "入口       : {{ 'https' if (tls_enable | bool) else 'http' }}://{{ app_domain }}/"
+          - "後台       : {{ 'https' if (tls_enable | bool) else 'http' }}://{{ app_domain }}/admin"
+          - "健康端點   : {{ 'https' if (tls_enable | bool) else 'http' }}://{{ app_domain }}/up"
+          - "回滾       : ansible-playbook playbooks/rollback.yml            # 先列出可用的 release"
+          - "             ansible-playbook playbooks/rollback.yml -e rollback_to=<id>"
+          - "只換程式碼 : ansible-playbook playbooks/deploy-only.yml"

@@ -1,0 +1,84 @@
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# inventory/group_vars/staging.yml.example
+#
+#   cp inventory/group_vars/staging.yml.example inventory/group_vars/staging.yml
+#
+# 只寫「與 group_vars/all.yml 預設值不同」的項目。其餘一律沿用 all.yml，
+# 才不會出現兩份互相打架的預設值。
+#
+# 這個檔會被套用到 inventory 中 staging 群組的所有主機。
+# 含祕密的話請整檔加密：
+#   ansible-vault encrypt inventory/group_vars/staging.yml
+#   ansible-playbook -i inventory/hosts.yml site.yml --ask-vault-pass
+# staging.yml（未加 .example）已在 .gitignore 內。
+# ══════════════════════════════════════════════════════════════════════════════
+
+app_env: "staging"
+
+# ★ 必填。preflight 會擋佔位值（example.com、changeme…）。
+app_domain: "pm-staging.your-domain.tld"
+
+# ── TLS ───────────────────────────────────────────────────────────────────────
+tls_enable: true
+certbot_email: "ops@your-domain.tld"
+# staging 環境先用 Let's Encrypt 的 staging 端點跑通流程：憑證不被瀏覽器信任，
+# 但不會吃掉正式的速率限制（每個註冊網域每週 50 張憑證，撞到要等一週）。
+# 流程確認沒問題後再改成 false 重跑 --tags certbot。
+certbot_staging: true
+# staging 憑證本來就不被信任，healthcheck 不要驗（all.yml 的推導已經處理，
+# 這裡列出來只是提醒 —— 不需要手動覆寫）。
+# healthcheck_validate_certs: false
+
+# HSTS 在 staging 一定要關：一旦送出，這個網域在瀏覽器端 max-age 內
+# 就再也不能用 http 存取，換憑證出問題時連除錯頁面都打不開。
+tls_hsts_enabled: false
+
+# ── 應用 ──────────────────────────────────────────────────────────────────────
+# 即使是 staging 也不要開 APP_DEBUG：debug 頁面會把 .env 內容（含 DB 密碼）
+# 印在錯誤頁上，而 staging 通常是對外開放的。要看細節請讀 storage/logs。
+backend_app_debug: false
+backend_log_level: "debug"
+backend_mail_mailer: "log"
+
+# ── 前端 ──────────────────────────────────────────────────────────────────────
+frontend_mode: "ssr"
+# staging 通常機器小，一個 fork 就夠（A10：絕不用 cluster，要擴充是加 fork 數）。
+pm2_instances: 1
+frontend_instances: 1
+
+# ── 部署 ──────────────────────────────────────────────────────────────────────
+backend_branch: "main"
+frontend_branch: "main"
+# staging 磁碟小，少留幾版（preflight 要求 >= 2，rollback 至少需要上一版）。
+releases_keep: 3
+keep_releases: 3
+releases_prune: true
+
+# ── 資源 ──────────────────────────────────────────────────────────────────────
+# 2 GB 的小機器：MySQL 的 buffer pool 與 FPM child 數都要壓下來，
+# 否則 nuxt build（尖峰約 1.5 GB）會把機器打到 OOM。
+mysql_innodb_buffer_pool_mb: 256
+php_fpm_reserved_mb: 1024
+mysql_backup_retention_days: 7
+
+# ── WAF ───────────────────────────────────────────────────────────────────────
+# staging 就是拿來收誤判的地方：先跑 DetectionOnly，
+# 從 {{ waf_audit_log }} 撈出被命中的 rule id，整理成 waf_exclusions_before
+# （A11：ruleRemoveById 必須載入在 CRS 之前才有效，而且多個 ctl 之間用逗號不是分號），
+# 確認乾淨之後再在 production 開 On。
+waf_enabled: true
+waf_rule_engine: "DetectionOnly"
+waf_crs_paranoia_level: 1
+
+# ── Hardening ─────────────────────────────────────────────────────────────────
+# staging 先全部關著，等 production 需要時再一項一項驗證。
+hardening_sshd_enabled: false
+hardening_ufw_enabled: false
+hardening_fail2ban_enabled: false
+hardening_sysctl_enabled: false
+
+# ── 祕密（請改用 ansible-vault，不要明文提交）────────────────────────────────
+# vault_mysql_root_password: "……至少 12 字元……"
+# vault_mysql_app_password: "……至少 12 字元……"
+# vault_app_key: ""     # 留空 = 首次部署時由 artisan key:generate 產生一次並寫進 shared/.env
