@@ -1,0 +1,45 @@
+---
+# yamllint 設定。ansible-lint 內部會用這一份，cx deploy lint 也直接跑它。
+
+extends: default
+
+ignore: |
+  collections/
+  .cache/
+  .ansible/
+
+rules:
+  # 預設 80 太短，對 Ansible 完全不實用（光是 FQCN + 一個 Jinja 運算式就超過）。
+  # 設 200 而不是關掉：真正失控的行還是要被抓出來。
+  #
+  # 為什麼不折行而是放寬上限 —— 目前超過 160 的五行全部是「不能折的值」：
+  #   * nginx_ssl_ciphers：cipher 清單用 : 分隔，折行會插入空白而變成無效設定
+  #   * tx.allowed_request_content_type：CRS 的 content-type 清單，同理
+  #   * site.yml 的 debug msg：折行會在輸出訊息中間插入空白
+  #   * certbot detect.yml 的原因說明：Jinja 三元運算式，折行會改變輸出
+  # 用 >- 折這些值會靜默改變它們的內容，那比「行太長」危險得多。
+  line-length:
+    max: 200
+    level: warning
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+
+  # Ansible 的 truthy 值習慣用 true/false，這與預設一致，但要允許 yes/no
+  # 出現在字串裡（例如 sshd 設定檔模板的內容）。
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+
+  # 註解縮排：本專案註解密度極高，強制與程式碼同縮排會讓區塊註解很難讀。
+  comments-indentation: disable
+
+  # 分隔線註解（#────────、#========）刻意不留起始空白 ——
+  # 留了空白之後線就斷開，視覺上完全失去分隔的作用。
+  # 仍然要求註解與程式碼之間至少一個空白（避免 foo: bar# 這種）。
+  comments:
+    require-starting-space: false
+    min-spaces-from-content: 1
+
+  # 文件開頭的 --- 一律要有（已全數符合）。
+  document-start:
+    present: true

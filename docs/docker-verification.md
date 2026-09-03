@@ -201,20 +201,140 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 
 ---
 
-## 6. 驗證結果（請接手者回填）
+## 6. 驗證結果
+
+> 驗證日期：**2026-09-04**
+> 環境：WSL2 Ubuntu 26.04.1 / Docker Engine 29.7.2 / Compose v5.5.0 / 10 vCPU / 12.5 GB
+> 執行方式：`cx verify all`（52 項，0 失敗、0 未驗），報告在 `reports/verify/`
+>
+> 這一輪之前，Docker daemon 在本機不可用；`sudo usermod -aG docker $USER` +
+> `wsl --shutdown` 之後才第一次真的跑起來。
 
 | 項目 | 結果 | 備註 |
 |---|---|---|
-| D1–D15 | ⬜ | |
-| 2.1 dev 映像開機 | ⬜ | |
-| 2.2 三模式並存 | ⬜ | |
-| 2.3 相對路徑 | ⬜ | |
-| 2.4 env-file | ⬜ | |
-| 2.5 網路名 | ⬜ | |
-| 3.1–3.12 | ⬜ | |
-| 4. 版本鎖定 | ⬜ | |
-| 5. 端到端 | ⬜ | |
+| D1 Dockerfile 大小寫 | ✅ | 舊的小寫 `docker/nuxt/dockerfile` 已移至 `docker/legacy/`。**它原本與新的 `Dockerfile` 並存**，正是 D1 陷阱本身 |
+| D2 `.env` 與 `APP_KEY` | ✅ | entrypoint 產生並 `chown www-data`，三個模式都驗過 |
+| D3 幽靈 service | ✅ | 不再有 `vue` / `npm-php`。後端的 npm 由 `cx npm --backend` 提供 |
+| D4 Nova 殘留 | ✅ | 全庫無 Nova 字樣；管理員改用 `cx db admin`（`make:filament-user`） |
+| D5 supervisord 真的啟動 | ✅ | `supervisorctl status` 在三個模式都看到 **5 個 RUNNING**（php-fpm、nginx、queue ×2、schedule） |
+| D6 vendor 沒被蓋掉 | ✅ | 三個模式的 `vendor/autoload.php` 都存在；dev 靠具名 volume 種子化 |
+| D7 mysql healthcheck | ✅ | `mysqladmin ping` + `depends_on: condition: service_healthy` |
+| D8 前端拿得到 API | ✅ | 同源（`NUXT_PUBLIC_API_BASE_URL=""`），edge 分流 |
+| D9 `DB_CONNECTION=mysql` | ✅ | 三個模式的合併設定都確認 |
+| D10 composer 版本固定 | ✅ | 來自 `composer/composer:2-bin`；`cx composer` 主動拒絕 `--ignore-platform-req*` |
+| D11 無 `container_name` | ✅ | 合併後設定 0 筆 |
+| D12 prod 無 xdebug | ✅ | build 斷言 + 執行期 `php -m` 複驗 |
+| D13 prod 不開 DB/管理埠 | ✅ | prod 只發布 80 |
+| D14 dev 不 COPY 原始碼 | ✅ | dev stage 只 COPY vendor |
+| D15 nuxt 多 target | ✅ | deps / dev / build / prod / static |
+| 2.1 dev 映像能開機 | ✅ | `vendor-dev` 無 `--no-autoloader`；entrypoint 另有 `composer install` 保險 |
+| 2.2 三模式並存 | ✅ | **14 個容器同時運行，零埠衝突**；base 檔無 `ports:` |
+| 2.3 相對路徑 | ✅ | 一律 `--project-directory "$CX_ROOT"`；`cx up` 會先斷言每個 bind mount 來源存在 |
+| 2.4 env-file | ✅ | 條件式組出清單；`cx doctor` 對缺 `.env` 是**硬失敗** |
+| 2.5 網路名 | ✅ | `pm_dev_net` / `pm_test_net` / `pm_prod_net` / `pm_devsecops_net` 都明寫 |
+| 3.1 tag 含模式 | ✅ | 6 個 tag 互不重複 |
+| 3.2 不用 pecl | ✅ | `mlocati/php-extension-installer:2` |
+| 3.3 app 無 `entrypoint:` | ✅ | 啟動流程放 CMD，`--entrypoint composer` 仍可覆寫 |
+| 3.4 `DB_FRESH` 一次性化 | ✅ | 哨兵檔 `storage/.pm-db-fresh-done`（跟著 storage volume 的生命週期） |
+| 3.5 dev 的 `NUXT_SSR` | ✅ | runtime `environment:`，不是 build arg |
+| 3.6 TLS / cookie 一致 | ✅ | 刻意不發布 8443；`SESSION_SECURE_COOKIE=false`。TLS 由 Ansible 那條路的 certbot 負責 |
+| 3.7 PM2 用 fork | ✅ | `ecosystem.config.cjs.j2` 寫死 `exec_mode: fork`（Ansible 側；容器側用 Nitro，無 PM2） |
+| 3.8 掃描容器不固定 name | ✅ | `scan.sh` 全庫無 `--name` |
+| 3.9 目錄由 cx 預建 | ✅ | `cx setup dirs` 與 `cx up` 都會建；**另外修掉 dev 的具名 volume 掛在 bind mount 底下會被建成 root:root 的問題** |
+| 3.10 Sonar healthcheck 用 curl | ✅ | `docker/compose/sonar.yml` 用 curl（該映像沒有 wget） |
+| 3.11 ModSec audit 從 stdout | ✅ | `MODSEC_AUDIT_LOG=/dev/stdout` + JSON，實測 `cx --mode test logs waf \| grep '^{'` 取得到 |
+| 3.12 CRS 排除順序 | ✅ | 走映像的 plugins 機制，`94-activate-plugins.sh` 實測把兩行 Include 取消註解 |
+| 4. 版本鎖定 | ✅ | php 8.5 / node 24.20 / mysql 8.4 / nginx 1.30 / sonarqube 2026-lta |
+| 5. 端到端 | ✅ | 三個模式的 `/up`、`/`、`/healthz`、`/admin/login`、`/sanctum/csrf-cookie`、`/api/user` 全數符合預期 |
+
+### DAST 實測
+
+`cx scan dast` 會做兩件事：
+
+1. **ZAP baseline**（被動）在 `MODSEC_RULE_ENGINE=DetectionOnly` 與 `On` 各跑一次
+2. **主動攻擊探測**（`bin/lib/waf_probe.py`）—— 這是量 WAF 攔截率的唯一有效方法
+
+| | 結果 |
+|---|---|
+| ZAP FAIL-NEW（High risk） | **0** —— 符合 §5「無 High risk alert」的閘門 |
+| ZAP WARN-NEW | 3（補上 edge 的安全標頭之前是 8） |
+| ZAP PASS | 64 |
+| 主動探測：攻擊 6 項 | **6 項全擋（100%）** |
+| 主動探測：正常請求 4 項 | **0 誤擋** |
+
+> ⚠ `zap-baseline.py` 是**被動**掃描，不送攻擊 payload。
+> 拿兩份 baseline 報告直接相減，結論永遠是「WAF 擋下 0 項」——
+> 那不是 WAF 沒用，是量錯了東西。攔截率必須用主動探測量。
+
+### WAF 逐項（手動複驗）
+
+| 請求 | DetectionOnly | On |
+|---|---|---|
+| `?id=1' OR '1'='1` | 200（記錄） | **403** |
+| `?q=<script>alert(1)</script>` | 200（記錄） | **403** |
+| `?f=../../../../etc/passwd` | 200（記錄） | **403** |
+| `/up` | 200 | 200 |
+| `/admin/login` | 200 | **200**（排除規則 10012/10013 有效） |
+| `/` | 200 | 200 |
 
 ## 7. 追加發現
 
-（請接手者補充驗證過程中發現的新問題）
+驗證過程中找到的、原始清單裡沒有的問題。每一項都已修正。
+
+| # | 問題 | 為什麼原本抓不到 | 修正 |
+|---|---|---|---|
+| A1 | **`cx` 在 git index 裡是 `100644`** | 磁碟上是 755，`git diff` 看不出差異。但任何人 clone 下來打 `./cx` 都是 `Permission denied` —— 單一入口在第 0 步就壞了 | `git update-index --chmod=+x`；`cx doctor` 已有這項檢查（本次讓它真的通過） |
+| A2 | **`bin/cmd/compose.sh` 不存在** | dispatcher 的 `CX_CMD_FILE_OF` 把 8 個動詞指到它，於是 `cx up` 回「未知的指令」 | 寫出該檔；`cx doctor` 新增「動詞實作檔完整性」檢查 |
+| A3 | **supervisorctl 找不到 socket** | `supervisord -c` 指定的路徑不影響 `supervisorctl`，它讀自己的預設 `/etc/supervisord.conf`。而 D5 的驗收指令正是 `exec app supervisorctl status` | 設定檔改放 Alpine 的預設路徑 |
+| A4 | **具名 volume 掛在 bind mount 底下 → host 上出現 root:root 目錄** | 只在 dev 模式發生。`frontend/{node_modules,.nuxt,.output}`、`backend/vendor`、`backend/.env` 全部變成 root 所有，非 root 的操作者既寫不進去也刪不掉 | `cx up` 先以呼叫者身分建立這些掛載點；entrypoint 把 `.env` chown 回 www-data |
+| A5 | **`phpunit.xml` 的 `<env>` 沒有 `force="true"`** | PHPUnit 的 `<env>` 預設**既有環境變數優先**。compose 傳進 `DB_CONNECTION=mysql`，於是 sqlite 設定被靜默忽略，測試會打到真正的開發資料庫 —— 而 `RefreshDatabase` 會把它清空 | 14 個 `<env>` 全部加上 `force="true"`；`cx test back` 另外再傳一次 `-e` 覆蓋 |
+| A6 | **缺 `pdo_sqlite`** | `phpunit.xml` 指向 sqlite `:memory:`，但映像沒裝這個擴充 → `could not find driver`，看起來像資料庫設定錯 | 加進 base stage |
+| A7 | **`Route [login] not defined` → HTTP 500** | 帶 `Accept: application/json` 時是正確的 401，用瀏覽器開同一個網址卻是 500。看起來像 API 壞了，其實是找不到重導目標 | `bootstrap/app.php` 加 `redirectGuestsTo` |
+| A8 | **沒有 `trustProxies`** | 應用永遠在反向代理後面，不信任 `X-Forwarded-*` 會讓 `request()->ip()` 全是容器 IP、`isSecure()` 永遠 false | `bootstrap/app.php` 信任私有網段 |
+| A9 | **後端的 Vite 資產從來沒被建置過** | 舊 `init.sh` 呼叫一個叫 `npm-php` 的 service，但那個 service 從來不存在（缺陷 D3）。`welcome.blade.php` 有 `@vite(...)`，沒有 `public/build/manifest.json` 會丟 `ViteManifestNotFoundException` | 新增 `backend-assets` build stage 與 `cx npm --backend` |
+| A10 | **WAF 掛載點錯誤 → 容器無限重啟** | 把排除規則掛在 `modsecurity-override.conf` 上是錯的：映像的 `90-copy-modsecurity-config.sh` 會 touch 並覆寫那個檔，`:ro` 之下它 exit 1 | 改用映像的 plugins 機制（`/opt/owasp-crs/plugins/*-{before,after}.conf`） |
+| A11 | **Semgrep 靜靜地失敗（exit 7）** | `p/laravel` 與 `p/vue` 在 registry 上已經是 HTTP 404。而 `--sarif --output` 把 stdout 全導進檔案，終端機上看不到任何錯誤 | 移除失效的規則集並換上等效的；`cx scan sast` 對 exit ≥2 給出可行動訊息 |
+| A12 | **SAST 閘門與文件不符** | `--error` 是「有任何 finding 就失敗」，包含 warning。而 claude.md §5 寫的是「無 ERROR 等級 finding」。用 `--error` 當閘門的結果是這條 lane 永遠紅燈，於是沒有人會再看它 | 改由 `bin/lib/sarif_gate.py` 依嚴重度判定，warning 仍然完整顯示 |
+| A13 | **`.trivyignore.yaml` 從未被引用** | 檔案存在、內容也寫好了，但 `trivy.yaml` 沒有 `ignorefile:` —— 於是「無 HIGH/CRITICAL 除非有到期日的例外」這個閘門其實不成立 | 接上 `ignorefile:`，並補上兩筆有 `expired_at` 的例外 |
+| A14 | **`.semgrepignore` 放錯位置** | Semgrep 只在「掃描目標的根目錄」找它。原本放在 `docker/security/semgrep/` 底下，從來沒被讀到 | 移到專案根目錄 |
+| A15 | **Trivy 掃到 `ansible/collections/`** | 那是 ansible-galaxy 下載的上游程式碼，回報的是別人測試夾具裡的問題 | 加入 `skip-dirs` |
+| A16 | **ZAP 的 `baseline.conf` 路徑指向未掛載的位置** | `-c /zap/wrk/../../../docker/...` 在容器內解析成 `/docker/...`，而只有 `reports/dast/<mode>` 被掛到 `/zap/wrk` | 多掛一個唯讀 volume 並改用容器內絕對路徑 |
+| A17 | **`scan.sh` 的兩個累加器缺陷** | `_scan_code` 把 SonarQube 的 rc 寫進呼叫者的 `worst` 但 return 的是 `_lane_worst`；`_scan_secrets` return 一個在該函式裡不存在的變數 | 兩處都改成回傳自己的 lane 累加器 |
+| A18 | **H2C smuggling** | edge 的 `map $http_upgrade $connection_upgrade { default upgrade; }` 會把 `Upgrade: h2c` 也轉給上游 | 改成白名單，只有 `websocket` 放行 |
+| A19 | **`include_role` 不能當 handler** | ansible-core 2.21 直接拒絕載入。這是實跑 `--syntax-check` 才發現的 —— 靜態 YAML 檢查看不出來，因為語法本身完全合法 | certbot 的重新渲染改成一般 task |
+| A20 | **37 個 inventory 變數不被任何 role 讀取** | 值剛好都與真正的變數相同，所以第一次部署會「看起來正常」。危險的是第二次：改了文件上的旋鈕卻沒有任何反應 | 全部接上真正的名字，詳見下節 |
+
+### A20 的細節：三個載重最重的死變數
+
+| 變數 | 原本的行為 | 修正 |
+|---|---|---|
+| `production.yml.example` 的 `waf_exclusions_before: []` | inventory group_vars 優先權高於 role defaults，照抄這個檔會**在 `waf_rule_engine` 切成 `On` 的同一刻**抹掉 5 條研究過的 Livewire/Filament 排除規則（id 10010–10014）。結果是 Filament 後台被 941/942 擋死，而且沒有任何線索指向 WAF | 從範例檔移除該行，改成一段說明「為什麼刻意不定義它」 |
+| `releases_prune: false` | 只出現在 debug 橫幅裡。設成 false 會印出 `prune=False` 然後照樣 prune —— 這是「看起來已經關掉了」最糟的一種形式 | `backend_prune_enabled` / `frontend_prune_enabled` 改讀它 |
+| `backend_branch: "release/x"` | 同樣只在橫幅裡。會印出 `release/x` 然後 clone `main` | `backend_repo_version` 改讀它 |
+
+其餘：`waf_repo_*`（8 個，README §5.2 把 `waf_repo_manage: false` 當逃生門介紹，但那個名字不被讀取）、
+`waf_crs_paranoia_level` 等 3 個（role 讀的是 `waf_crs_setup_vars` 這個扁平 dict）、
+`tls_hsts_max_age`（文件寫 180 天，實際送出 1 年 —— HSTS 的 max-age 送出去就收不回來）、
+`deploy_backend_migrate` 等 9 個 deploy 旋鈕。全部已接上。
+
+## 8. Ansible 的驗證狀態
+
+claude.md §12.5 原本寫「連 `ansible-playbook --syntax-check` 都跑不了」。
+`cx setup tools ansible` 用 `python3 -m venv --without-pip` + `get-pip.py` 免 root 裝起來之後：
+
+| 項目 | 結果 |
+|---|---|
+| `site.yml --syntax-check` | ✅ |
+| `playbooks/deploy-only.yml --syntax-check` | ✅ |
+| `playbooks/rollback.yml --syntax-check` | ✅ |
+| `ansible-lint`（**production profile**） | ✅ 0 failures / 0 warnings（181 個檔案） |
+| `yamllint` | ✅ 0 |
+
+起點是 739 個 finding。其中 673 個是 `var-naming[no-role-prefix]`，
+與本專案「用 `group_vars/all.yml` 當單一事實來源」的架構直接衝突，已在
+`ansible/.ansible-lint` 中附理由關閉。其餘逐一修正或以 inline `noqa` 加註理由。
+
+**仍然沒有驗證的**：任何需要真實目標主機的東西 —— MyGuard 套件解析、
+MySQL 8.4 from Oracle repo、certbot 的 snakeoil bootstrap、release prune 的
+current-aware 行為、PM2 跑 Nuxt `.output`。這些要等 `cx deploy check <限制>`
+對一台真的 staging 機器跑過才算數。

@@ -1,0 +1,173 @@
+# ── pm base compose ─────────────────────────────────────────────────────────
+# 這是合併鏈的**最底層**。三個模式共用的拓撲寫在這裡，模式差異寫在
+# docker/compose/<mode>.yml。永遠不要直接 docker compose，要走 cx（見 claude.md §0 紅線 3）。
+#
+# base 檔的四條禁令（每一條都對應一個實際踩過的坑）：
+#
+#   1) **不可有 ports:**
+#      compose 的 ports 以 {ip,target,published,protocol} 為鍵**附加**合併，不是覆寫。
+#      base 寫了 8080，overlay 再寫 18080，結果是兩個都發布 → 第二個模式
+#      `Bind for 0.0.0.0:8080 failed: port is already allocated`。
+#      所有 ports: 一律只出現在 overlay。
+#
+#   2) **不可有 container_name:**
+#      寫死名字等於放棄 -p 的隔離，三個模式無法並存（舊 compose 的 D11）。
+#
+#   3) **不可有原始碼 bind mount。**
+#      dev 才需要 ./backend:/var/www/html；test/prod 是不可變映像，
+#      原始碼烘在 image 裡。寫在 base 會讓 test 掃到的其實是你工作區的髒檔案。
+#
+#   4) **網路必須明寫 name:。**
+#      否則會被命名空間化成 <project>_<key>，`docker run --network pm_test_net`
+#      就找不到網路 —— ZAP 是唯一能打到 WAF 的東西，整條 DAST 因此死掉。
+#
+# 另外：app service **不可宣告 entrypoint:**。image 的 ENTRYPOINT 要保持
+# docker-php-entrypoint 的 argv 直通，否則 `compose run --rm --entrypoint composer app …`
+# 會變成 `<entrypoint> composer …`。
+
+services:
+
+  # ── MySQL ────────────────────────────────────────────────────────────────
+  # 8.4 是 LTS（支援到 2032-04）。9.x 是 Innovation track，每版只有 8 個月支援，禁用。
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.4}
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --skip-name-resolve
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?根目錄 .env 缺少 MYSQL_ROOT_PASSWORD（跑 cx setup）}
+      MYSQL_DATABASE: ${DB_DATABASE:-pm}
+      MYSQL_USER: ${DB_USERNAME:-pm}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?根目錄 .env 缺少 DB_PASSWORD（跑 cx setup）}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    # app 的 depends_on 用 service_healthy 等這個。沒有 healthcheck 的話
+    # Laravel 會在 MySQL 還在初始化時就跑 migrate 並炸掉（舊 compose 的 D7）。
+    healthcheck:
+      test: ["CMD-SHELL", 'mysqladmin ping -h 127.0.0.1 -uroot -p"$$MYSQL_ROOT_PASSWORD" --silent']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks: [app_net]
+
+  # ── PHP 應用（php-fpm + nginx + supervisord）───────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      target: ${APP_TARGET:-dev}
+      args:
+        PHP_IMAGE: ${PHP_IMAGE:-php:8.5-fpm-alpine}
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    # ⚠ tag 必須含模式。spa/static 的 API base URL 是 **build 時**烘進 bundle 的，
+    # test 與 prod 共用 tag 會讓 `cx test up`（未加 --build）拿到 prod 的映像 ——
+    # -p 隔離容器與網路，但**不隔離映像 tag**。
+    image: ${IMAGE_PREFIX:-pm}/app:${APP_MODE:-dev}-${APP_TARGET:-dev}
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Taipei}
+      APP_LOCALE: ${APP_LOCALE:-zh_TW}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      SANCTUM_STATEFUL_DOMAINS: ${SANCTUM_STATEFUL_DOMAINS:-localhost:8080}
+      SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_DATABASE: ${DB_DATABASE:-pm}
+      DB_USERNAME: ${DB_USERNAME:-pm}
+      DB_PASSWORD: ${DB_PASSWORD:?根目錄 .env 缺少 DB_PASSWORD（跑 cx setup）}
+      SESSION_DRIVER: database
+      QUEUE_CONNECTION: database
+      CACHE_STORE: database
+      # entrypoint 讀這兩個。DB_FRESH 在 test 模式會被哨兵檔一次性化。
+      APP_MODE: ${APP_MODE:-dev}
+      DB_FRESH: ${DB_FRESH:-false}
+      XDEBUG_MODE: ${XDEBUG_MODE:-off}
+      XDEBUG_START: ${XDEBUG_START:-trigger}
+      XDEBUG_CLIENT_HOST: ${XDEBUG_CLIENT_HOST:-host.docker.internal}
+      XDEBUG_CLIENT_PORT: ${XDEBUG_CLIENT_PORT:-9003}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/up >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    networks: [app_net]
+
+  # ── Nuxt 前端 ─────────────────────────────────────────────────────────────
+  nuxt:
+    build:
+      context: .
+      dockerfile: docker/nuxt/Dockerfile
+      target: ${NUXT_TARGET:-dev}
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24.20-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.30-alpine}
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+        # build 時烘進 bundle 的兩個值。spa/static 模式非它們不可。
+        FRONTEND_MODE: ${FRONTEND_MODE:-ssr}
+        NUXT_PUBLIC_API_BASE_URL: ${NUXT_PUBLIC_API_BASE_URL-}
+    image: ${IMAGE_PREFIX:-pm}/nuxt:${APP_MODE:-dev}-${NUXT_TARGET:-dev}-${FRONTEND_MODE:-ssr}
+    restart: unless-stopped
+    environment:
+      # ⚠ NUXT_SSR 走 runtime environment，不是 build arg —— build arg 進不了 nuxt dev，
+      # 於是 FRONTEND_MODE=spa 在 dev 會被靜默忽略。
+      NUXT_SSR: ${NUXT_SSR:-true}
+      NUXT_PUBLIC_API_BASE_URL: ${NUXT_PUBLIC_API_BASE_URL-}
+      NITRO_PORT: "3000"
+      NITRO_HOST: "0.0.0.0"
+      FRONTEND_MODE: ${FRONTEND_MODE:-ssr}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    networks: [app_net]
+
+  # ── edge 反向代理 ─────────────────────────────────────────────────────────
+  # **三個模式都有**。/ → Nuxt，/api|/admin|/up|/storage|/livewire → PHP。
+  # 這讓 Docker 拓撲與 Ansible 原生拓撲一致（claude.md §6），
+  # 也讓 NUXT_PUBLIC_API_BASE_URL="" （同源）成為正確預設。
+  edge:
+    image: ${NGINX_IMAGE:-nginx:1.30-alpine}
+    restart: unless-stopped
+    volumes:
+      - ./docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/edge/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      app:
+        condition: service_healthy
+      nuxt:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [app_net]
+
+volumes:
+  # 刻意**不**寫 name: —— 讓 -p 把它命名空間化成 pm_<mode>_mysql-data，
+  # 三個模式的資料才是互相隔離的。
+  mysql-data:
+
+networks:
+  app_net:
+    # 但網路要明寫 name:，因為 cx scan dast 得用 `docker run --network pm_test_net`
+    # 把 ZAP 塞進 WAF 所在的網路。留給 compose 自動命名就會變成 pm_test_app_net。
+    name: pm_${APP_MODE:-dev}_net

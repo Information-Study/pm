@@ -2,7 +2,7 @@
 # roles/mysql/tasks/databases.yml —— 應用資料庫、雙 host 授權、test schema
 
 - name: 建立應用程式資料庫
-  community.mysql.mysql_db:
+  ansible.mysql.mysql_db:
     name: "{{ mysql_app_db_name }}"
     encoding: "{{ mysql_charset }}"
     collation: "{{ mysql_collation }}"
@@ -15,7 +15,7 @@
 #   只有 'pm'@'localhost' 會直接 1045 Access denied；
 #   反過來用 socket（DB_HOST=localhost）連時比對的是 'localhost'。
 - name: 建立應用程式帳號（localhost 與 127.0.0.1 兩筆）
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
     name: "{{ mysql_app_db_user }}"
     host: "{{ item }}"
     password: "{{ mysql_app_db_password }}"
@@ -37,7 +37,7 @@
 # 一次查詢同時取回 schema 數與 table 數（單一 query，避免多 query 與
 # positional_args 的搭配歧義）
 - name: 檢查 {{ mysql_test_db_name }} schema 的狀態
-  community.mysql.mysql_query:
+  ansible.mysql.mysql_query:
     query: >-
       SELECT
         (SELECT COUNT(*) FROM information_schema.schemata
@@ -75,7 +75,7 @@
     - (mysql_test_db_tables | default(0) | int) > 0
 
 - name: 移除空的 {{ mysql_test_db_name }} schema（gate：mysql_drop_test_db，預設 false）
-  community.mysql.mysql_db:
+  ansible.mysql.mysql_db:
     name: "{{ mysql_test_db_name }}"
     state: absent
     login_unix_socket: "{{ mysql_socket }}"

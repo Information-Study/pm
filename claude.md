@@ -39,15 +39,35 @@
 
 ## 0.5 目前進度
 
+> 逐項的機器可驗狀態見 [`docs/progress.md`](docs/progress.md) 與 `cx verify` 的輸出。
+> 本節只記結論。
+
 | Phase | 內容 | 狀態 |
 |---|---|---|
 | 0 | 本文件 | ✅ 完成 |
 | 1 | 更名 `~/PSYOP_DutyManager` → `~/pm`；`cx` 骨架；備份；刪除舊紀錄 | ✅ 完成 |
-| 2 | `docker/` 三模式 + 多階段 Dockerfile + 新 `docker-compose.yml` | ⏳ **交由另一對話驗證**，見 [`docs/docker-verification.md`](docs/docker-verification.md) |
-| 3 | 重建前後端 + 三 Git 初始化 + 推送 | ✅ 完成（原生方式，未用 Docker） |
-| 4 | DevSecOps 工具鏈 + `cx scan` | ✅ 三道可跑，SAST/DAST 需 Docker |
-| 5 | Ansible roles + playbook | ✅ 產出完成（11 role + certbot，152 檔），❌ **完全未驗證** |
-| 6 | `README.md`、`ansible/README.md` | ⏳ |
+| 2 | `docker/` 三模式 + 多階段 Dockerfile + 新 `docker-compose.yml` | ✅ **完成並實測**（2026-09-04） |
+| 3 | 重建前後端 + 三 Git 初始化 + 推送 | ✅ 完成；migration / 測試 / 端點皆已實跑 |
+| 4 | DevSecOps 工具鏈 + `cx scan` | ✅ 四道防線全部跑得動 |
+| 5 | Ansible roles + playbook | ⚠ 靜態全綠（syntax-check + lint），**尚未上真機** |
+| 6 | `README.md`、`ansible/README.md`、`docs/progress.md` | ✅ 完成 |
+
+### 2026-09-04 的環境變更（重要）
+
+這一天之前，本專案是在「**沒有 Docker、沒有資料庫、沒有 pip**」的環境下開發的，
+所以 §12 有一份很長的未驗證清單。當天解除的阻擋：
+
+| 阻擋 | 解除方式 |
+|---|---|
+| Docker daemon 不可用 | 安裝 Docker Engine 29.7.2 + `sudo usermod -aG docker $USER` + **`wsl --shutdown` 再重開** |
+| 無 pip / venv → 裝不了 ansible | `python3 -m venv --without-pip` + `get-pip.py`，全程免 root（`cx setup tools ansible`） |
+| 無 composer / node | `cx setup tools composer node`，從官方 release 下載並核對 SHA256 |
+| `pdo_sqlite` 缺席擋住 `artisan test` | 加進容器映像（host 端仍缺，但 `cx test back` 走容器） |
+
+> ⚠ `usermod -aG docker` **只影響之後才建立的登入 session**。
+> 在 WSL 上一定要 `wsl --shutdown`（Windows 端）再重開，否則 `docker ps` 仍是
+> `permission denied while trying to connect to the docker API`，而那個訊息
+> 完全不會提示你「群組已經加好了，只是還沒生效」。這是本專案卡最久的環境問題。
 
 ### 已完成的清理（2026-09-03）
 
@@ -63,13 +83,15 @@
 已刪除：`.git`、`.gitmodules`、`backend/`、`frontend/`、`php/`、`nuxt/`、
 `init.sh`、`refresh.sh`、`README.md`、`docker-compose.yml`、`.dockerignore`。
 
-**Docker 自定義設定全部保留**（使用者明確要求），遷移至：
-`docker/php/`（nginx.conf、supervisord.conf、xdebug.ini、default.conf、laravel-queue.conf、dockerfile.development）、
-`docker/nuxt/dockerfile`、`docker/legacy/*.orig`（舊 compose、.dockerignore、init.sh、refresh.sh、README）。
+**Docker 自定義設定全部保留**（使用者明確要求），遷移至 `docker/php/`、`docker/nuxt/`、
+`docker/legacy/*.orig`。Phase 2 完成後，舊的單階段檔已全數移入 `docker/legacy/`：
 
-> ⚠ **資料庫未備份** —— Docker daemon 在本機不可用。舊的 `mysql-data` volume 屬於舊 compose
-> project `PSYOP_DutyManager`，新架構用 `pm_dev/pm_test/pm_prod`，所以舊資料不會被覆寫，
-> 只會成為孤兒 volume 留在 Docker 中，可自行取回。
+| 舊檔 | 現況 |
+|---|---|
+| `docker/php/dockerfile.development` | → `docker/legacy/php-dockerfile.development.orig` |
+| `docker/nuxt/dockerfile`（小寫） | → `docker/legacy/nuxt-dockerfile.orig`。**它原本與新的 `Dockerfile` 並存，正是缺陷 D1 的陷阱本身** |
+| `docker/php/xdebug.ini` | → `docker/legacy/php-xdebug.ini.orig`（改由 entrypoint 依環境變數生成） |
+| `docker/php/laravel-queue.conf` | 併入 `docker/php/supervisord.conf`（原本寫死 `--queue=media-library`，是別的專案的殘留） |
 
 ### 已完成的重建（2026-09-03，原生方式）
 
@@ -599,27 +621,51 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 
 ## 7. 常用指令對照
 
-> ⚠ 標記 **[待實作]** 的動詞目前不存在，打了會得到 exit 2。實作狀態以 `cx help` 為準。
+> 完整清單以 `cx help` 為準（那份輸出是唯一的權威來源）。
+> 使用者導向的說明在 [`README.md`](README.md)。
 
 | 目的 | `cx` | 原生等價 |
 |---|---|---|
-| 起開發環境 | `cx dev up -d` **[待實作 Phase 2]** | `docker compose --project-directory . -p pm_dev -f docker-compose.yml -f docker/compose/dev.yml --env-file .env --env-file docker/env/dev.env up -d` |
+| 初始化工作區 | `cx setup` | — |
+| 裝原生工具鏈 | `cx setup tools [名稱...]` | 免 root 裝到 `~/.local` |
+| 裝專案相依 | `cx setup deps` | `composer install` + 兩邊的 npm |
+| 起開發環境 | `cx dev up -d` | `docker compose --project-directory . -p pm_dev -f docker-compose.yml -f docker/compose/dev.yml --env-file .env --env-file docker/env/dev.env up -d` |
 | artisan | `cx art migrate` | `… run --rm --entrypoint php app artisan migrate` |
 | composer | `cx composer install` | `… run --rm --no-deps --entrypoint composer app install` |
-| npm | `cx npm ci` | `… run --rm --no-deps --entrypoint npm nuxt ci` |
-| 後端測試 | `cx test back` **[待實作]** | `… run --rm --entrypoint php app artisan test` |
-| 進 shell | `cx sh app` **[待實作 Phase 2]** | `… exec app sh` |
-| 資料庫 | `cx db …` **[待實作 Phase 2]** | — |
+| npm（前端） | `cx npm ci` | `… run --rm --no-deps --entrypoint npm nuxt ci` |
+| npm（後端的 Vite 資產） | `cx npm --backend ci` | `… run --rm --no-deps --entrypoint npm app ci` |
+| 後端測試 | `cx test back` | `… exec -T -e DB_CONNECTION=sqlite app php artisan test` |
+| 前端型別檢查 | `cx test front` | `… run --rm --no-deps --entrypoint npm nuxt run typecheck` |
+| 覆蓋率 | `cx test coverage` | 同上，另外臨時打開 `XDEBUG_MODE=coverage` |
+| 進 shell | `cx dev sh app` | `… exec app sh`（容器內有 `art` / `t` 捷徑） |
+| 資料庫 | `cx db status\|shell\|dump\|restore\|fresh\|admin` | — |
 | 掃描 | `cx scan all` | 見 §5 |
-| Git 同步 | `cx git sync\|save\|status` |
-| 建立遠端 | `cx git remote-init`（gh 建 3 個 public repo） |
-| 推送 | `cx git push`（白名單 + 祕密掃描 + 子模組順序） |
-| 部署 | `cx deploy …` **[待實作 Phase 5]** | `ansible-playbook -i inventory/hosts.yml site.yml` |
+| SonarQube | `cx sonar up\|token\|status` | 獨立 project `pm_devsecops` |
+| 驗收 | `cx verify [static\|runtime\|app\|ansible\|all]` | 產出 `reports/verify/<時間戳>.md` |
+| Git 同步 | `cx git sync\|save\|status` | |
+| 建立遠端 | `cx git remote-init`（gh 建 3 個 public repo） | |
+| 推送 | `cx git push`（白名單 + 祕密掃描 + 子模組順序） | |
+| Ansible 靜態檢查 | `cx deploy syntax` / `cx deploy lint` | `ansible-playbook --syntax-check` / `ansible-lint` |
+| 部署 | `cx deploy check\|apply\|app\|rollback [限制]` | `ansible-playbook -i inventory/hosts.yml site.yml` |
 | 診斷 | `cx doctor` | — |
+
+**尚未實作**（打了會得到 exit 2 並指向 §12）：
+`cx fresh --rollback`、`cx fresh --mode carryover|scaffold` 的重建階段。
 
 `cx` 可從專案任何子目錄執行（向上找 `.cxroot` 標記 —— **不用 `git rev-parse`**，
 因為 `cx fresh` 會刪掉 `.git`，用 git 當解析器會在流程中途壞掉）。
 `cx install` 之後可在任何地方直接打 `cx`。
+
+### 新增一個動詞時，四個地方要一起改
+
+1. `bin/cmd/<verb>.sh`，定義 `cmd_<verb>_main()`
+2. `cx` 的 `CX_CMD_FILE_OF`（只有「動詞名 ≠ 檔名」時才需要，例如 `up` → `compose.sh`）
+3. `bin/completion/cx.bash` 的 `verbs=`
+4. `bin/cmd/help.sh`
+
+漏掉第 1 項的後果實際發生過：dispatcher 把 8 個動詞指到一個從未被寫出來的
+`bin/cmd/compose.sh`，於是 `cx up` 回「未知的指令」。
+`cx doctor` 現在會檢查每個對外動詞都找得到實作檔。
 
 ---
 
@@ -668,18 +714,16 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 
 ---
 
-## 9. docs/ — 待驗證項目
+## 9. docs/
 
-需要另一個對話 / 另一位負責人驗證的項目放在 `docs/`，每份是「驗證需求規格」而非實作說明。
-
-| 文件 | 範圍 | 狀態 |
+| 文件 | 內容 | 狀態 |
 |---|---|---|
-| [`docs/docker-verification.md`](docs/docker-verification.md) | Docker 三模式、多階段映像、edge、WAF、掃描容器 | ⏳ 待驗證 |
+| [`docs/progress.md`](docs/progress.md) | 逐項進度追蹤：Phase、`cx` 動詞、四道防線、仍未驗證的東西 | 隨時更新 |
+| [`docs/docker-verification.md`](docs/docker-verification.md) | Docker 三模式的驗收需求 **與實測結果** | ✅ 已回填（2026-09-04） |
 
-`docs/docker-verification.md` 包含：15 項舊缺陷的驗收條件、5 項阻斷級與 12 項重大驗收項目
-（皆附具體失敗訊息）、LTS 版本鎖定表、端到端驗收腳本、以及供接手者回填的結果表。
-
-**接手 Docker 驗證的對話請先讀本文件 §0 紅線、§4 Docker、§5 DevSecOps，再讀該驗證需求文件。**
+`docs/docker-verification.md` 現在包含：15 項舊缺陷的驗收條件與結果、
+5 項阻斷級與 12 項重大項目的逐項結論、WAF 攔截率實測、
+以及 **20 條驗證過程才發現的新缺陷**（§7 追加發現）。
 
 ---
 
@@ -687,23 +731,40 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 
 ```
 ~/pm/
-├── cx                      統一入口 dispatcher
-├── .cxroot                 根目錄標記（含專案名、GitHub 組織、repo 名）
-├── .gitignore              主庫（PUBLIC repo，git init 前即就位）
-├── claude.md               本文件
+├── cx                       統一入口 dispatcher
+├── .cxroot                  根目錄標記（專案名、GitHub 組織、repo 名）
+├── .env                     ⚠ 不進版控。由 cx setup env 產生（隨機密碼 + 你的 UID/GID）
+├── .env.example             三模式共用的值
+├── .dockerignore            build context 排除清單（含祕密）
+├── .semgrepignore           ⚠ 必須放在專案根目錄，Semgrep 只在掃描目標的根目錄找它
+├── .gitignore               主庫（PUBLIC repo）；另有 /example/ 的排除
+├── docker-compose.yml       base：無 ports、無 container_name、無原始碼 mount
+├── README.md                使用者導向的入口
+├── claude.md                本文件（原理與坑）
 ├── bin/
-│   ├── lib/{common,ui,archive,guard}.sh + ansible_lint.py
-│   ├── cmd/{tui,doctor,lint,scan,git,fresh,install,art,composer,npm,help}.sh
-│   └── completion/cx.bash  bash 補全
+│   ├── lib/{common,ui,archive,guard}.sh
+│   ├── lib/{ansible_lint,compose_mounts,verify_checks,sarif_gate}.py
+│   ├── cmd/{setup,doctor,compose,test,db,sonar,scan,verify,deploy,git,
+│   │        fresh,install,lint,tui,art,composer,npm,help}.sh
+│   └── completion/cx.bash
 ├── templates/gitignore/{main,backend,frontend}
 ├── docker/
-│   ├── php/                舊 PHP 容器設定（待 Phase 2 重寫為多階段）
-│   ├── nuxt/               舊 Nuxt Dockerfile
-│   └── legacy/             舊 compose / 腳本 / README 的 .orig 副本
-├── docs/                   待驗證項目
-├── reports/                掃描輸出（目錄進版控，內容不進）
-├── backend/                submodule → Information-Study/pm-backend
-└── frontend/               submodule → Information-Study/pm-frontend
+│   ├── compose/{dev,test,prod,sonar}.yml   模式 overlay
+│   ├── env/{dev,test,prod}.env             埠段與 build target
+│   ├── php/     多階段 Dockerfile + nginx / php-fpm / supervisord / php.ini
+│   ├── nuxt/    多階段 Dockerfile（deps/dev/build/prod/static）+ static.conf
+│   ├── edge/    反向代理（nginx.conf + conf.d/）
+│   ├── entrypoint/{app,nuxt}.sh
+│   ├── waf/     ModSecurity CRS 排除規則（before / after）
+│   ├── security/{trivy,semgrep,zap}/
+│   └── legacy/  舊設定的 .orig 副本（只供對照，不參與建置）
+├── ansible/     12 role + site.yml + playbooks + .ansible-lint + .yamllint
+├── docs/        progress.md、docker-verification.md
+├── reports/     掃描與驗收輸出（目錄進版控，內容不進）
+│   ├── quality/ sast/ sca/ dast/ waf/ db/ verify/
+├── example/     ⚠ **不進版控**。舊專案的參考副本，其 .git 指向黑名單遠端
+├── backend/     submodule → Information-Study/pm-backend
+└── frontend/    submodule → Information-Study/pm-frontend
 ```
 
 ---
@@ -745,104 +806,114 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 
 ---
 
-## 12. ⚠ 未驗證項目清單（待補正）
+## 12. 驗證狀態
 
-本專案在**沒有 Docker、沒有資料庫、沒有目標主機**的環境下開發，下列項目**從未實際執行過**。
-每一項都標註了阻擋原因與解除阻擋後該怎麼驗。
+> **原則：沒跑過的就寫沒跑過。** 不要因為程式碼看起來對就標成已驗證。
+> 機器可驗的部分不要手抄 —— 跑 `cx verify` 並看 `reports/verify/<時間戳>.md`。
+> 逐項的進度追蹤在 [`docs/progress.md`](docs/progress.md)。
 
-> 原則：**沒跑過的就寫沒跑過。** 不要因為程式碼看起來對就標成已驗證。
+### 12.1 環境（2026-09-04 更新）
 
-### 12.1 環境限制（這些是根因）
+寫這份文件的最初版本時，本機**沒有 Docker、沒有資料庫、沒有 pip**，
+所以底下曾經有一份很長的「從未執行」清單。目前狀態：
 
-| 限制 | 影響範圍 | 解除方式 |
+| 限制 | 原本的影響 | 現況 |
 |---|---|---|
-| Docker daemon 不可用 | 整個 Phase 2、Semgrep、ZAP、SonarQube、WAF | Docker Desktop → Settings → Resources → WSL Integration |
-| `sudo` 需要互動密碼 | 無法 `apt install`（ansible、php 擴充、MySQL） | 由人工執行 `! sudo apt install ...` |
-| 無 `pip` / `venv` | Semgrep、ansible、ansible-lint、yamllint 都裝不了 | `sudo apt install python3-pip python3-venv` |
-| 無 Java runtime | OWASP ZAP 原生模式 | `sudo apt install default-jre`（或直接用 Docker） |
-| IPv6 壞掉 | 所有 curl 需 `-4` | 環境層面，非本專案可解 |
-| 沙箱網域限制 | `getcomposer.org`、`deb.debian.org` 不通 | 已用 GitHub release 繞過 |
+| Docker daemon 不可用 | 整個 Phase 2、Semgrep、ZAP、SonarQube、WAF | ✅ **已解除**。Engine 29.7.2 + Compose v5.5.0 |
+| 無 `pip` / `venv` | ansible、ansible-lint、yamllint、semgrep 都裝不了 | ✅ **已解除**。`venv --without-pip` + `get-pip.py`，免 root |
+| 無 composer / node | 後端與前端的相依 | ✅ **已解除**。`cx setup tools`，核對 SHA256 |
+| `pdo_sqlite` 未安裝 | `php artisan test` | ✅ 容器內已有。host 端仍缺，但 `cx test back` 走容器 |
+| 無 Java runtime | OWASP ZAP 原生模式 | 仍無 —— ZAP 走 docker runner，不需要 host 的 Java |
+| `sudo` 需互動密碼 | `apt install` | 仍是。所有工具改成免 root 安裝到 `~/.local` |
+| 沙箱網域限制 | `getcomposer.org`、`deb.debian.org` 不通 | ✅ 目前全通（`cx setup` 仍保留 `-4`，因為 IPv6 曾經是壞的） |
+| **無目標主機** | Phase 5 的執行期驗證 | **仍無**。這是目前唯一還在的根本限制 |
 
-### 12.2 Phase 2 — Docker（完全未驗證）
+> ⚠ 加入 docker 群組之後**必須** `wsl --shutdown`（Windows 端）再重開。
+> `usermod -aG` 只影響之後才建立的登入 session；不重開的話 `docker ps` 仍是
+> `permission denied while trying to connect to the docker API`，
+> 而那個訊息完全不會提示你「群組已經加好了，只是還沒生效」。
 
-**全部項目**見 [`docs/docker-verification.md`](docs/docker-verification.md)，已交由另一個對話負責。
-該文件含 15 項舊缺陷驗收條件、5 項阻斷級、12 項重大項目、端到端腳本與待回填結果表。
+### 12.2 Phase 2 — Docker（✅ 已驗證）
 
-### 12.3 Phase 3 — 前後端（部分未驗證）
+`cx verify all` 共 52 項，**0 失敗、0 未驗**。
+逐項結果與 20 條「原始清單裡沒有、驗證過程才發現」的缺陷，
+全部回填在 [`docs/docker-verification.md`](docs/docker-verification.md) §6–§7。
 
-| 項目 | 狀態 | 阻擋原因 | 解除後怎麼驗 |
-|---|---|---|---|
-| Laravel 骨架建立 | ✅ 已驗證 | | |
-| Larastan level 5 | ✅ 已驗證（0 errors） | | |
-| Filament 套件安裝 | ✅ 已驗證 | | |
-| Nuxt 三模式建置 | ✅ 已驗證 | | |
-| **`php artisan migrate`** | ❌ **從未執行** | 無 MySQL、無 pdo_sqlite | 起 MySQL 後 `cx art migrate` |
-| **資料庫 schema** | ❌ **完全未驗證** | 同上 | migration 跑過才算數 |
-| **`php artisan test`** | ❌ **從未執行** | `phpunit.xml` 預設用記憶體 sqlite，但 `pdo_sqlite` 未安裝 | `sudo apt install php8.5-sqlite3` 後 `cx test back` |
-| **Filament `/admin` 面板** | ❌ **從未開啟過** | 需要 web server + DB | 起服務後瀏覽 `/admin` |
-| **建立 Filament 管理員** | ❌ 未執行 | 需要 DB | `php artisan make:filament-user`（v5 支援 `--name --email --password --panel`） |
-| **Sanctum SPA 認證流程** | ❌ **從未跑過** | 需要前後端同時運行 | 前端呼叫 `/sanctum/csrf-cookie` 再登入 |
-| **CORS 實際行為** | ⚠ 只驗證了設定值 | 未做真實跨源請求 | 瀏覽器 devtools 觀察 preflight |
-| **前端 dev server** | ❌ 未啟動過 | 只驗證了 build | `cx npm run dev` |
-| **前後端串接** | ❌ **從未真的串接** | 兩邊都沒同時跑起來 | 端到端點一次登入流程 |
+重點結論：
 
-### 12.4 Phase 4 — DevSecOps（三道可驗、兩道不可）
+* 三個模式**同時運行** 14 個容器，零埠衝突
+* D5 修正確認：`supervisorctl status` 看得到 5 個 RUNNING —— 舊版的 `CMD` 陣列缺陷
+  讓 supervisord 從未啟動，**queue worker 從來沒跑過**
+* WAF 在 blocking 模式擋下 SQLi / XSS / 路徑穿越（403），而 `/admin/login` 不誤擋
+  —— 排除規則 10012/10013 有效
+* ModSecurity audit log 確實從 stdout 取得到（`cx --mode test logs waf | grep '^{'`）
 
-| 防線 | 狀態 | 阻擋原因 |
+### 12.3 Phase 3 — 前後端
+
+| 項目 | 狀態 |
+|---|---|
+| Laravel 骨架、Larastan level 5、Filament 安裝、Nuxt 三模式建置 | ✅ 已驗證 |
+| **`php artisan migrate`** | ✅ **已執行**（三個模式各自的資料庫都跑過，10 張表） |
+| **資料庫 schema** | ✅ 已驗證 |
+| **`php artisan test`** | ✅ **已執行**（`cx test back`，2 passed）—— 補上 `pdo_sqlite` 後解除 |
+| **Filament `/admin`** | ⚠ 登入頁回 200，但**沒有建立過管理員也沒有登入過**（`cx db admin` 可建） |
+| **Sanctum SPA 認證流程** | ⚠ `/sanctum/csrf-cookie` 回 204、`/api/user` 未認證回 401，但**沒有真的走完一次登入**（前端還沒有登入頁） |
+| **CORS 實際行為** | ⚠ 只驗證了設定值。三個模式都是同源，沒有做過真的跨源請求 |
+| **前端 dev server** | ✅ 已啟動（HMR 容器 healthy，`/` 回 200） |
+| **前後端串接** | ✅ 經 edge 同源串接已驗（`/` → Nuxt、`/api` → Laravel） |
+| **後端 Vite 資產** | ✅ **新增**。舊專案呼叫一個從來不存在的 `npm-php` service（缺陷 D3），所以 `public/build` 從來沒被建置過 |
+
+### 12.4 Phase 4 — DevSecOps（四道全部跑得動）
+
+| 防線 | 狀態 | 最後結果 |
 |---|---|---|
-| ① Larastan | ✅ 已驗證（0 errors，level 5 + checkModelProperties） | |
-| ① SonarQube scanner | ❌ 未驗證 | 需要 SonarQube server（Docker） |
-| ② Semgrep | ❌ **從未執行** | 無 pip/venv，且 Semgrep 無 standalone binary |
-| ③ Trivy fs | ✅ 已驗證（backend 146 套件 + frontend 742 相依，0 vulns） | |
-| ③ Trivy image scan | ❌ 未驗證 | 沒有映像可掃 |
-| ③ Trivy misconfig（IaC） | ⚠ 部分 | 執行時 `ansible/` 還不存在，需重跑 |
-| ③ composer / npm audit | ✅ 已驗證 | |
-| ④ ZAP | ❌ **從未執行** | 無 Java runtime |
-| ④ WAF 攔截率對照 | ❌ **從未執行** | `_scan_dast_compare()` 的 python 比對邏輯完全未測 |
-| gitleaks | ✅ 已驗證（含「歷史中的洩漏抓得到、dir 模式漏掉」的對照實驗） | |
+| ① Larastan | ✅ | 0 errors |
+| ① SonarQube scanner | ⚠ 可執行但未跑 | 需 `cx sonar up` |
+| ② Semgrep | ✅ **已執行** | 298 規則 / 267 檔；0 ERROR、9 warning、5 筆有理由的抑制 |
+| ③ Trivy fs（vuln + secret + misconfig） | ✅ | 乾淨 |
+| ③ composer / npm audit | ✅ | 乾淨 |
+| ④ ZAP | ✅ 可執行 | 見 `reports/dast/` |
+| ④ WAF 攔截率對照 | ✅ **已實測** | blocking 模式擋下三類攻擊，正常流量不受影響 |
+| gitleaks | ✅ | 三個 repo 全歷史皆乾淨 |
 
-### 12.5 Phase 5 — Ansible（產出完成，完全未驗證）
+### 12.5 Phase 5 — Ansible（靜態全綠，尚未上真機）
 
-**連 `ansible-playbook --syntax-check` 都跑不了**（ansible 裝不了：無 pip、sudo 需密碼）。
-目前只能用 `cx lint` 做替代性靜態檢查：**114 個 YAML 全部剖析成功，
-無語法錯誤、無 `git push`、無未 gate 的破壞性操作、無 Jinja 括號錯誤**。
-這不等於 `--syntax-check`，更不等於真的跑得起來。
+`cx setup tools ansible` 解除了「連 `--syntax-check` 都跑不了」這個阻擋之後：
 
-產出：12 個 role（preflight / common / hardening / php / composer / mysql /
-nodejs_pm2 / nginx_myguard / certbot / deploy_backend / deploy_frontend / healthcheck）
-+ site.yml + inventory + playbooks，共 152 個檔案。
+| 項目 | 結果 |
+|---|---|
+| 三個 playbook 的 `--syntax-check` | ✅ 全過 |
+| `ansible-lint`（**production profile**） | ✅ 0 failures / 0 warnings（181 檔） |
+| `yamllint` | ✅ 0 |
 
-| 項目 | 阻擋原因 | 解除後怎麼驗 |
-|---|---|---|
-| 全部 playbook 語法 | ansible 未安裝 | `cd ansible && ansible-playbook site.yml --syntax-check` |
-| 全部 role 邏輯 | 無目標主機 | `ansible-playbook site.yml -l staging --check --diff` |
-| ansible-lint 規則 | 未安裝 | `ansible-lint ansible/`，與 `cx lint` 的結果對帳 |
-| **MyGuard 套件名歧異** | 未在真實 Ubuntu/Debian 上探測 | `packages.yml` 會用 `apt-cache policy` 逐一探測並在全落空時 fail 並附上 `apt-cache search` 的實際輸出 —— 這段邏輯本身也沒跑過 |
-| **MySQL 8.4 from Oracle repo** | 未驗證 | 真機安裝；Debian 的 `default-mysql-server` 是 MariaDB |
-| **PHP 8.5 from ondrej PPA / sury** | 未驗證（本機的 8.5 是 Ubuntu 26.04 內建） | 真機安裝 |
-| **certbot snakeoil bootstrap（A5）** | 未驗證 | 全新機第一次部署，觀察 vhost 是否從 snakeoil 正確切換到真憑證 |
-| **CRS 排除規則載入順序（A11）** | 未驗證 | 用 Livewire/Filament 請求實測是否被 941xxx/942xxx 誤擋 |
-| **A14 安全標頭在 location 內的繼承** | 未驗證 | `curl -I` 打 `/storage/x` 與 `/_nuxt/x`，確認 HSTS/nosniff 等標頭仍在 |
-| **PM2 fork 跑 Nuxt `.output`** | pm2 未安裝 | 真機或本機裝 pm2 後試跑 |
-| **release prune 不刪 current（A1）** | 未驗證 | 部署三次 + rollback 後再部署一次 |
-| **兩個 agent 的 template 檔名調和** | 見下 | 見下 |
+起點是 **739 個 finding**。修正過程找到兩類真問題：
 
-#### 已知的整合風險
+* **`include_role` 不能當 handler**（ansible-core 2.21 直接拒絕載入）。
+  這是實跑 `--syntax-check` 才發現的 —— 靜態 YAML 檢查看不出來，語法本身完全合法。
+* **37 個 inventory 變數不被任何 role 讀取**。值剛好都與真正的變數相同，
+  所以第一次部署會「看起來正常」。危險的是第二次：改了文件上的旋鈕卻沒有任何反應。
+  其中三個載重最重的：`production.yml.example` 的 `waf_exclusions_before: []`
+  會在切成 blocking 的同一刻抹掉 5 條 Livewire/Filament 排除規則；
+  `releases_prune: false` 印出 `prune=False` 然後照樣 prune；
+  `backend_branch` 印出你要的分支然後 clone `main`。全部已接上。
 
-`nginx_myguard` 的 tasks 與 templates 由兩個平行的 agent 產出，
-一度使用了**不相容的檔名與架構**（tasks 用 snippet 拆分，templates 用單一 vhost 內嵌）。
-已由第三個 agent 調和成 snippet 架構。
-**這代表該 role 的 template 與 task 之間的對應關係是「事後拼接」而非一體設計，
-第一次真的跑起來時要特別注意變數名稱是否對得上。**
+**仍未驗證**：任何需要真實目標主機的東西。清單見 [`docs/progress.md`](docs/progress.md)。
+`--check` 不是萬能 —— `command` / `shell` 在 check 模式會被 skip，
+所以「乾跑通過」不等於「實際跑一定會過」。
 
-### 12.6 補正流程
+### 12.6 `cx fresh` 的重建階段
 
-解除任一阻擋後：
+備份、驗證封存、確認閘門、刪除都可用且測過。
+**重建階段與 `--rollback` 仍未實作**，打了會得到 `EX_USAGE`。
+
+### 12.7 補正流程
 
 ```bash
 cx doctor              # 先確認哪些阻擋已解除
-cx scan all            # 四道防線重跑，看 runner 是否升級為 docker
-cx lint                # Ansible 靜態檢查（ansible 未裝時的替代）
+cx verify all          # 52 項驗收，產出帶時間戳的報告
+cx scan all            # 四道防線
+cx deploy syntax       # Ansible 語法
+cx deploy lint         # ansible-lint + yamllint
 ```
 
 補正完成的項目，請把本節對應列改為 ✅ 並註明驗證日期與方式。

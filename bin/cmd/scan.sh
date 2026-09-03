@@ -105,10 +105,13 @@ _scan_code() {
             cx_run docker run --rm -u "$(id -u):$(id -g)" \
                 --network pm_devsecops_net \
                 -e SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}" \
-                -e SONAR_TOKEN="${SONAR_TOKEN:?尚未設定。cx sonar 待 Phase 2 實作，暫時請自行 export SONAR_TOKEN}" \
+                -e SONAR_TOKEN="${SONAR_TOKEN:?尚未設定 —— 跑 cx sonar up 之後再跑 cx sonar token}" \
                 -v "$CX_ROOT:/usr/src" \
                 "${CX_IMG_SONAR_SCANNER:-sonarsource/sonar-scanner-cli:latest}" || rc=$?
-            worst=$(_scan_max "$worst" "$rc")
+            # 這裡曾經寫 worst=$(...)。檔頭第 80-83 行的註解正在講這個坑，
+            # 而這一行自己犯了：worst 不是本函式的 local，寫進去的是呼叫者的變數，
+            # 但下面 return 的是 _lane_worst → SonarQube scanner 的失敗被靜默吞掉。
+            _lane_worst=$(_scan_max "$_lane_worst" "$rc")
         else
             cx_warn "SonarQube 未啟動（cx sonar up）—— 略過 scanner"
         fi
@@ -125,37 +128,58 @@ _scan_sast() {
     cx_step "② SAST — Semgrep"
     local runner; runner=$(_scan_runner)
     local -a cfg=()
+    local line
     while read -r line; do
         [[ $line =~ ^[[:space:]]*# || -z ${line// } ]] && continue
         cfg+=(--config "$line")
     done < "$CX_ROOT/docker/security/semgrep/rulesets.txt"
 
+    local sarif="$CX_REPORT_DIR/sast/semgrep.sarif" rc=0
+
+    # 刻意不加 --error。
+    # claude.md §5 的閘門是「無 ERROR 等級 finding」，而 --error 是
+    # 「有任何 finding 就 exit 1」，包含 warning ——
+    # 用它當閘門的結果是這條 lane 永遠紅燈，於是沒有人會再看它。
+    # 改成先產生完整 SARIF，再由 bin/lib/sarif_gate.py 依嚴重度判定。
     if [[ $runner == docker ]]; then
-        local rc=0
-        _scan_step "$EX_SCAN_SAST" "Semgrep" \
-            docker run --rm -u "$(id -u):$(id -g)" \
-                -e HOME=/semgrep-home \
-                -e SEMGREP_SEND_METRICS=off \
-                -v "$CX_CACHE_DIR/semgrep:/semgrep-home" \
-                -v "$CX_ROOT:/src:ro" \
-                -v "$CX_REPORT_DIR:/out" \
-                -w /src \
-                "${CX_IMG_SEMGREP:-semgrep/semgrep:latest}" \
-                semgrep scan "${cfg[@]}" --error --sarif --output /out/sast/semgrep.sarif || rc=$?
-        return "$rc"
+        cx_info "Semgrep（docker）…"
+        cx_run docker run --rm -u "$(id -u):$(id -g)" \
+            -e HOME=/semgrep-home \
+            -e SEMGREP_SEND_METRICS=off \
+            -v "$CX_CACHE_DIR/semgrep:/semgrep-home" \
+            -v "$CX_ROOT:/src:ro" \
+            -v "$CX_REPORT_DIR:/out" \
+            -w /src \
+            "${CX_IMG_SEMGREP:-semgrep/semgrep:latest}" \
+            semgrep scan "${cfg[@]}" --sarif --output /out/sast/semgrep.sarif || rc=$?
+    elif cx_have semgrep; then
+        cx_info "Semgrep（原生）…"
+        cx_run env -C "$CX_ROOT" semgrep scan "${cfg[@]}" \
+            --sarif --output "$sarif" || rc=$?
+    else
+        cx_warn "Semgrep 不可用（需要 Docker，或 cx setup tools semgrep）"
+        return "$EX_PRECOND"
     fi
 
-    if cx_have semgrep; then
-        local rc=0
-        _scan_step "$EX_SCAN_SAST" "Semgrep（原生）" \
-            env -C "$CX_ROOT" semgrep scan "${cfg[@]}" --error \
-                --sarif --output "$CX_REPORT_DIR/sast/semgrep.sarif" || rc=$?
-        return "$rc"
+    # Semgrep 對「規則集下載失敗」回 exit 7，而且在 --output 之下
+    # 連錯誤訊息都不會出現在終端機（stdout 全被導進 sarif 檔）。
+    # 2026-09-04 實測：p/laravel 與 p/vue 都已經是 HTTP 404。
+    if (( rc >= 2 )); then
+        cx_error "Semgrep 工具異常結束（exit $rc）"
+        cx_dim "  最常見原因：rulesets.txt 裡有 registry 上不存在的規則集（exit 7）"
+        cx_dim "  逐一驗證：docker run --rm semgrep/semgrep semgrep scan --config p/<名稱> --metrics=off <檔案>"
+        return "$EX_PRECOND"
     fi
 
-    cx_warn "Semgrep 不可用（需要 Docker 或 pip 安裝的 semgrep）"
-    cx_dim "  本機無 pip/venv，且 Semgrep 沒有 standalone binary 版本"
-    return "$EX_PRECOND"
+    [[ -f $sarif ]] || { cx_error "Semgrep 沒有產生 $sarif"; return "$EX_PRECOND"; }
+    cx_dim "報告：reports/sast/semgrep.sarif"
+
+    if python3 "$CX_ROOT/bin/lib/sarif_gate.py" "$sarif"; then
+        cx_ok "Semgrep：無 ERROR 等級 finding"
+        return 0
+    fi
+    cx_error "Semgrep：有 ERROR 等級 finding"
+    return "$EX_SCAN_SAST"
 }
 
 # ---------------------------------------------------------------------------
@@ -230,24 +254,61 @@ _scan_dast() {
     local target=${ZAP_TARGET:-http://waf:8080}
     local net=${CX_TEST_NETWORK:-pm_test_net}
     docker network inspect "$net" >/dev/null 2>&1 \
-        || cx_die "$EX_PRECOND" "network $net 不存在。cx test up 待 Phase 2（見 docs/docker-verification.md）"
+        || cx_die "$EX_PRECOND" "network $net 不存在 —— 先跑 cx test up -d"
 
     for mode in detect blocking; do
-        cx_info "ZAP baseline（MODSEC_RULE_ENGINE=$mode）…"
+        cx_info "ZAP baseline（$mode）…"
         rc=0
         cx_run docker run --rm -u "$(id -u):$(id -g)" \
             --network "$net" \
             -v "$CX_REPORT_DIR/dast/$mode:/zap/wrk:rw" \
+            -v "$CX_ROOT/docker/security/zap:/zap/pmconf:ro" \
             "${CX_IMG_ZAP:-ghcr.io/zaproxy/zaproxy:stable}" \
             zap-baseline.py -t "$target" \
-                -c /zap/wrk/../../../docker/security/zap/baseline.conf \
+                -c /zap/pmconf/baseline.conf \
                 -J report.json -r report.html || rc=$?
-        (( rc == 1 )) && _lane_worst=$EX_SCAN_DAST
-        (( rc > 1 )) && _lane_worst=$EX_PRECOND
+
+        # zap-baseline.py 的退出碼慣例（不是一般的 0/1）：
+        #   0  全部通過
+        #   1  至少一個 FAIL（也就是有 High risk alert）
+        #   2  只有 WARN，沒有 FAIL
+        #   3+ 工具本身出錯
+        #
+        # claude.md §5 的閘門是「無 High risk alert」，所以 2 是**通過**。
+        # 原本寫成 `rc > 1 → EX_PRECOND`，於是只要有任何 warning 就被誤報成
+        # 「前置條件不足／工具不可用」—— 實測 8 個 warning 就觸發了這個誤判。
+        case $rc in
+            0) cx_ok "ZAP $mode：無 alert" ;;
+            1) cx_error "ZAP $mode：有 High risk alert"
+               _lane_worst=$(_scan_max "$_lane_worst" "$EX_SCAN_DAST") ;;
+            2) cx_warn "ZAP $mode：只有 warning（依 §5 的閘門定義算通過）"
+               cx_dim "  細節：reports/dast/$mode/report.html" ;;
+            *) cx_error "ZAP $mode：工具異常結束（exit $rc）"
+               _lane_worst=$(_scan_max "$_lane_worst" "$EX_PRECOND") ;;
+        esac
     done
+
+    _scan_dast_probe "$net"
     cx_info "產生 WAF 攔截率對照 …"
     _scan_dast_compare
     return "$_lane_worst"
+}
+
+# ── 主動攻擊探測 ───────────────────────────────────────────────────────────
+# zap-baseline.py 是**被動**掃描：它爬站並檢查回應標頭，不送攻擊 payload。
+# 所以拿 DetectionOnly 與 Blocking 兩份 baseline 報告去比對，兩邊必然一樣，
+# 結論永遠是「WAF 擋下 0 項」—— 那個數字不是 WAF 沒用，是量錯了東西。
+#
+# 要量 WAF 的實際攔截率，必須真的送攻擊請求，並比較兩個引擎模式下的狀態碼。
+# 這裡送一組已知會被 CRS 命中的 payload，外加一組正常請求當對照組
+#（正常請求被擋才是真正的問題 —— 那代表排除規則沒生效）。
+_scan_dast_probe() {
+    local net=$1
+    local out="$CX_REPORT_DIR/dast/compare/waf-probe.json"
+    cx_ensure_host_dirs "$CX_REPORT_DIR/dast/compare"
+    cx_info "主動攻擊探測（WAF 攔截率的真實量測）…"
+    CX_ROOT="$CX_ROOT" CX_NET="$net" \
+        python3 "$CX_ROOT/bin/lib/waf_probe.py" "$out" || return 0
 }
 
 _scan_dast_compare() {
@@ -298,7 +359,10 @@ _scan_secrets() {
                 --report-path "$CX_REPORT_DIR/sca/gitleaks-$slug.json" || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     done
-    return "$worst"
+    # 這裡曾經 return "$worst" —— 那個變數在本函式裡不存在。
+    # 直接跑 cx scan secrets 時 set -u 會炸；從 cx scan all 進來則回傳呼叫者的
+    # 舊值，gitleaks 找到的東西被整個丟掉。
+    return "$_lane_worst"
 }
 
 # ---------------------------------------------------------------------------

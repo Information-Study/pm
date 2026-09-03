@@ -1,0 +1,97 @@
+# ── test overlay ────────────────────────────────────────────────────────────
+# 不可變映像（原始碼烘進 image，沒有任何原始碼 bind mount）+ ModSecurity WAF。
+# 埠段 18080 / 18081 / 13000 / 13306。
+#
+# 這個模式的對外入口是 waf，不是 edge：
+#   ZAP → waf:8080 (ModSecurity + CRS) → edge:8080 → app / nuxt
+# cx scan dast 會用 MODSEC_RULE_ENGINE=DetectionOnly 與 On 各跑一次，
+# 兩份 alert 的差集就是 WAF 的實際攔截率。
+
+services:
+
+  mysql:
+    ports:
+      - "${MYSQL_BIND:-127.0.0.1}:${MYSQL_PORT:-13306}:3306"
+
+  app:
+    # 原始碼在 image 裡，只有 storage 需要可寫 → 具名 volume。
+    # 掛在 image 已存在的路徑上，所以會被 image 的 storage 骨架種子化
+    # （framework/cache、framework/sessions、framework/views、logs）。
+    volumes:
+      - app-storage:/var/www/html/storage
+
+  nuxt:
+    ports:
+      - "${NUXT_PORT:-13000}:3000"
+
+  edge:
+    ports:
+      # edge 仍然發布，方便對照「有沒有經過 WAF」的差異。
+      - "${EDGE_HTTP_PORT:-18080}:8080"
+
+  # ── ModSecurity + OWASP CRS 反向代理 ──────────────────────────────────────
+  waf:
+    image: ${WAF_IMAGE:-owasp/modsecurity-crs:nginx-alpine}
+    restart: unless-stopped
+    environment:
+      # CRS 的 nginx 形態是反向代理，必須給 BACKEND。
+      BACKEND: http://edge:8080
+      PORT: "8080"
+      SERVER_NAME: localhost
+      MODSEC_RULE_ENGINE: ${MODSEC_RULE_ENGINE:-DetectionOnly}
+      # audit 預設 SecAuditLogType Serial 只寫 stdout。
+      # 指定成 /dev/stdout 才拿得到資料 —— 掛一顆 volume 給
+      # MODSEC_AUDIT_STORAGE_DIR 的話那顆 volume 會是空的，
+      # WAF↔ZAP 對照完全沒有素材。取法：cx --mode test logs waf | grep '^{'
+      MODSEC_AUDIT_ENGINE: RelevantOnly
+      MODSEC_AUDIT_LOG: /dev/stdout
+      MODSEC_AUDIT_LOG_FORMAT: JSON
+      MODSEC_AUDIT_LOG_TYPE: Serial
+      MODSEC_REQ_BODY_ACCESS: "On"
+      MODSEC_RESP_BODY_ACCESS: "On"
+      MODSEC_REQ_BODY_LIMIT: "13107200"
+      PARANOIA: ${MODSEC_PARANOIA:-1}
+      ANOMALY_INBOUND: ${MODSEC_ANOMALY_INBOUND:-5}
+      ANOMALY_OUTBOUND: ${MODSEC_ANOMALY_OUTBOUND:-4}
+    volumes:
+      # ⚠ 掛載點是實測出來的，不是照文件猜的。
+      #
+      # 映像的 /etc/modsecurity.d/setup.conf 載入順序：
+      #   modsecurity.conf
+      #   modsecurity-override.conf        ← entrypoint 自己產生，不可掛成唯讀
+      #   owasp-crs/crs-setup.conf
+      #   owasp-crs/plugins/*-config.conf
+      #   owasp-crs/plugins/*-before.conf  ← exclusions-before 掛這裡
+      #   owasp-crs/rules/*.conf           ← CRS 本體
+      #   owasp-crs/plugins/*-after.conf   ← exclusions-after 掛這裡
+      #
+      # 那三行 plugins 的 Include 在映像裡預設是註解掉的，
+      # /docker-entrypoint.d/94-activate-plugins.sh 會在偵測到對應檔案存在時
+      # 用 sed 取消註解 —— 所以檔名結尾必須正好是 -before.conf / -after.conf。
+      #
+      # 一開始掛在 modsecurity-override.conf 是錯的：
+      # 90-copy-modsecurity-config.sh 會 touch 並覆寫那個檔，掛成 :ro 之後
+      # 它 exit 1，容器陷入 Restarting 迴圈而且 nginx 完全沒起來。
+      #
+      # ctl:ruleRemoveById 只影響「同 phase 中尚未執行」的規則，
+      # 所以 exclusions-before 一定要在 CRS 規則之前載入，載在之後等於沒寫。
+      - ./docker/waf/exclusions-before/pm-exclusions-before.conf:/opt/owasp-crs/plugins/pm-exclusions-before.conf:ro
+      - ./docker/waf/exclusions-after/pm-exclusions-after.conf:/opt/owasp-crs/plugins/pm-exclusions-after.conf:ro
+    ports:
+      - "${WAF_HTTP_PORT:-18081}:8080"
+    depends_on:
+      edge:
+        condition: service_healthy
+    healthcheck:
+      # CRS 映像沒有 curl，但有 busybox 的 wget。
+      # 打 / 而不是 /healthz —— WAF 只是代理，healthz 是 edge 的端點，
+      # 經過 WAF 轉發後 200 就代表整條鏈路通了。
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [app_net]
+
+volumes:
+  app-storage:

@@ -1,10 +1,29 @@
-# cx scan sast 使用的 ruleset。一行一個。
+# Semgrep 規則集。一行一個，# 開頭是註解。
+# bin/cmd/scan.sh 會把每一行變成一個 --config 參數。
+#
+# ⚠ 每一個都必須是 registry 上真的存在的規則集。
+#   Semgrep 對 404 的處理是「整個掃描 exit 7」，而且在 --sarif --output 之下
+#   連錯誤訊息都不會出現在終端機（stdout 全被導進 sarif 檔）——
+#   症狀是「SAST 靜靜地失敗」，非常難查。
+#
+#   2026-09-04 實測：p/laravel 與 p/vue 都是 HTTP 404，已移除。
+#   要新增規則集之前先驗證：
+#     docker run --rm semgrep/semgrep semgrep scan --config p/<名稱> --metrics=off <某個檔>
+
+# 語言
 p/php
-p/laravel
 p/javascript
 p/typescript
-p/vue
+
+# 漏洞類別（取代已經不存在的 p/laravel 與 p/vue）
+p/security-audit
+p/xss
+p/sql-injection
+p/command-injection
+p/insecure-transport
 p/secrets
 p/owasp-top-ten
+
+# 基礎設施
 p/dockerfile
 p/nginx

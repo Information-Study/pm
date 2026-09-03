@@ -1,6 +1,6 @@
 ---
 # roles/mysql/tasks/secure.yml —— root 密碼與帳號清理
-# 所有 community.mysql 任務都走 unix socket + /root/.my.cnf，
+# 所有 ansible.mysql 任務都走 unix socket + /root/.my.cnf，
 # 不把密碼放進 task 參數（A18：.my.cnf 已於 install.yml 第一步寫好）。
 
 - name: 確認 /root/.my.cnf 已就位（A18 的前提）
@@ -26,7 +26,7 @@
 - name: 設定 root@localhost 密碼（A18：只做 localhost，不用 host_all）
   # host_all 不能與「建立/更新使用者」併用（模組只允許用於 state=absent），
   # 而且對 root 用 host_all 會把 root@localhost 一起改掉／刪掉。
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
     name: root
     host: localhost
     password: "{{ mysql_root_password }}"
@@ -38,7 +38,7 @@
 
 - name: 移除匿名帳號（gate：mysql_remove_anonymous_users）
   # host_all 在這裡是合法的：它只搭配 state=absent 使用。
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
     name: ""
     host_all: true
     state: absent
@@ -47,7 +47,7 @@
   when: mysql_remove_anonymous_users | bool
 
 - name: 查出非 localhost 的 root 帳號
-  community.mysql.mysql_query:
+  ansible.mysql.mysql_query:
     query: "SELECT host FROM mysql.user WHERE user = 'root' AND host <> 'localhost'"
     login_db: mysql
     login_unix_socket: "{{ mysql_socket }}"
@@ -57,7 +57,7 @@
   when: mysql_remove_remote_root | bool
 
 - name: 移除非 localhost 的 root 帳號（gate：mysql_remove_remote_root）
-  community.mysql.mysql_user:
+  ansible.mysql.mysql_user:
     name: root
     host: "{{ item.host }}"
     state: absent

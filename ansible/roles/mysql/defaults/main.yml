@@ -43,7 +43,7 @@ mysql_packages_oracle:
 mysql_packages_distro:
   - mysql-server
   - mysql-client
-# python3-pymysql 是 community.mysql 模組的必要相依；
+# python3-pymysql 是 ansible.mysql 模組的必要相依；
 # python3-debian / python3-apt 是 deb822_repository 的必要相依（A6）。
 mysql_support_packages:
   - python3-pymysql

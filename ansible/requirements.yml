@@ -9,16 +9,18 @@
 # 版本下限的理由：
 #   ansible.posix     — authorized_key / sysctl / mount
 #   community.general — ufw / timezone / locale_gen
-#   community.mysql   — mysql_user / mysql_db（mysql role 用；3.10 起對 MySQL 8.4 的
-#                       caching_sha2_password 與 8.4 移除的舊語法處理較完整）
+#   ansible.mysql     — mysql_user / mysql_db / mysql_query（mysql role 用）。
+#                       原本寫 community.mysql；那個 collection 從 5.x 起只是一層
+#                       redirect，實作已搬到 ansible.mysql，ansible-lint 的
+#                       fqcn[canonical] 會要求用正規名稱。
 #   community.crypto  — 自簽憑證 / TLS 相關輔助（nginx + certbot role 用）
 collections:
   - name: ansible.posix
     version: ">=1.5.4"
   - name: community.general
     version: ">=9.0.0"
-  - name: community.mysql
-    version: ">=3.10.0"
+  - name: ansible.mysql
+    version: ">=5.0.0"
   - name: community.crypto
     version: ">=2.20.0"
 

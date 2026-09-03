@@ -87,3 +87,101 @@ cx_docker_ok() {
     fi
     return "$_CX_DOCKER_OK"
 }
+
+cx_need() {
+    cx_have "$1" && return 0
+    local msg="缺少必要工具：$1"
+    [[ -n ${2:-} ]] && msg="$msg —— $2"
+    cx_die "$EX_PRECOND" "$msg"
+}
+
+# Docker daemon 的硬性要求。訊息要把「剛加入 docker 群組」這個最常見的情境講出來：
+# usermod -aG 只影響「之後才建立」的登入 session，WSL 需要 wsl --shutdown 才會生效。
+cx_docker_need() {
+    cx_docker_ok && return 0
+    cx_error "Docker daemon 不可用"
+    cx_dim "  1) 確認 daemon：systemctl is-active docker"
+    cx_dim "  2) 確認群組：id -nG | grep -q docker（沒有就 sudo usermod -aG docker \$USER）"
+    cx_dim "  3) 加完群組後必須 wsl --shutdown（Windows 端）再重開，usermod 不影響既有 session"
+    exit "$EX_PRECOND"
+}
+
+# ── compose 引數組裝 ──────────────────────────────────────────────────────────
+# claude.md §4 的四個陷阱全部在這裡處理掉，所有動詞都必須走這條路：
+#   1) --project-directory "$CX_ROOT"：相對路徑以「第一個 -f 的目錄」為基準，不是 cwd。
+#   2) -p pm_<mode>：隔離容器／網路／volume（但**不隔離 host 埠**，埠靠 docker/env/<mode>.env）。
+#   3) --env-file 顯式缺檔是硬錯誤（隱式 ./.env 才會靜默略過）→ 只加存在的檔。
+#   4) 網路名在 compose 裡明寫 name:，否則會被命名空間化成 <project>_<key>。
+CX_DC_ARGS=()
+cx_compose_init() {
+    local mode=${1:-${CX_MODE:-dev}}
+    case $mode in
+        dev|test|prod) : ;;
+        *) cx_die "$EX_USAGE" "模式只接受 dev|test|prod（收到 $mode）" ;;
+    esac
+    local base="$CX_ROOT/docker-compose.yml"
+    local overlay="$CX_ROOT/docker/compose/${mode}.yml"
+    [[ -f $base    ]] || cx_die "$EX_PRECOND" "缺少 base compose：$base"
+    [[ -f $overlay ]] || cx_die "$EX_PRECOND" "缺少 overlay compose：$overlay"
+
+    CX_DC_ARGS=(--project-directory "$CX_ROOT" -p "pm_${mode}" -f "$base" -f "$overlay")
+    local f
+    # 後面的 --env-file 優先：模式專屬值（埠、target）要能蓋掉根 .env 的通用值。
+    for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do
+        [[ -f $f ]] && CX_DC_ARGS+=(--env-file "$f")
+    done
+    CX_DC_MODE=$mode
+    export CX_DC_MODE
+}
+
+cx_dc() {
+    (( ${#CX_DC_ARGS[@]} )) || cx_die "$EX_FAIL" "內部錯誤：cx_dc 在 cx_compose_init 之前被呼叫"
+    cx_run docker compose "${CX_DC_ARGS[@]}" "$@"
+}
+
+# 不經過 cx_run 的唯讀查詢版本 —— --dry-run 之下仍然要能拿到真實答案，
+# 否則 dry-run 會因為「查不到容器」而走上跟實際執行完全不同的分支。
+cx_dc_q() {
+    (( ${#CX_DC_ARGS[@]} )) || cx_die "$EX_FAIL" "內部錯誤：cx_dc_q 在 cx_compose_init 之前被呼叫"
+    docker compose "${CX_DC_ARGS[@]}" "$@"
+}
+
+# 掛在「image 中不存在的路徑」上的具名 volume 一律被 Docker 建成 root:root 0755，
+# 於是非 root 的 Trivy / Semgrep / PHPStan / ZAP 全部 EACCES。
+# 所有 bind mount 來源都必須由 cx 以呼叫者身分預先建立。
+cx_ensure_host_dirs() {
+    local d
+    for d in "$@"; do
+        [[ -d $d ]] && continue
+        cx_run mkdir -p "$d" || cx_die "$EX_FAIL" "無法建立 $d"
+    done
+}
+
+# compose 的 bind mount 來源不存在時，Docker 會靜默建立一個空目錄並掛上去
+# （於是 CRS 排除規則從未載入、WAF 悄悄失效）。up/build 之前逐一確認。
+cx_assert_mount_sources() {
+    local mode=${1:-${CX_DC_MODE:-dev}} missing=0 p
+    while IFS= read -r p; do
+        [[ -z $p ]] && continue
+        [[ -e $CX_ROOT/$p ]] || { cx_error "bind mount 來源不存在：$p"; missing=1; }
+    done < <(cx_compose_mount_sources "$mode")
+    (( missing )) && cx_die "$EX_PRECOND" "請先修好上列路徑（Docker 會靜默建空目錄並掛上去）"
+    return 0
+}
+
+# 從 compose 設定裡撈出所有相對路徑的 bind mount 來源。
+# 用 config --format json 而非 grep yaml：合併後的結果才是真相。
+cx_compose_mount_sources() {
+    local mode=${1:-${CX_DC_MODE:-dev}} f
+    local -a a=(--project-directory "$CX_ROOT" -p "pm_${mode}"
+                -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/docker/compose/${mode}.yml")
+    for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do
+        [[ -f $f ]] && a+=(--env-file "$f")
+    done
+    docker compose "${a[@]}" config --format json 2>/dev/null \
+        | CX_ROOT="$CX_ROOT" python3 "$CX_ROOT/bin/lib/compose_mounts.py"
+}
+
+# compose 的動作白名單。放在 common.sh 是因為 bin/cmd/test.sh 需要在
+# source compose.sh 之前就判斷「cx test up」的 up 是 compose 動作還是測試套件名稱。
+CX_COMPOSE_VERBS_LIST='up down restart ps logs sh build dc config'

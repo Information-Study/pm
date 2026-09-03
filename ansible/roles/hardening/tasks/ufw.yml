@@ -55,9 +55,12 @@
     direction: "{{ item.direction }}"
     policy: "{{ item.policy }}"
   loop:
-    - { direction: "incoming", policy: "{{ hardening_ufw_default_incoming }}" }
-    - { direction: "outgoing", policy: "{{ hardening_ufw_default_outgoing }}" }
-    - { direction: "routed", policy: "{{ hardening_ufw_default_routed }}" }
+    - direction: incoming
+      policy: "{{ hardening_ufw_default_incoming }}"
+    - direction: outgoing
+      policy: "{{ hardening_ufw_default_outgoing }}"
+    - direction: routed
+      policy: "{{ hardening_ufw_default_routed }}"
   loop_control:
     label: "{{ item.direction }}={{ item.policy }}"
 

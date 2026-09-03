@@ -3,7 +3,10 @@
 # Ubuntu 24.04 起 ssh 走 socket activation，ssh.service 平常是 inactive，
 # 對它下 reload 會失敗。try-reload-or-restart 對未啟動的 unit 會安靜地什麼都不做，
 # 而 socket activation 下的新連線本來就會用新設定重新 fork 一個 sshd。
-- name: Reload sshd
+# 這裡刻意用 systemctl 而不是 systemd_service 模組：
+# systemd_service 沒有對應 try-reload-or-restart 的語意，
+# 而 state=reloaded 在 socket activation 下（ssh.service 平常 inactive）會失敗。
+- name: Reload sshd  # noqa: command-instead-of-module
   ansible.builtin.command:
     cmd: /usr/bin/systemctl try-reload-or-restart ssh.service
   register: hardening_sshd_reload

@@ -27,10 +27,14 @@ preflight_allow_non_amd64: false
 # deb822_repository 需要 2.15、systemd_service 需要 2.17 → 下限取 2.17。
 preflight_min_ansible_version: "2.17.0"
 preflight_check_collections: true
+# 這個清單是 controller.yml 真的會逐一檢查的，不是註解 ——
+# roles/mysql 改用正規名稱 ansible.mysql 之後，這裡也必須跟著改，
+# 否則 preflight 會去確認一個「已經沒人用的 collection」，
+# 而真正被用到的那個缺席時反而不會被擋下來。
 preflight_required_collections:
   - ansible.posix
   - community.general
-  - community.mysql
+  - ansible.mysql
 
 # ── (1) 資源門檻 ──────────────────────────────────────────────────────────────
 # 5 GB：composer vendor + node_modules + Nuxt build 的暫存 + 至少兩個 release。

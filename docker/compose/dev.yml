@@ -1,0 +1,63 @@
+# ── dev overlay ─────────────────────────────────────────────────────────────
+# bind mount 原始碼 + HMR + xdebug + phpMyAdmin。埠段 8080 / 3000 / 3306 / 8891。
+#
+# vendor 與 node_modules 用**具名 volume 蓋回去**，這是舊 compose 的 D6：
+# ./backend:/var/www/html 會把 image 裡烘好的 vendor 整個遮掉，
+# 容器在 entrypoint 就 `Failed opening required 'vendor/autoload.php'`。
+# 具名 volume 掛在「image 中已存在的路徑」上時，Docker 會用 image 內容種子化它，
+# 所以掛上去反而救回 vendor。（掛在 image 中不存在的路徑才會變成 root:root 空目錄。）
+
+services:
+
+  mysql:
+    ports:
+      # 只綁 loopback。0.0.0.0 會把資料庫曝在區網上。
+      - "${MYSQL_BIND:-127.0.0.1}:${MYSQL_PORT:-3306}:3306"
+
+  app:
+    volumes:
+      - ./backend:/var/www/html
+      - app-vendor:/var/www/html/vendor
+    extra_hosts:
+      # xdebug 要連回 host 的 IDE。Linux/WSL 上這個名字不會自動存在。
+      - "host.docker.internal:host-gateway"
+
+  nuxt:
+    ports:
+      # dev 額外把 Nuxt 直接曝出來，方便繞過 edge debug HMR。
+      - "${NUXT_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - nuxt-node-modules:/app/node_modules
+      - nuxt-build:/app/.nuxt
+      - nuxt-output:/app/.output
+    environment:
+      NUXT_DEVSERVER_HOST: "0.0.0.0"
+      CHOKIDAR_USEPOLLING: "true"
+
+  edge:
+    ports:
+      - "${EDGE_HTTP_PORT:-8080}:8080"
+
+  # dev 專屬。test/prod 沒有這個 service（D13：正式環境不發布管理工具）。
+  phpmyadmin:
+    image: ${PHPMYADMIN_IMAGE:-phpmyadmin:5}
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: "3306"
+      PMA_USER: root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:?根目錄 .env 缺少 MYSQL_ROOT_PASSWORD（跑 cx setup）}
+      UPLOAD_LIMIT: 64M
+    ports:
+      - "${MYSQL_BIND:-127.0.0.1}:${PHPMYADMIN_PORT:-8891}:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks: [app_net]
+
+volumes:
+  app-vendor:
+  nuxt-node-modules:
+  nuxt-build:
+  nuxt-output:

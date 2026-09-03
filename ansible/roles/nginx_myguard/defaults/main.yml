@@ -133,7 +133,11 @@ nginx_csp: ""
 # HSTS 只有在 nginx_tls_is_real 為真（拿到 Let's Encrypt 憑證）時才會輸出。
 # 用 snakeoil 期間送 HSTS 會把使用者釘死在一張不受信任的憑證上。
 nginx_hsts_enabled: true
-nginx_hsts_max_age: 31536000
+# 讀 tls_hsts_max_age（inventory/group_vars/all.yml 用的名字）。
+# 這兩個名字原本各自為政：all.yml 寫 15552000（180 天），這裡寫 31536000（1 年），
+# 而模板只讀這裡的 —— 操作者按文件設 180 天，實際送出去的是 1 年。
+# HSTS 的 max-age 一旦送到瀏覽器就無法從伺服器端撤銷，這個落差不能留。
+nginx_hsts_max_age: "{{ tls_hsts_max_age | default(15552000) }}"
 nginx_hsts_include_subdomains: true
 nginx_hsts_preload: false            # 不可逆，預設關
 
@@ -156,17 +160,21 @@ certbot_webroot: "/var/www/letsencrypt"
 # 注意這個 URI 佈局很不尋常（suite 與路徑同名，apt 實際會抓
 # .../apt/dists/<codename>/dists/<codename>/Release）。這是照站台說明填的預設值，
 # repo.yml 會在安裝前 HEAD 探測，404 就 fail 並給可行動的三個選項。
-nginx_myguard_repo_manage: true
+# 讀 waf_repo_manage（all.yml 與 ansible/README.md §5.2 用的名字）。
+# README 把 waf_repo_manage: false 當成「MyGuard 套件解析失敗時的逃生門」，
+# 但在 2026-09-04 之前 role 只讀 nginx_myguard_repo_manage，
+# 那個逃生門按下去完全沒有反應。
+nginx_myguard_repo_manage: "{{ waf_repo_manage | default(true) }}"
 nginx_myguard_repo_probe: true
-nginx_myguard_host: "deb.myguard.nl"
-nginx_myguard_suite: "{{ ansible_facts['distribution_release'] }}"
-nginx_myguard_uri: "https://{{ nginx_myguard_host }}/apt/dists/{{ nginx_myguard_suite }}"
-nginx_myguard_components: [main]
+nginx_myguard_host: "{{ waf_repo_base | default('deb.myguard.nl') }}"
+nginx_myguard_suite: "{{ waf_repo_suite | default(ansible_facts['distribution_release']) }}"
+nginx_myguard_uri: "{{ waf_repo_uri | default('https://' ~ nginx_myguard_host ~ '/apt/dists/' ~ nginx_myguard_suite) }}"
+nginx_myguard_components: "{{ waf_repo_components | default(['main']) }}"
 nginx_myguard_architectures: >-
   {{ 'amd64' if ansible_architecture == 'x86_64'
      else ('arm64' if ansible_architecture == 'aarch64' else ansible_architecture) }}
-nginx_myguard_key_url: "https://{{ nginx_myguard_host }}/{{ nginx_myguard_host }}.gpg"
-nginx_myguard_keyring: "/etc/apt/keyrings/{{ nginx_myguard_host }}.gpg"
+nginx_myguard_key_url: "{{ waf_repo_key_url | default('https://' ~ nginx_myguard_host ~ '/' ~ nginx_myguard_host ~ '.gpg') }}"
+nginx_myguard_keyring: "{{ waf_repo_keyring | default('/etc/apt/keyrings/' ~ nginx_myguard_host ~ '.gpg') }}"
 # 我沒有可信來源可以確認 MyGuard 的簽章金鑰指紋，因此**不編造**。
 # 空清單 = 不比對，但每次執行都會印出實際讀到的指紋要你自行核對。
 # 自行從官方管道確認之後把指紋填進來，就會變成強制比對。
@@ -300,6 +308,27 @@ waf_extra_directives: []
 #   —— 沒設就是「每一個請求都回 500」，而訊息只會說 deployed without configuration。
 waf_crs_setup_version: 400
 waf_local_rule_id_base: 10000        # CRS 保留 900000+；1–99999 是本地規則範圍
+# ── 三個「常用純量」的橋接 ──────────────────────────────────────────────────
+# inventory/group_vars/all.yml 與兩個 .example 檔都提供了
+#   waf_crs_paranoia_level / waf_crs_anomaly_threshold_inbound / _outbound
+# 這三個好記的名字，但 CRS 真正吃的是下面 waf_crs_setup_vars 裡的 tx.* 鍵。
+# 在 2026-09-04 之前這三個變數「不被任何 role、task、template 讀取」——
+# 操作者把 paranoia 調到 2 完全不會有事發生，而且沒有任何警告。
+#
+# 這裡用 combine 把純量疊到 dict 上，讓那三個名字真的生效。
+# 要更細的控制仍然可以直接改 waf_crs_setup_vars 的其他鍵。
+waf_crs_paranoia_level: 1
+waf_crs_anomaly_threshold_inbound: 5
+waf_crs_anomaly_threshold_outbound: 4
+
+waf_crs_setup_vars_effective: >-
+  {{ waf_crs_setup_vars | combine({
+       'tx.blocking_paranoia_level': waf_crs_paranoia_level,
+       'tx.detection_paranoia_level': waf_crs_paranoia_level,
+       'tx.inbound_anomaly_score_threshold': waf_crs_anomaly_threshold_inbound,
+       'tx.outbound_anomaly_score_threshold': waf_crs_anomaly_threshold_outbound,
+     }) }}
+
 waf_crs_setup_vars:
   tx.blocking_paranoia_level: 1
   tx.detection_paranoia_level: 1

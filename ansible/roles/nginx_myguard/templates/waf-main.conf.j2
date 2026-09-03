@@ -1,6 +1,6 @@
 # {{ ansible_managed }}
 # ============================================================================
-# WAF 主規則檔 —— vhost 用 `{{ waf_directive_prefix | default(waf_directive_prefix_default) }}_rules_file {{ waf_main_rules_file }};` 引用。
+# WAF 主規則檔 —— vhost 用 `{{ waf_directive_prefix_eff | default(waf_directive_prefix_default) }}_rules_file {{ waf_main_rules_file }};` 引用。
 #
 # ⚠ A11：載入順序是這個檔案唯一重要的事，順序錯了排除規則就完全無效。
 #

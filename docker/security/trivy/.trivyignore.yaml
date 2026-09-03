@@ -1,9 +1,27 @@
-# 抑制項目必須有到期日，避免無限期忽略。
-# 格式：
-# vulnerabilities:
-#   - id: CVE-2026-XXXXX
-#     statement: 為什麼可以接受
-#     expired_at: 2026-12-31
+# Trivy 的抑制清單。由 trivy.yaml 的 ignorefile: 載入。
+#
+# 規則：每一筆都必須有 statement（為什麼可以忽略）與 expired_at（到期日）。
+# 不接受無限期抑制 —— 到期之後 Trivy 會重新回報，強迫重新評估。
+
+misconfigurations:
+  - id: DS-0002
+    paths:
+      - "docker/php/Dockerfile"
+    statement: >-
+      app 映像的 PID 1 是 supervisord，它必須以 root 執行：nginx master 要 root
+      才能 bind 並把 worker 降權成 www-data，php-fpm master 同理（www.conf 的 user=）。
+      真正處理請求的 worker 全部是 www-data，且 uid 已在 build 時對齊成 APP_UID。
+      加上 USER 之後 supervisord 起不來 —— 這是架構決定，不是疏漏。
+      Dockerfile 內對應的 nosemgrep 註解說明同一件事。
+    expired_at: 2027-03-31
+  - id: DS-0002
+    paths:
+      - "docker/nuxt/Dockerfile"
+    statement: >-
+      static target 用官方 nginx 映像，其 master 必須以 root 啟動才能 bind
+      並把 worker 降權成 nginx 使用者。dev 與 prod 兩個 target 都已經是 USER node。
+    expired_at: 2027-03-31
+
 vulnerabilities: []
-misconfigurations: []
+
 secrets: []

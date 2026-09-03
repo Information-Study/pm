@@ -1,0 +1,53 @@
+---
+# ansible-lint 設定。cx deploy lint 走這一份。
+#
+# profile: production 是最嚴格的一級。刻意選它 —— 這份 Ansible 是要上真機的，
+# 而且在 2026-09-04 之前從來沒有被任何真正的 linter 檢查過
+#（claude.md §12.5：連 --syntax-check 都跑不了）。
+
+profile: production
+
+exclude_paths:
+  # ansible-galaxy 下載的上游 collection。不排除的話會掃進幾萬個檔案，
+  # 而且那些違規我們既不該修也修不了。
+  - collections/
+  - .cache/
+  - .ansible/
+
+# ── 刻意關掉的規則，每一條都附理由 ──────────────────────────────────────────
+skip_list:
+  # 這份 Ansible 的 task 名稱刻意用「role | 動作」的中文格式，
+  # 對操作者比 Capitalised English 有用得多。
+  - name[casing]
+
+  # role 名稱用底線（nginx_myguard、deploy_backend、nodejs_pm2）——
+  # 這是 Ansible 官方的 role 命名慣例，galaxy 的 stricter 規則才要求連字號。
+  - role-name
+
+  # 673 筆全部來自這一條，而它與本專案的架構直接衝突：
+  # inventory/group_vars/all.yml 是「單一事實來源」，deploy_user / app_root /
+  # frontend_mode 這類變數本來就要被多個 role 共用。
+  # 強制加 role 前綴等於把共享變數拆成 12 份，操作者要改一個值得改 12 個地方。
+  # 真正該防的「role 之間變數互相污染」由 all.yml 的集中管理處理。
+  - var-naming[no-role-prefix]
+
+  # task 名稱裡的 {{ }} 只能放在結尾。本專案在 loop 裡用
+  # 「前端 | {{ item.label }} 是否有 nuxt.config.ts」這種格式，
+  # 把 label 移到結尾會讓輸出讀起來像斷句錯誤的句子。
+  - name[template]
+
+  # 註解縮排的格式規則。這份 Ansible 的註解密度極高（大量「為什麼」的說明），
+  # 而該規則會要求把區塊註解重排成它偏好的縮排，讀起來反而更糟。
+  - yaml[comments]
+
+  # 兩處 jinja spacing 是誤判：一處是 Jinja 字串裡的 '' 轉義（Let''s Encrypt），
+  # 自動修正會把它改壞；另兩處是 list slice 語法 [a:][:b]，
+  # 加空白之後可讀性更差。
+  - jinja[spacing]
+
+# ── 明確要求的規則 ──────────────────────────────────────────────────────────
+enable_list:
+  - no-log-password
+  - no-same-owner
+
+use_default_rules: true

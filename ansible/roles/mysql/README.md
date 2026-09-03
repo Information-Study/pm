@@ -90,7 +90,8 @@ openssl rand -base64 36 | tr -d '/+=\n'
   且越往後端越寬鬆，assert 會檢查。
 * `app_db_name` / `app_db_user` / `app_slug` 若未定義，本角色分別退回
   `pm` / `pm` / `pm`。
-* 需要 collection `community.mysql`（目標機需 `python3-pymysql`，本角色會裝）。
+* 需要 collection `ansible.mysql`（原 `community.mysql`，5.x 起只是 redirect；
+  目標機需 `python3-pymysql`，本角色會裝）。
   `deb822_repository` 需要 `python3-debian`（`tasks/repo.yml` 會先裝，
   common 角色也應該有）。
 

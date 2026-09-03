@@ -14,7 +14,12 @@ _cx_completion() {
     fi
 
     local global_flags='--root --mode --ui --dry-run --yes -y -h --help'
-    local verbs='help doctor lint scan git fresh tui install uninstall art composer npm'
+    # 這份清單就是「cx 到底做得到什麼」的權威來源之一 ——
+    # 新增動詞時四個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
+    #（只有檔名與動詞不同名時才需要）、這裡、以及 bin/cmd/help.sh。
+    local verbs='help doctor setup lint scan verify git fresh tui install uninstall
+                 art composer npm db test sonar deploy
+                 dev prod up down restart ps logs sh build config dc'
 
     # 先找出動詞的位置（跳過全域旗標與其參數）
     local i=1 verb='' sub='' argn=0
@@ -59,6 +64,22 @@ _cx_completion() {
 
     # 動詞的子指令與旗標
     case $verb in
+        setup)
+            COMPREPLY=($(compgen -W "all env dirs guard tools deps --help -h" -- "$cur")) ;;
+        setup_tools_names)
+            COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep" -- "$cur")) ;;
+        db)
+            COMPREPLY=($(compgen -W "status shell wait migrate fresh seed dump restore admin --help -h" -- "$cur")) ;;
+        sonar)
+            COMPREPLY=($(compgen -W "up down status logs token url wait --help -h" -- "$cur")) ;;
+        deploy)
+            COMPREPLY=($(compgen -W "syntax lint check ping facts vars apply app rollback galaxy --help -h" -- "$cur")) ;;
+        verify)
+            COMPREPLY=($(compgen -W "static runtime app ansible all --report --quiet --help -h" -- "$cur")) ;;
+        test)
+            COMPREPLY=($(compgen -W "back front all coverage larastan up down restart ps logs sh build config dc --help -h" -- "$cur")) ;;
+        dev|prod|up|down|restart|ps|logs|sh|build|config|dc)
+            COMPREPLY=($(compgen -W "up down restart ps logs sh build config dc -d --build --no-cache -f -v --help -h" -- "$cur")) ;;
         scan)
             if [[ $cur == -* ]]; then
                 COMPREPLY=($(compgen -W '--runner --help -h' -- "$cur"))

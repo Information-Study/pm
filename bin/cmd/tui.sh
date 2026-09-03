@@ -156,6 +156,8 @@ _tui_env() {
     local c
     while c=$(_tui_menu "環境" "返回" \
         doctor "檢查工具鏈與阻擋項目" \
+        setup  "初始化：.env / 目錄 / push guard" \
+        verify "跑驗收清單並產出報告" \
         lint   "Ansible 靜態檢查" \
         status "三個 repo 的狀態"); do
         case $c in
@@ -166,22 +168,108 @@ _tui_env() {
     done
 }
 
+# 三個模式的容器操作。標題把目前模式帶出來，避免對著錯的模式下 down。
+_tui_stack() {
+    local mode=$1 c
+    while c=$(_tui_menu "容器：$mode" "返回" \
+        up      "建立並啟動（-d --build）" \
+        ps      "列出容器與埠" \
+        logs    "看 log（最後 200 行）" \
+        sh      "進 app 容器的 shell" \
+        restart "重啟" \
+        down    "停止並移除容器"); do
+        case $c in
+            '<')     return 0 ;;
+            up)      _tui_run "$mode" up -d --build ;;
+            logs)    _tui_run "$mode" logs ;;
+            sh)      _tui_run "$mode" sh app ;;
+            *)       _tui_run "$mode" "$c" ;;
+        esac
+    done
+}
+
+_tui_docker() {
+    local c
+    while c=$(_tui_menu "Docker 三模式" "返回" \
+        dev  "開發：bind mount / HMR / xdebug / phpMyAdmin" \
+        test "測試：不可變映像 / ModSecurity WAF" \
+        prod "正式：只發布 80、無管理工具" \
+        db   "資料庫：狀態 / migrate / dump / fresh"); do
+        case $c in
+            '<') return 0 ;;
+            db)  _tui_db ;;
+            *)   _tui_stack "$c" ;;
+        esac
+    done
+}
+
+_tui_db() {
+    local c
+    while c=$(_tui_menu "資料庫（模式：${CX_MODE}）" "返回" \
+        status  "連線資訊與資料表" \
+        migrate "php artisan migrate --force" \
+        dump    "備份到 reports/db/" \
+        fresh   "⚠ migrate:fresh --seed（會清空資料）" \
+        admin   "建立 Filament 管理員"); do
+        case $c in
+            '<') return 0 ;;
+            *)   _tui_run db "$c" ;;
+        esac
+    done
+}
+
+_tui_deploy() {
+    local c
+    while c=$(_tui_menu "部署（Ansible）" "返回" \
+        syntax "ansible-playbook --syntax-check" \
+        lint   "ansible-lint + yamllint" \
+        check  "--check --diff 乾跑（staging）" \
+        ping   "確認 SSH 與 become" \
+        apply  "⚠ 真的部署（會要求確認）"); do
+        case $c in
+            '<') return 0 ;;
+            *)   _tui_run deploy "$c" ;;
+        esac
+    done
+}
+
 cmd_tui_main() {
     _tui_need_tty || return "$EX_PRECOND"
     local c
     while c=$(_tui_menu "cx — pm 專案管理  [模式：${CX_MODE}]" "離開" \
-        env   "環境：doctor / lint / 狀態" \
-        git   "Git：狀態 / 分支 / 提交 / guard" \
-        scan  "DevSecOps：四道防線" \
-        help  "指令說明"); do
+        env    "環境：doctor / setup / verify / lint" \
+        docker "容器：dev / test / prod / 資料庫" \
+        test   "測試：後端 / 前端 / 覆蓋率" \
+        scan   "DevSecOps：四道防線" \
+        deploy "部署：Ansible" \
+        git    "Git：狀態 / 分支 / 提交 / guard" \
+        help   "指令說明"); do
         case $c in
-            '<')  break ;;
-            env)  _tui_env ;;
-            git)  _tui_git ;;
-            scan) _tui_scan ;;
-            help) _tui_run help ;;
+            '<')    break ;;
+            env)    _tui_env ;;
+            docker) _tui_docker ;;
+            test)   _tui_test ;;
+            git)    _tui_git ;;
+            scan)   _tui_scan ;;
+            deploy) _tui_deploy ;;
+            help)   _tui_run help ;;
         esac
     done
     printf '\n' >&8
     return 0
+}
+
+_tui_test() {
+    local c
+    while c=$(_tui_menu "測試" "返回" \
+        back     "後端 PHPUnit（sqlite :memory:）" \
+        front    "前端型別檢查" \
+        all      "兩者都跑" \
+        coverage "後端覆蓋率（臨時打開 xdebug）" \
+        larastan "靜態分析"); do
+        case $c in
+            '<') return 0 ;;
+            *)   _tui_run test "$c" ;;
+        esac
+    done
 }

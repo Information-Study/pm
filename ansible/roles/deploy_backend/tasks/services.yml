@@ -30,7 +30,10 @@
   register: backend_queue_unit_written
   notify: deploy_backend | daemon-reload
 
-- name: Services | 立即 daemon-reload（後面要馬上 enable/start）
+# noqa: no-handler —— 這正是 task 名稱說的「立即」。
+# systemd 必須先看到新的 unit 檔，下一個 task 才 enable/start 得起來；
+# handler 要等到 play 結尾（或 flush_handlers）才跑，那時已經太遲。
+- name: Services | 立即 daemon-reload（後面要馬上 enable/start）  # noqa: no-handler
   ansible.builtin.systemd_service:
     daemon_reload: true
   when: backend_queue_unit_written.changed

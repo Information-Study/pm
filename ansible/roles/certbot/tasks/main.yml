@@ -5,7 +5,8 @@
 #   detect  → 冪等判斷（stat + openssl x509 -checkend + SAN 比對）+ 連通性預檢
 #   issue   → 只有 detect 說要簽才呼叫 certbot；失敗時給三種常見原因
 #   renew   → systemd timer（不是 cron）
-#   flush   → 憑證換了就重新渲染 vhost + nginx -t + reload（A5 後半段）
+#   rerender→ 憑證換了才重新渲染 vhost（A5 後半段，一般 task 不是 handler）
+#   flush   → nginx -t + reload
 #   verify  → 讀回憑證確認網域涵蓋、到期日、timer 已啟用
 #
 # tls_enable 為 false 時：每個 import 的 when 都會下推到底下每一個 task，
@@ -49,7 +50,20 @@
     - certbot_renew_manage | bool
   tags: [certbot, tls, certbot_renew]
 
-- name: 立即套用（重新渲染 vhost → nginx -t → reload）
+- name: 憑證換了就重新渲染 vhost（A5 後半段）
+  # 這兩步原本是 handlers/main.yml 裡的 include_role handler，
+  # 但 ansible-core 2.21 拒絕把 include_role 當 handler 用
+  #（實跑 --syntax-check 才發現，靜態 YAML 檢查看不出來）。
+  # 改成一般 task；certbot 本來就排在 nginx_myguard 之後，所以這樣更直接。
+  ansible.builtin.include_tasks: rerender_nginx.yml
+  when:
+    - tls_enable | bool
+    - certbot_rerender_nginx_vhost | bool
+    - certbot_certonly is defined
+    - certbot_certonly.changed | default(false)
+  tags: [certbot, tls, certbot_issue]
+
+- name: 立即套用（nginx -t → reload）
   # verify 要讀 nginx 實際載入的設定，所以離開 role 之前必須先把 handler 沖掉。
   # 沒有 notify 過就是 no-op，tls_enable=false 時同樣安全。
   ansible.builtin.meta: flush_handlers

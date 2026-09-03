@@ -28,7 +28,7 @@
 {% set base = waf_local_rule_id_base | int %}
 {% set combined_file_sizes = waf_combined_file_sizes | default(waf_request_body_limit) %}
 {% set _sv = [] %}
-{% for k, v in (waf_crs_setup_vars | default({})).items() %}
+{% for k, v in (waf_crs_setup_vars_effective | default(waf_crs_setup_vars | default({}))).items() %}
 {% set _ = _sv.append("setvar:'" ~ k ~ "=" ~ v ~ "'") %}
 {% endfor %}
 {% set _acts = ['id:' ~ (base + 2), 'phase:1', 'nolog', 'pass', 't:none'] + _sv %}

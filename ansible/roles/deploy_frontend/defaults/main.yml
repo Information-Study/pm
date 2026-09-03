@@ -57,8 +57,9 @@ frontend_release_id_regex: '^[A-Za-z0-9][A-Za-z0-9._-]{3,63}$'
 frontend_release_path: "{{ frontend_releases_dir }}/{{ release_id }}"
 
 # ── git ─────────────────────────────────────────────────────────────────────
-frontend_repo_url: "https://github.com/Information-Study/pm-frontend.git"
-frontend_repo_version: "main"
+# 同 deploy_backend：讀 inventory 用的 frontend_repo / frontend_branch。
+frontend_repo_url: "{{ frontend_repo | default('https://github.com/Information-Study/pm-frontend.git') }}"
+frontend_repo_version: "{{ frontend_branch | default('main') }}"
 frontend_repo_depth: 1
 frontend_repo_single_branch: true
 frontend_repo_force: false
@@ -109,5 +110,6 @@ frontend_pm2_wait_delay: 3
 
 # ── release prune（A1，與 deploy_backend 同一套邏輯）────────────────────────
 keep_releases: 5
-frontend_prune_enabled: true
+# 讀 releases_prune，理由同 deploy_backend。
+frontend_prune_enabled: "{{ releases_prune | default(true) }}"
 frontend_prune_max_delete: 20

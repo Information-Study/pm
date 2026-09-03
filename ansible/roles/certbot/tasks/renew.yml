@@ -22,13 +22,24 @@
   failed_when: false
   check_mode: false
 
+# 先把「探測結果」壓成一個純字串再判斷。
+# 原本是直接在 set_fact 裡寫 `certbot_packaged_timer in (....stdout | default(''))`，
+# ansible-lint 會報 jinja[invalid]：
+#   'in <string>' requires string as left operand, not UndefinedMarker
+# 真正的風險不只是 lint —— 上一個 task 若因為 --tags 選擇而被 skip，
+# register 出來的是一個沒有 stdout 鍵的 dict，`in` 的兩邊就都不保證是字串了。
+# 拆成兩步之後，兩個運算元都被 | string 強制成字串，兩種情境都安全。
+- name: certbot | 收斂 timer 探測結果
+  ansible.builtin.set_fact:
+    certbot_timer_probe: "{{ certbot_packaged_timer_check.stdout | default('') | string }}"
+
 - name: certbot | 決定用哪一個 timer
   ansible.builtin.set_fact:
     certbot_use_packaged_timer: >-
-      {{ certbot_packaged_timer in (certbot_packaged_timer_check.stdout | default('')) }}
+      {{ (certbot_packaged_timer | string) in certbot_timer_probe }}
     certbot_active_timer: >-
       {{ certbot_packaged_timer
-         if certbot_packaged_timer in (certbot_packaged_timer_check.stdout | default(''))
+         if ((certbot_packaged_timer | string) in certbot_timer_probe)
          else (certbot_fallback_timer_name ~ '.timer') }}
 
 - name: certbot | 啟用套件自帶的 certbot.timer

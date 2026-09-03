@@ -64,7 +64,7 @@ cmd_doctor_main() {
             || _wr "Node 版本" "Nuxt 4 需要 ^22.19 || ^24.11 || >=26"
     else _fl "Node" "未安裝"; fi
     cx_have npm && _ok "npm" "$(npm --version)" || _fl "npm" "未安裝"
-    [[ -d $CX_ROOT/frontend/node_modules ]] && _ok "frontend 相依" "已安裝" || _wr "frontend 相依" "尚未 npm ci"
+    [[ -d $CX_ROOT/frontend/node_modules/nuxt ]] && _ok "frontend 相依" "已安裝" || _wr "frontend 相依" "尚未 npm ci"
 
     cx_step "DevSecOps"
     cx_have trivy    && _ok "Trivy" "$(trivy --version 2>/dev/null | head -1 | awk '{print $2}')" \
@@ -115,6 +115,50 @@ cmd_doctor_main() {
     done < <(cd "$CX_ROOT" && ls cx bin/lib/*.sh bin/cmd/*.sh bin/lib/*.py 2>/dev/null)
     (( nx == 0 && idx_bad == 0 )) && _ok "cx 與 bin/ 的執行位元" "磁碟與 git index 皆正確"
     (( idx_bad )) && cx_dim "修正： git update-index --chmod=+x <檔案>"
+
+    cx_step "Phase 2 產出物"
+    # 這些檔案是 cx dev/test/prod 的前提。缺任何一個，對應的動詞都會在
+    # cx_compose_init 就 EX_PRECOND —— 早點在 doctor 講清楚比較好。
+    local need_missing=0 p
+    for p in docker-compose.yml \
+             docker/compose/dev.yml docker/compose/test.yml docker/compose/prod.yml \
+             docker/compose/sonar.yml \
+             docker/env/dev.env docker/env/test.env docker/env/prod.env \
+             docker/php/Dockerfile docker/nuxt/Dockerfile \
+             docker/edge/nginx.conf docker/edge/conf.d/default.conf \
+             docker/entrypoint/app.sh .dockerignore .env.example; do
+        [[ -e $CX_ROOT/$p ]] || { _fl "缺少檔案" "$p"; need_missing=1; }
+    done
+    (( need_missing )) || _ok "Docker 三模式的檔案" "compose / Dockerfile / edge / entrypoint 齊全"
+
+    # .env 是硬失敗不是警告：compose 的 MYSQL_ROOT_PASSWORD 是 :? 必填，
+    # 少了它每一個 docker 動詞都會在做任何事之前就死掉。
+    if [[ -f $CX_ROOT/.env ]]; then
+        if grep -q '__CHANGE_ME__' "$CX_ROOT/.env" 2>/dev/null; then
+            _fl ".env" "仍有 __CHANGE_ME__ 佔位字串（跑 cx setup env）"
+        else
+            _ok ".env" "存在且已填值"
+        fi
+    else
+        _fl ".env" "不存在 —— 跑 cx setup env"
+        cx_dim "  這是硬失敗：compose 的 MYSQL_ROOT_PASSWORD 是 :? 必填變數"
+    fi
+
+    cx_step "cx 動詞完整性"
+    # dispatcher 的 CX_CMD_FILE_OF 曾經把 8 個動詞指到一個不存在的
+    # bin/cmd/compose.sh，於是 cx up 直接「未知的指令」。
+    # 這裡實際檢查每個對外動詞都找得到實作檔。
+    local v file missing_verbs=()
+    for v in help doctor setup lint scan verify git fresh tui install art composer npm \
+             db test sonar deploy compose; do
+        file="$CX_ROOT/bin/cmd/${v}.sh"
+        [[ -f $file ]] || missing_verbs+=("$v")
+    done
+    if (( ${#missing_verbs[@]} )); then
+        _fl "動詞實作檔" "缺少：${missing_verbs[*]}"
+    else
+        _ok "動詞實作檔" "18 個全部存在"
+    fi
 
     cx_step "結果"
     printf '  通過 %d  警告 %d  失敗 %d\n' "$_dr_pass" "$_dr_warn" "$_dr_fail" >&2

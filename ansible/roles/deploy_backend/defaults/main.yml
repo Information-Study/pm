@@ -74,8 +74,11 @@ backend_release_path: "{{ backend_releases_dir }}/{{ release_id }}"
 # ── git ─────────────────────────────────────────────────────────────────────
 # 主庫 https://github.com/Information-Study/pm 的 submodule pm-backend（public）。
 # 只用 https，不需要 deploy key，也絕不 push（本 role 沒有任何 push 動作）。
-backend_repo_url: "https://github.com/Information-Study/pm-backend.git"
-backend_repo_version: "main"
+# 這兩個讀 inventory 用的名字（backend_repo / backend_branch）。
+# 在 2026-09-04 之前它們只出現在 playbooks/deploy-only.yml 的 debug 橫幅裡：
+# 設 backend_branch: "release/x" 會在畫面上印出 release/x，然後 clone main。
+backend_repo_url: "{{ backend_repo | default('https://github.com/Information-Study/pm-backend.git') }}"
+backend_repo_version: "{{ backend_branch | default('main') }}"
 # depth=1 夠用；要在機器上 `git log` 追歷史就設 0（0 = 完整 clone）。
 backend_repo_depth: 1
 backend_repo_single_branch: true
@@ -148,9 +151,9 @@ backend_composer_process_timeout: 600  # 秒；COMPOSER_PROCESS_TIMEOUT
 # ── 資料庫 ──────────────────────────────────────────────────────────────────
 # A15：migration 用 groups['db_primary'] 明確 gate，不靠 run_once
 #（serial 之下 run_once 的作用域只有當前 batch，等同 no-op）。
-backend_migrate: true
+backend_migrate: "{{ deploy_backend_migrate | default(true) }}"
 backend_migrate_extra_args: []         # 例如 ["--step"]
-backend_seed: false                    # 預設關閉；seeder 會寫入資料
+backend_seed: "{{ deploy_backend_seed | default(false) }}"   # 預設關閉；seeder 會寫入資料
 backend_seeder_class: ""
 
 # migrate 之前先 mysqldump 一份。這不是刪除動作，但仍給開關方便 staging 關掉。
@@ -189,7 +192,7 @@ backend_route_cache: false
 backend_filament_optimize: true
 backend_filament_optimize_command: "filament:optimize"
 
-backend_storage_link: true
+backend_storage_link: "{{ deploy_backend_storage_link | default(true) }}"
 
 # ── systemd：queue worker + scheduler ───────────────────────────────────────
 # 對應 Docker 的 supervisord [program:laravel-queue]（numprocs=2、user=www-data）。
@@ -240,7 +243,10 @@ backend_service_after_mysql: true
 # 再以 ansible.builtin.file: state=absent 逐一刪除，每一項都有 when 條件把關，
 # 且單次刪除數量有上界。
 keep_releases: 5
-backend_prune_enabled: true
+# 讀 releases_prune（all.yml 與 README §7 用的名字）。
+# 原本設 releases_prune: false 會在橫幅印出 prune=False 然後照樣 prune ——
+# 這是「看起來已經關掉了」最糟的一種形式。
+backend_prune_enabled: "{{ releases_prune | default(true) }}"
 backend_prune_max_delete: 20
 
 # ── 換版後的服務動作 ────────────────────────────────────────────────────────

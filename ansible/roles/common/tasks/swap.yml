@@ -36,7 +36,10 @@
     mode: "0600"
   when: common_swap_stat.stat.exists | default(false) or (common_swap_create is changed)
 
-- name: Swap | 格式化
+# noqa: no-handler —— mkswap 必須緊接在 fallocate 之後、mount 之前。
+# 改成 handler 會延到 play 結尾才執行，而下一個 task 就要把它寫進 fstab，
+# 屆時那個檔案還不是有效的 swap，mount 會失敗。
+- name: Swap | 格式化  # noqa: no-handler
   ansible.builtin.command:
     cmd: "/usr/sbin/mkswap {{ common_swap_file | quote }}"
   register: common_swap_mkswap

@@ -1,0 +1,27 @@
+---
+# A5 後半段：憑證從 snakeoil 換成正式憑證之後，馬上把 vhost 重新渲染過去。
+#
+# ── 為什麼這裡是「一般 task」而不是 handler ──────────────────────────────────
+# 原本這兩步寫在 handlers/main.yml 裡，用 ansible.builtin.include_role 觸發。
+# ansible-core 2.21 直接拒絕載入：
+#   [ERROR]: Using 'ansible.builtin.include_role' as a handler is not supported.
+# 這是實際跑 ansible-playbook --syntax-check 才發現的 ——
+# 靜態 YAML 檢查看不出來，因為語法本身完全合法。
+#
+# 改成一般 task 反而更直接：certbot role 本來就排在 nginx_myguard 之後
+#（site.yml 的 role 順序），所以這裡呼叫 include_role 是完全受支援的用法，
+# 也不必再繞過「handler 執行順序 = 定義順序」那個坑。
+#
+# 觸發條件沿用原本的語意：certbot_certonly 這個 task 回報 changed 才做。
+# handlers/main.yml 保留 nginx -t + reload 兩個 handler（純模組，可以當 handler），
+# 由本檔的 include_role 之後那次 notify 觸發。
+
+- name: certbot | 重新偵測 nginx 佈局（facts）
+  ansible.builtin.include_role:
+    name: nginx_myguard
+    tasks_from: facts.yml
+
+- name: certbot | 重新渲染 vhost（snakeoil → 正式憑證，A5）
+  ansible.builtin.include_role:
+    name: nginx_myguard
+    tasks_from: render.yml

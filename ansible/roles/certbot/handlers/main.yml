@@ -1,41 +1,20 @@
 ---
 # handler 的執行順序 = 本檔的「定義順序」，跟 notify 的先後無關。
-# 四個 handler 都 listen 同一個事件，所以「憑證真的換了」時會依序跑完：
-#   重新偵測 nginx 佈局 → 重新渲染 vhost → nginx -t → reload
+# 兩個 handler 都 listen 同一個事件，所以「憑證真的換了」時會依序跑完：
+#   nginx -t → reload
 #
 # ── 為什麼不直接 notify nginx_myguard 的 "nginx reload" ──────────────────────
 # handler 的執行順序是「整個 play 裡 handler 的定義順序」，而 nginx_myguard 的
 # handler 定義在本 role 之前。notify 它的話，reload 會在「重新渲染 vhost」之前
 # 就被沖掉 —— 等於拿著還指向 snakeoil 的舊設定 reload，憑證換了也沒生效。
-# 所以本 role 自己帶一組 test + reload，定義在重新渲染之後。
+# 所以本 role 自己帶一組 test + reload。
 #
-# ── A5 的後半段 ─────────────────────────────────────────────────────────────
-# nginx role 跑在 certbot 之前，vhost 必然是在「正式憑證還不存在」時寫出來的
-#（引用 ssl-cert 套件的 snakeoil，否則 nginx -t 會 emerg，
-#  any_errors_fatal 一開 certbot 就永遠跑不到）。
-# 憑證一簽出來就要馬上把 vhost 換過去，否則會停在「憑證有了但沒人用」的狀態。
-#
-# ── 前提與逃生門 ────────────────────────────────────────────────────────────
-# render.yml 依賴 nginx_myguard 的 facts.yml 用 set_fact 設下的佈局變數
-#（vhost 落點、WAF 指令前綴…）。同一個 play 裡 nginx_myguard 已經跑過，
-# 那些 fact 都還在 hostvars 裡，所以重跑 render.yml 是安全的；
-# 這裡仍然先重跑一次 facts.yml，讓「單獨 --tags certbot」的情境也成立。
-# 萬一 nginx_myguard 從來沒在這台機器上跑過（例如只裝了 certbot），
-# 請設 certbot_rerender_nginx_vhost: false，改用 --tags nginx 重新渲染。
-
-- name: certbot | 重新偵測 nginx 佈局（facts）
-  ansible.builtin.include_role:
-    name: nginx_myguard
-    tasks_from: facts.yml
-  when: certbot_rerender_nginx_vhost | bool
-  listen: certbot cert changed
-
-- name: certbot | 重新渲染 vhost（snakeoil → 正式憑證，A5）
-  ansible.builtin.include_role:
-    name: nginx_myguard
-    tasks_from: render.yml
-  when: certbot_rerender_nginx_vhost | bool
-  listen: certbot cert changed
+# ── 重新渲染 vhost 為什麼不在這裡 ───────────────────────────────────────────
+# 原本這裡還有兩個用 include_role 重新渲染 vhost 的 handler。
+# ansible-core 2.21 拒絕載入：
+#   [ERROR]: Using 'ansible.builtin.include_role' as a handler is not supported.
+# 已改成一般 task，見 tasks/rerender_nginx.yml（由 tasks/main.yml 在
+# issue.yml 之後、flush_handlers 之前呼叫）。
 
 # A12：不加 -c。-c 會把片段當成完整主設定，沒有 events{} 就 emerg。
 - name: certbot | 驗證 nginx 設定

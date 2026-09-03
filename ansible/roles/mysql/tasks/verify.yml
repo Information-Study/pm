@@ -10,7 +10,7 @@
     state: started
 
 - name: 讀取伺服器實際生效的設定
-  community.mysql.mysql_query:
+  ansible.mysql.mysql_query:
     query: >-
       SELECT VERSION() AS version,
              @@character_set_server AS charset,
@@ -57,7 +57,7 @@
 
 # ── A3 的真實驗證：兩個 host 各連一次 ────────────────────────────────
 - name: 驗證應用帳號可經 TCP 127.0.0.1 登入（A3）
-  community.mysql.mysql_query:
+  ansible.mysql.mysql_query:
     query: "SELECT 1 AS ok"
     login_host: 127.0.0.1
     login_port: "{{ mysql_port }}"
@@ -87,7 +87,7 @@
   when: "'127.0.0.1' in mysql_app_user_hosts"
 
 - name: 驗證應用帳號可經 unix socket（localhost）登入（A3）
-  community.mysql.mysql_query:
+  ansible.mysql.mysql_query:
     query: "SELECT 1 AS ok"
     login_unix_socket: "{{ mysql_socket }}"
     login_user: "{{ mysql_app_db_user }}"

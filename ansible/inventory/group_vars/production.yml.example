@@ -86,13 +86,23 @@ waf_crs_anomaly_threshold_inbound: 5
 #      因為 ctl:ruleRemoveById 只影響「同 phase 中尚未執行」的規則。
 #      多個 ctl 之間是逗號，不是分號 —— 分號會讓 ModSecurity 拒絕載入、nginx 起不來。
 #      rule id 一定要從這台機器實際的 audit log 撈，不要抄別人的。
-waf_exclusions_before: []
-#   - id: 10001
-#     comment: "Filament 後台的表單送出誤判（rule id 請從 audit log 確認後再填）"
-#     rule: |
-#       SecRule REQUEST_URI "@beginsWith /admin/" \
-#         "id:10001,phase:1,pass,nolog,ctl:ruleRemoveById=920420,ctl:ruleRemoveById=942100"
-waf_exclusions_after: []
+# ⚠⚠ 這裡刻意「不」定義 waf_exclusions_before / waf_exclusions_after。
+#
+#   inventory group_vars 的優先權高於 role defaults。一旦在這裡寫
+#   `waf_exclusions_before: []`，roles/nginx_myguard/defaults/main.yml 裡那
+#   5 條研究過的 Livewire / Filament 排除規則（id 10010–10014）會整組被覆蓋掉 ——
+#   而且正好是在上面把 waf_rule_engine 切成 On 的同一刻。
+#   結果是 Filament 後台被 941xxx / 942xxx 擋死，而且沒有任何線索指向 WAF。
+#
+#   要「新增」自己的排除規則，正確做法是直接編輯
+#   roles/nginx_myguard/defaults/main.yml 的 waf_exclusions_before。
+#   Ansible 對 list 沒有合併機制，這是唯一不會弄丟既有規則的做法。
+#
+#   要「暫時停用」WAF：waf_enabled: false，或 waf_rule_engine: DetectionOnly。
+#
+#   waf_exclusions_after 預設空也是刻意的：SecRuleUpdateTargetById 引用
+#   不存在的規則 ID 會在載入期就讓 nginx 起不來，一定要先用 DetectionOnly
+#   收 audit log 確認 ID 之後再填。
 
 # ── Hardening ─────────────────────────────────────────────────────────────────
 # ★ 一項一項打開，每打開一項就先 --check --diff，套用後立刻另開一個 ssh 連線確認還進得去。
