@@ -378,6 +378,18 @@ _setup_all() {
     cx_step "push guard"
     _setup_guard || cx_warn "push guard 安裝未完成（三個 repo 都要是 git repo）"
 
+    if cx_have ansible-galaxy && [[ -f $CX_ROOT/ansible/requirements.yml ]]; then
+        cx_step "Ansible collections"
+        # ansible/collections/ 不進版控（那是上游程式碼），所以全新 clone 上
+        # 一定要先裝一次，否則 cx deploy syntax 會失敗在
+        # "couldn't resolve module/action 'community.general.timezone'"。
+        if ( cd "$CX_ROOT/ansible" && cx_run ansible-galaxy collection install              -r requirements.yml >/dev/null 2>&1 ); then
+            cx_ok "collections 已就緒"
+        else
+            cx_warn "collection 安裝失敗 —— 手動跑 cx deploy galaxy 看訊息"
+        fi
+    fi
+
     cx_step "工具鏈盤點"
     for t in $CX_SETUP_TOOLS; do
         case $t in

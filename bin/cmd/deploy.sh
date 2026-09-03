@@ -88,10 +88,38 @@ _deploy_real_inventory() {
 
 CX_DEPLOY_PLAYBOOKS='site.yml playbooks/deploy-only.yml playbooks/rollback.yml'
 
+# requirements.yml 列的 collection 是否都裝了。
+#
+# 全新 clone 上一定沒有：ansible/collections/ 被 .gitignore 排除
+#（那是 ansible-galaxy 下載的上游程式碼，不該進版控）。
+# 沒有它的話 --syntax-check 會失敗在
+#   [ERROR]: couldn't resolve module/action 'community.general.timezone'
+# 那個訊息不會告訴你「跑 ansible-galaxy install」，所以要自己講。
+#
+# ⚠ 不能用 `ansible-galaxy collection list <名稱>` 的退出碼判斷 ——
+#   實測即使 collection 不存在它也回 0。必須解析完整清單的輸出。
+_deploy_collections_ok() {
+    cx_have ansible-galaxy || return 1
+    local installed missing=() name
+    installed=$( cd "$CX_ROOT/ansible" && ansible-galaxy collection list 2>/dev/null \
+                 | awk '/^[a-z0-9_]+\./ {print $1}' )
+    while read -r name; do
+        [[ -z $name ]] && continue
+        printf '%s\n' "$installed" | grep -qx "$name" || missing+=("$name")
+    done < <(awk '/^[[:space:]]*- name:/ {print $3}' "$CX_ROOT/ansible/requirements.yml" 2>/dev/null)
+
+    (( ${#missing[@]} == 0 )) && return 0
+    cx_error "缺少 collection：${missing[*]}"
+    cx_dim "  安裝：cx deploy galaxy"
+    cx_dim "  （ansible/collections/ 不進版控，全新 clone 上一定要先裝一次）"
+    return 1
+}
+
 _deploy_syntax() {
     _deploy_need_ansible
     local d rc=0 pb
     d=$(_deploy_stub_inventory) || cx_die "$EX_PRECOND" "找不到任何 inventory（連 .example 都沒有）"
+    _deploy_collections_ok || return "$EX_PRECOND"
     cx_step "ansible-playbook --syntax-check"
     for pb in $CX_DEPLOY_PLAYBOOKS; do
         if ( cd "$CX_ROOT/ansible" && ANSIBLE_DEPRECATION_WARNINGS=False \
@@ -112,6 +140,7 @@ _deploy_lint() {
     d=$(_deploy_stub_inventory) || cx_die "$EX_PRECOND" "找不到任何 inventory"
 
     if cx_have ansible-lint; then
+        _deploy_collections_ok || return "$EX_PRECOND"
         cx_step "ansible-lint（設定：ansible/.ansible-lint，profile=production）"
         if ( cd "$CX_ROOT/ansible" && ANSIBLE_INVENTORY="$d/hosts.yml" \
              ANSIBLE_DEPRECATION_WARNINGS=False cx_run ansible-lint --nocolor ); then
