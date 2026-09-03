@@ -44,7 +44,7 @@
 | 0 | 本文件 | ✅ 完成 |
 | 1 | 更名 `~/PSYOP_DutyManager` → `~/pm`；`cx` 骨架；備份；刪除舊紀錄 | ✅ 完成 |
 | 2 | `docker/` 三模式 + 多階段 Dockerfile + 新 `docker-compose.yml` | ⏳ **交由另一對話驗證**，見 [`docs/docker-verification.md`](docs/docker-verification.md) |
-| 3 | 重建前後端 + 三 Git 初始化 + 推送 | ⏳ 待 Phase 2 |
+| 3 | 重建前後端 + 三 Git 初始化 + 推送 | ✅ 完成（原生方式，未用 Docker） |
 | 4 | DevSecOps 工具鏈 + `cx scan` | ⏳ |
 | 5 | Ansible roles + playbook | ⏳ |
 | 6 | `README.md`、`ansible/README.md` | ⏳ |
@@ -70,6 +70,65 @@
 > ⚠ **資料庫未備份** —— Docker daemon 在本機不可用。舊的 `mysql-data` volume 屬於舊 compose
 > project `PSYOP_DutyManager`，新架構用 `pm_dev/pm_test/pm_prod`，所以舊資料不會被覆寫，
 > 只會成為孤兒 volume 留在 Docker 中，可自行取回。
+
+### 已完成的重建（2026-09-03，原生方式）
+
+Docker daemon 不可用，因此改以原生工具鏈建立。**遠端已上線**：
+
+| Repo | URL | 檔案數 |
+|---|---|---|
+| 主庫 | https://github.com/Information-Study/pm | 34 |
+| 後端 | https://github.com/Information-Study/pm-backend | 101 |
+| 前端 | https://github.com/Information-Study/pm-frontend | 10 |
+
+已用 `git clone --recurse-submodules` 從遠端實際驗證：submodule 相對 URL 解析正確、
+內容完整、無 `.env`／金鑰外洩、`reports/` 目錄有跟著 clone 下來。
+
+#### 實際解析到的版本（與規劃階段的假設有出入處已標註）
+
+| 元件 | 版本 | 備註 |
+|---|---|---|
+| PHP | 8.5.4（系統） | Ubuntu 26.04.1 LTS 內建 |
+| Composer | 2.10.3 | `~/.local/bin/composer`（免 root） |
+| Node | 24.20.0 | `~/.local/node`，SHA256 對過 nodejs.org 官方 SHASUMS256.txt |
+| npm | 11.19.0 | |
+| Laravel | 13.17 | |
+| Filament | 5.7.8 | 需要 `ext-intl` |
+| Larastan | 3.11.0 | level 5 + `checkModelProperties`，**0 errors** |
+| Nuxt | 4.5.2 | 精確鎖版 |
+| vue-router | **5.3.1** | ⚠ 因為沒有手寫進 dependencies，npm 才解對。手寫 `^4` 會被 Vite dedupe 到 v4，首次導航就壞 |
+| pinia | **4.0.3** | ⚠ 與規劃假設（pinia 3 + `@pinia/nuxt` 0.11.3）不同 |
+| `@pinia/nuxt` | **1.0.2** | ⚠ 生態系已前進，peer 相容，無需手動鎖 pinia 版本 |
+
+#### 前端三模式皆已實測建置
+
+| 模式 | 指令 | 產出 |
+|---|---|---|
+| ssr | `nuxt build` | `.output/server/index.mjs` → PM2 fork |
+| spa | `NUXT_SSR=false nuxt build` | `.output/server/index.mjs`（ssr 關閉） |
+| static | `NUXT_SSR=false nuxt generate` | `.output/public/` → Nginx 直送 |
+
+#### PHP 擴充現況
+
+| 擴充 | 狀態 | 需要嗎 |
+|---|---|---|
+| `intl` | ✅ 已安裝（ICU 78.2） | **Filament v5 硬性需求** |
+| `bcmath` | ✘ 未安裝 | Laravel 13 與 Filament v5 皆未要求 |
+| `sqlite3` / `pdo_sqlite` | ✘ 未安裝 | 本專案用 MySQL，非必要；但 `artisan test` 若用記憶體 sqlite 會需要 |
+
+> 補裝：`sudo apt install -y php8.5-bcmath php8.5-sqlite3`（sudo 需要人工輸入密碼）
+
+#### push guard 已實測 7 種情境
+
+| 情境 | 結果 |
+|---|---|
+| 黑名單 `team-of-P/*` | 擋下 |
+| 黑名單 + `CX_ALLOW_PUSH=1` | **仍擋下**（黑名單不接受覆寫） |
+| 第三方組織 | 擋下 |
+| 白名單但未解鎖 | 擋下（預設拒絕） |
+| 白名單 + 解鎖 | 放行 |
+| SSH 形式白名單 | 放行 |
+| 前綴繞過 `Information-Study-Evil` / `pm-other` | 擋下 |
 
 ---
 
@@ -632,7 +691,8 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 ├── claude.md               本文件
 ├── bin/
 │   ├── lib/{common,ui,archive}.sh
-│   └── cmd/{fresh,help}.sh
+│   ├── lib/guard.sh        push guard（白名單 + 黑名單）
+│   └── cmd/{fresh,git,help}.sh
 ├── templates/gitignore/{main,backend,frontend}
 ├── docker/
 │   ├── php/                舊 PHP 容器設定（待 Phase 2 重寫為多階段）
@@ -640,6 +700,43 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 │   └── legacy/             舊 compose / 腳本 / README 的 .orig 副本
 ├── docs/                   待驗證項目
 ├── reports/                掃描輸出（目錄進版控，內容不進）
-├── backend/                空目錄，待 Phase 3 重建
-└── frontend/               空目錄，待 Phase 3 重建
+├── backend/                submodule → Information-Study/pm-backend
+└── frontend/               submodule → Information-Study/pm-frontend
 ```
+
+---
+
+## 11. 原生開發環境（無 Docker 時）
+
+Docker daemon 不可用時，用下列原生工具鏈。**全部免 root**（除了 PHP 擴充）。
+
+```bash
+# Composer（getcomposer.org 在本機被沙箱擋住，改從 GitHub release 取）
+VER=$(curl -4 -fsSL https://api.github.com/repos/composer/composer/releases/latest \
+      | grep -m1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+curl -4 -fsSL -o /tmp/composer.phar \
+     "https://github.com/composer/composer/releases/download/${VER}/composer.phar"
+install -m 0755 /tmp/composer.phar ~/.local/bin/composer
+
+# Node（務必核對 SHASUMS256.txt）
+NODE=v24.20.0
+curl -4 -fsSL -O "https://nodejs.org/dist/$NODE/node-$NODE-linux-x64.tar.xz"
+curl -4 -fsSL -O "https://nodejs.org/dist/$NODE/SHASUMS256.txt"
+sha256sum -c --ignore-missing SHASUMS256.txt
+mkdir -p ~/.local/node && tar -xJf node-$NODE-linux-x64.tar.xz -C ~/.local/node --strip-components=1
+ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
+```
+
+### 本機環境的三個坑
+
+1. **IPv6 壞掉。** `getcomposer.org` 解析到 IPv6 就卡死。所有 curl 都要加 `-4`。
+2. **沙箱允許清單。** `registry.npmjs.org`、`nodejs.org`、`github.com`、`repo.packagist.org` 可通；
+   `getcomposer.org`、`deb.debian.org` 不通。
+3. **npm 11 的 install-scripts 閘門。** esbuild / vue-demi 的 postinstall 預設被擋。
+   實測 esbuild 仍可用（平台套件 `@esbuild/linux-x64` 有被下載），
+   但若遇到建置怪錯，用 `npm install-scripts ls` 檢查。
+
+### 沒有資料庫時
+
+`php artisan install:api` 有 `--without-migration-prompt`，可跳過「要不要跑 migration」的詢問
+（該提示的預設值是 **true**，`--no-interaction` 下會直接對著不存在的 DB 跑）。
