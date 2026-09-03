@@ -131,7 +131,22 @@ _git_scan_secrets() {
             [[ $tgt == /* ]] && { cx_error "$slug symlink 指向絕對路徑：$l → $tgt"; bad=1; }
         done <<< "$hits"
 
-        (( bad )) || cx_ok "$slug 乾淨（$(printf '%s\n' "$files" | wc -l) 個檔案）"
+        # 4) gitleaks 掃「整個歷史」——祕密一旦進過 commit，改掉當前檔案是不夠的
+        if cx_have gitleaks; then
+            if ! gitleaks git "$r" --no-banner --redact \
+                    --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
+                    >/dev/null 2>&1; then
+                cx_error "$slug gitleaks 在 git 歷史中發現祕密"
+                gitleaks git "$r" --no-banner --redact \
+                    --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" 2>&1 \
+                    | grep -E 'RuleID|File|Commit' | sed 's/^/      /' >&2 || true
+                bad=1
+            fi
+        else
+            cx_warn "gitleaks 未安裝 —— 略過歷史掃描（建議安裝）"
+        fi
+
+        (( bad )) || cx_ok "$slug 乾淨（$(printf '%s\n' "$files" | wc -l) 個檔案，含歷史）"
     done < <(_git_repos_order)
 
     (( bad == 0 )) || cx_die "$EX_FAIL" "祕密掃描未通過，已中止"

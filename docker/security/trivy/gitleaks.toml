@@ -1,0 +1,25 @@
+title = "pm gitleaks 設定"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = ".env.example 是刻意提交的範本，所有值皆為空"
+paths = ['''\.env\.example$''']
+
+[[allowlists]]
+description = "lock 檔的 integrity 雜湊不是憑證"
+paths = ['''(package-lock\.json|composer\.lock)$''']
+
+[[allowlists]]
+description = "文件中示範用的假 token"
+regexes = ['''(EXAMPLE|PLACEHOLDER|CHANGEME|xxxx+)''']
+
+[[allowlists]]
+description = "第三方相依不是我們的祕密責任範圍（也會拖慢掃描）"
+paths = [
+    '''(^|/)vendor/''',
+    '''(^|/)node_modules/''',
+    '''(^|/)\.nuxt/''',
+    '''(^|/)\.output/''',
+]

@@ -1,0 +1,11 @@
+vendor/
+node_modules/
+.nuxt/
+.output/
+public/build/
+storage/
+bootstrap/cache/
+*.min.js
+*.lock
+package-lock.json
+composer.lock

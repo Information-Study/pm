@@ -99,4 +99,10 @@ fn="cmd_${verb}_main"
 declare -F "$fn" >/dev/null || fn="cmd_${CX_CMD_FILE_OF[$verb]:-$verb}_main"
 declare -F "$fn" >/dev/null || cx_die "$EX_FAIL" "$file 未定義 $fn"
 
-"$fn" "$@"
+# 必須「測試」回傳值再 exit。
+# 若寫成裸的 `"$fn" "$@"`，指令函式刻意回傳非零（例如 cx scan 找到 finding，
+# 回傳 EX_SCAN_*）時會觸發 ERR trap，把正常結果印成 stack dump，
+# CI 就分不出「掃描器有意見」與「掃描器當掉」。
+_rc=0
+"$fn" "$@" || _rc=$?
+exit "$_rc"

@@ -1,0 +1,25 @@
+# Trivy 設定。
+# ⚠ ignorefile / secret.config 是相對「容器 CWD」解析，而 aquasec/trivy 沒有 WORKDIR
+#   （CWD = /）。所以這裡一律寫容器內絕對路徑，並在呼叫時固定 -w。
+#   原生模式下 cx 會改寫成對應的主機路徑。
+severity:
+  - HIGH
+  - CRITICAL
+
+scan:
+  skip-dirs:
+    - "**/vendor"
+    - "**/node_modules"
+    - "**/.nuxt"
+    - "**/.output"
+    - "**/storage/framework"
+    - "**/bootstrap/cache"
+
+vulnerability:
+  ignore-unfixed: false
+
+misconfiguration:
+  include-non-failures: false
+
+secret:
+  config: /workspace/docker/security/trivy/secret.yaml

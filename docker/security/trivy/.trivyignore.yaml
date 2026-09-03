@@ -1,0 +1,9 @@
+# 抑制項目必須有到期日，避免無限期忽略。
+# 格式：
+# vulnerabilities:
+#   - id: CVE-2026-XXXXX
+#     statement: 為什麼可以接受
+#     expired_at: 2026-12-31
+vulnerabilities: []
+misconfigurations: []
+secrets: []

@@ -1,0 +1,10 @@
+# cx scan sast 使用的 ruleset。一行一個。
+p/php
+p/laravel
+p/javascript
+p/typescript
+p/vue
+p/secrets
+p/owasp-top-ten
+p/dockerfile
+p/nginx
