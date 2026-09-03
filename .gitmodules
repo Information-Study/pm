@@ -1,8 +1,8 @@
 [submodule "backend"]
 	path = backend
-	url = ./backend
+	url = ../pm-backend.git
 	branch = main
 [submodule "frontend"]
 	path = frontend
-	url = ./frontend
+	url = ../pm-frontend.git
 	branch = main
