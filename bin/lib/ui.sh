@@ -25,13 +25,23 @@ cx_interactive() { [[ -t 8 ]] && [[ $CX_UI != plain ]]; }
 
 _cx_dlg() { case $CX_UI in whiptail) whiptail "$@" ;; dialog) dialog "$@" ;; esac; }
 
+# whiptail 的訊息裡用 \n 表示換行；純文字模式要自己解讀，
+# 否則使用者會看到字面的 "\n" 而不是換行。
+_cx_unescape() { printf '%b' "$1"; }
+
 cx_msg() {
     if cx_interactive; then
         _cx_dlg --title "$1" --msgbox "$2" 20 78 1>&8 2>&9
     else
-        printf '\n=== %s ===\n%s\n\n' "$1" "$2" >&2
+        printf '\n=== %s ===\n' "$1" >&2
+        _cx_unescape "$2" >&2; printf '\n\n' >&2
     fi
 }
+
+# 有沒有可讀的 tty 可以拿來問問題。
+# 必須在子 shell 裡探測：直接 exec 7</dev/tty 失敗時，bash 會自己把
+# "No such device or address" 印到 stderr，2>/dev/null 蓋不住（重導在錯誤發生前就套用了）。
+_cx_can_ask() { ( exec </dev/tty ) >/dev/null 2>&1; }
 
 cx_confirm() {
     local danger=0
@@ -43,7 +53,13 @@ cx_confirm() {
         return 0
     fi
     if ! cx_interactive; then
-        printf '\n=== %s ===\n%s\n' "$title" "$body" >&2
+        printf '\n=== %s ===\n' "$title" >&2
+        _cx_unescape "$body" >&2; printf '\n' >&2
+        if ! _cx_can_ask; then
+            cx_error "沒有可用的終端機，無法確認 —— 已取消"
+            cx_dim "  非互動環境請加 --yes（僅在你確定要跳過確認時）"
+            return 1
+        fi
         printf '輸入 y 繼續，其他任意鍵取消: ' >&2
         local a; read -r a </dev/tty || return 1
         [[ $a == [Yy]* ]]
@@ -61,7 +77,12 @@ cx_ask_typed() {
         return 0
     fi
     if ! cx_interactive; then
-        printf '\n=== %s ===\n%s\n' "$title" "$body" >&2
+        printf '\n=== %s ===\n' "$title" >&2
+        _cx_unescape "$body" >&2; printf '\n' >&2
+        if ! _cx_can_ask; then
+            cx_error "沒有可用的終端機，無法輸入確認字串 —— 已取消"
+            return 1
+        fi
         printf '請輸入 %s 以確認: ' "$expect" >&2
         read -r got </dev/tty || return 1
     else

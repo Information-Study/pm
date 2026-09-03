@@ -20,7 +20,18 @@ _git_usage() {
 TXT
 }
 
-_git_repos_order() { printf '%s\n' "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT"; }
+# ⚠ 兩種順序，用途相反，不可混用：
+#
+# _git_repos_order（子模組先、主庫後）—— 用於 commit / push
+#   主庫的 gitlink 指向子模組的 commit，子模組必須先有那個 commit。
+#
+# _git_repos_super_first（主庫先、子模組後）—— 用於 branch switch / new
+#   本專案設了 submodule.recurse=true。主庫切換分支時會「順便」把子模組
+#   拉到 gitlink 所指的 commit，因而讓子模組進入 detached HEAD。
+#   實測：子模組先切到 feat/x、主庫再切到 feat/x → 子模組變成 DETACHED，分支丟失。
+#   所以子模組的 checkout 必須是最後一步才會生效。
+_git_repos_order()      { printf '%s\n' "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT"; }
+_git_repos_super_first() { printf '%s\n' "$CX_ROOT" "$CX_ROOT/backend" "$CX_ROOT/frontend"; }
 
 _git_repo_slug() {
     case $1 in
@@ -233,11 +244,14 @@ _git_branch_new() {
         || return "$EX_ABORT"; }
 
     cx_step "建立分支 $n"
+    # 主庫先：submodule.recurse=true 會讓主庫的 switch 順便動子模組，
+    # 所以子模組的 switch 必須排在後面才不會被覆蓋成 detached。
     while read -r r; do
         slug=$(_git_repo_slug "$r")
         cx_run git -C "$r" switch -c "$n"
         cx_ok "$slug → $n"
-    done < <(_git_repos_order)
+    done < <(_git_repos_super_first)
+    _git_assert_no_detached || return "$EX_FAIL"
     cx_info "三個 repo 都在 $n。提交請用： cx git commit"
 }
 
@@ -267,7 +281,23 @@ _git_branch_switch() {
         slug=$(_git_repo_slug "$r")
         cx_run git -C "$r" switch "$n"
         cx_ok "$slug → $n"
+    done < <(_git_repos_super_first)
+    _git_assert_no_detached || return "$EX_FAIL"
+}
+
+# 切換之後一定要驗：submodule.recurse 的副作用是靜默的，
+# 只看 switch 的 exit code 看不出子模組被打成 detached。
+_git_assert_no_detached() {
+    local r slug bad=0
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        if ! git -C "$r" symbolic-ref -q HEAD >/dev/null 2>&1; then
+            cx_error "$slug 處於 detached HEAD（submodule.recurse 的副作用）"
+            cx_dim "  修復： git -C $r switch <分支>"
+            bad=1
+        fi
     done < <(_git_repos_order)
+    (( bad == 0 ))
 }
 
 _git_branch_delete() {
@@ -280,15 +310,31 @@ _git_branch_delete() {
         [[ $cur == "$n" ]] && cx_die "$EX_PRECOND" "$slug 目前就在 $n 上，請先切走"
     done < <(_git_repos_order)
 
+    # 先確認至少有一個 repo 真的有這個分支，否則不該拿確認閘門去煩人
+    local found=0 have=()
+    while read -r r; do
+        if git -C "$r" show-ref --verify --quiet "refs/heads/$n"; then
+            found=1; have+=("$(_git_repo_slug "$r")")
+        fi
+    done < <(_git_repos_order)
+    (( found )) || cx_die "$EX_PRECOND" "三個 repo 都沒有分支 $n"
+
     cx_confirm --danger "刪除分支 $n" \
-        "將在三個 repo 刪除分支 $n。\n\n未合併的 commit 會遺失（git 會擋，除非你再確認）。\n\n確定嗎？" \
+        "將在下列 repo 刪除分支 $n：\n\n  ${have[*]}\n\n未合併的 commit 不會被刪除（git 會擋下）。\n\n確定嗎？" \
         || return "$EX_ABORT"
     while read -r r; do
         slug=$(_git_repo_slug "$r")
-        if git -C "$r" branch -d "$n" >/dev/null 2>&1; then
+        if ! git -C "$r" show-ref --verify --quiet "refs/heads/$n"; then
+            cx_dim "$slug 沒有分支 $n，略過"
+            continue
+        fi
+        local out
+        if out=$(git -C "$r" branch -d "$n" 2>&1); then
             cx_ok "$slug 已刪除 $n"
+        elif printf '%s' "$out" | grep -q 'not fully merged'; then
+            cx_warn "$slug 的 $n 尚未合併，保留（確定要丟棄請自行 git -C $r branch -D $n）"
         else
-            cx_warn "$slug 的 $n 尚未合併，保留（要強制刪除請自行 git branch -D）"
+            cx_error "$slug 刪除 $n 失敗：$out"
         fi
     done < <(_git_repos_order)
 }
