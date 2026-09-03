@@ -740,3 +740,91 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 
 `php artisan install:api` 有 `--without-migration-prompt`，可跳過「要不要跑 migration」的詢問
 （該提示的預設值是 **true**，`--no-interaction` 下會直接對著不存在的 DB 跑）。
+
+---
+
+## 12. ⚠ 未驗證項目清單（待補正）
+
+本專案在**沒有 Docker、沒有資料庫、沒有目標主機**的環境下開發，下列項目**從未實際執行過**。
+每一項都標註了阻擋原因與解除阻擋後該怎麼驗。
+
+> 原則：**沒跑過的就寫沒跑過。** 不要因為程式碼看起來對就標成已驗證。
+
+### 12.1 環境限制（這些是根因）
+
+| 限制 | 影響範圍 | 解除方式 |
+|---|---|---|
+| Docker daemon 不可用 | 整個 Phase 2、Semgrep、ZAP、SonarQube、WAF | Docker Desktop → Settings → Resources → WSL Integration |
+| `sudo` 需要互動密碼 | 無法 `apt install`（ansible、php 擴充、MySQL） | 由人工執行 `! sudo apt install ...` |
+| 無 `pip` / `venv` | Semgrep、ansible、ansible-lint、yamllint 都裝不了 | `sudo apt install python3-pip python3-venv` |
+| 無 Java runtime | OWASP ZAP 原生模式 | `sudo apt install default-jre`（或直接用 Docker） |
+| IPv6 壞掉 | 所有 curl 需 `-4` | 環境層面，非本專案可解 |
+| 沙箱網域限制 | `getcomposer.org`、`deb.debian.org` 不通 | 已用 GitHub release 繞過 |
+
+### 12.2 Phase 2 — Docker（完全未驗證）
+
+**全部項目**見 [`docs/docker-verification.md`](docs/docker-verification.md)，已交由另一個對話負責。
+該文件含 15 項舊缺陷驗收條件、5 項阻斷級、12 項重大項目、端到端腳本與待回填結果表。
+
+### 12.3 Phase 3 — 前後端（部分未驗證）
+
+| 項目 | 狀態 | 阻擋原因 | 解除後怎麼驗 |
+|---|---|---|---|
+| Laravel 骨架建立 | ✅ 已驗證 | | |
+| Larastan level 5 | ✅ 已驗證（0 errors） | | |
+| Filament 套件安裝 | ✅ 已驗證 | | |
+| Nuxt 三模式建置 | ✅ 已驗證 | | |
+| **`php artisan migrate`** | ❌ **從未執行** | 無 MySQL、無 pdo_sqlite | 起 MySQL 後 `cx art migrate` |
+| **資料庫 schema** | ❌ **完全未驗證** | 同上 | migration 跑過才算數 |
+| **`php artisan test`** | ❌ **從未執行** | `phpunit.xml` 預設用記憶體 sqlite，但 `pdo_sqlite` 未安裝 | `sudo apt install php8.5-sqlite3` 後 `cx test back` |
+| **Filament `/admin` 面板** | ❌ **從未開啟過** | 需要 web server + DB | 起服務後瀏覽 `/admin` |
+| **建立 Filament 管理員** | ❌ 未執行 | 需要 DB | `php artisan make:filament-user`（v5 支援 `--name --email --password --panel`） |
+| **Sanctum SPA 認證流程** | ❌ **從未跑過** | 需要前後端同時運行 | 前端呼叫 `/sanctum/csrf-cookie` 再登入 |
+| **CORS 實際行為** | ⚠ 只驗證了設定值 | 未做真實跨源請求 | 瀏覽器 devtools 觀察 preflight |
+| **前端 dev server** | ❌ 未啟動過 | 只驗證了 build | `cx npm run dev` |
+| **前後端串接** | ❌ **從未真的串接** | 兩邊都沒同時跑起來 | 端到端點一次登入流程 |
+
+### 12.4 Phase 4 — DevSecOps（三道可驗、兩道不可）
+
+| 防線 | 狀態 | 阻擋原因 |
+|---|---|---|
+| ① Larastan | ✅ 已驗證（0 errors，level 5 + checkModelProperties） | |
+| ① SonarQube scanner | ❌ 未驗證 | 需要 SonarQube server（Docker） |
+| ② Semgrep | ❌ **從未執行** | 無 pip/venv，且 Semgrep 無 standalone binary |
+| ③ Trivy fs | ✅ 已驗證（backend 146 套件 + frontend 742 相依，0 vulns） | |
+| ③ Trivy image scan | ❌ 未驗證 | 沒有映像可掃 |
+| ③ Trivy misconfig（IaC） | ⚠ 部分 | 執行時 `ansible/` 還不存在，需重跑 |
+| ③ composer / npm audit | ✅ 已驗證 | |
+| ④ ZAP | ❌ **從未執行** | 無 Java runtime |
+| ④ WAF 攔截率對照 | ❌ **從未執行** | `_scan_dast_compare()` 的 python 比對邏輯完全未測 |
+| gitleaks | ✅ 已驗證（含「歷史中的洩漏抓得到、dir 模式漏掉」的對照實驗） | |
+
+### 12.5 Phase 5 — Ansible（完全未驗證）
+
+**連 `ansible-playbook --syntax-check` 都跑不了**（ansible 裝不了）。
+只能做 YAML 剖析與靜態規則檢查（`bin/cmd/lint.sh`）。
+
+| 項目 | 阻擋原因 | 解除後怎麼驗 |
+|---|---|---|
+| 全部 playbook 語法 | ansible 未安裝 | `ansible-playbook site.yml --syntax-check` |
+| 全部 role 邏輯 | 無目標主機 | `--check --diff` 對 staging 跑 |
+| **MyGuard 套件名歧異** | 未在真實 Ubuntu/Debian 上探測 | 真的加了 repo 後 `apt-cache policy` |
+| **MySQL 8.4 from Oracle repo** | 未驗證 | 真機安裝 |
+| **PHP 8.5 from ondrej PPA** | 未驗證（本機的 8.5 是 Ubuntu 26.04 內建） | 真機安裝 |
+| **certbot snakeoil bootstrap** | 未驗證 | 全新機第一次部署 |
+| **PM2 fork mode 跑 Nuxt `.output`** | pm2 未安裝 | 真機或本機裝 pm2 後試跑 |
+| **CRS 排除規則載入順序** | 未驗證 | 用 Livewire/Filament 請求實測是否被 941xxx/942xxx 誤擋 |
+| **release prune 不刪 current** | 未驗證 | 部署三次 + rollback 後再部署一次 |
+
+### 12.6 補正流程
+
+解除任一阻擋後：
+
+```bash
+cx doctor              # 先確認哪些阻擋已解除
+cx scan all            # 四道防線重跑，看 runner 是否升級為 docker
+cx lint                # Ansible 靜態檢查（ansible 未裝時的替代）
+```
+
+補正完成的項目，請把本節對應列改為 ✅ 並註明驗證日期與方式。
+**不要只因為改了程式碼就標成已驗證。**

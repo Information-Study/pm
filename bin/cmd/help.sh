@@ -26,6 +26,19 @@ Git
   git push                    推送（白名單 + 祕密掃描 + 子模組順序）
   git guard install|status|remove
 
-其他動詞（Docker / 掃描 / 部署）尚未實作，見 docs/。
+DevSecOps（四道防線，runner 自動偵測 docker/native）
+  scan code       ① Quality  Larastan + SonarQube scanner
+  scan sast       ② SAST     Semgrep
+  scan sca        ③ SCA      Trivy + composer audit + npm audit
+  scan dast       ④ DAST     OWASP ZAP（僅 docker）
+  scan secrets    gitleaks 全歷史祕密掃描
+  scan all        依序執行
+    --runner docker|native|auto
+
+Ansible
+  lint            靜態檢查（ansible 未安裝時的替代品，不等於 --syntax-check）
+
+Docker 動詞（up/down/build 等）待 Phase 2，見 docs/docker-verification.md。
+未驗證項目清單見 claude.md §12。
 TXT
 }
