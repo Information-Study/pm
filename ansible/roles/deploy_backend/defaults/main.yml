@@ -1,0 +1,245 @@
+---
+# ============================================================================
+# roles/deploy_backend/defaults/main.yml
+#
+# Laravel 13 + Filament v5 的 releases / shared / current 佈署。
+#
+# 目錄骨架（app_root、backend_root、releases、shared、storage 樹）**已由 common
+# role 建好**（A8）。本 role 只建立 releases/<release_id> 這一層，其餘一律不碰，
+# 免得兩個 role 互相翻對方的 owner/mode。
+#
+# 這裡重複宣告的共用變數（app_slug / app_root / deploy_user …）是「保底值」：
+# role defaults 是 Ansible 最低優先權，group_vars/all 與 inventory 都會蓋過它。
+# 這樣 `ansible-playbook --tags deploy_backend` 才能單獨跑而不噴 undefined。
+# 正本在 roles/common/defaults/main.yml，改那裡就要同步改這裡。
+# ============================================================================
+
+# ── 共用核心（正本：common）──────────────────────────────────────────────────
+app_name: "pm"
+app_slug: "pm"
+app_env: "production"
+app_domain: ""
+app_timezone: "Asia/Taipei"
+app_root: "/srv/{{ app_slug }}"
+app_shared_dir: "{{ app_root }}/shared"
+app_log_dir: "/var/log/{{ app_slug }}"
+app_state_dir: "/var/lib/{{ app_slug }}"
+backend_root: "{{ app_root }}/backend"
+backend_releases_dir: "{{ backend_root }}/releases"
+backend_shared_dir: "{{ backend_root }}/shared"
+backend_current_path: "{{ backend_root }}/current"
+backend_current: "{{ backend_current_path }}"
+deploy_user: "deploy"
+deploy_group: "deploy"
+deploy_home: "/home/{{ deploy_user }}"
+deploy_user_home: "{{ deploy_home }}"
+web_user: "www-data"
+web_group: "www-data"
+app_max_upload_mb: 32
+
+php_version: "8.5"
+php_cli_binary: "/usr/bin/php{{ php_version }}"
+php_fpm_service: "php{{ php_version }}-fpm"
+php_log_dir: "/var/log/php"
+
+composer_bin_path: "/usr/local/bin/composer"
+composer_home: "{{ deploy_user_home }}/.config/composer"
+composer_cache_dir: "{{ deploy_user_home }}/.cache/composer"
+
+# ── release 識別 ────────────────────────────────────────────────────────────
+# 正式用法是在 site.yml 開頭一次 set_fact（讓同一批主機拿到同一個 id）：
+#
+#   - name: 決定本次 release_id
+#     hosts: all
+#     gather_facts: true
+#     tasks:
+#       - ansible.builtin.set_fact:
+#           release_id: "{{ ansible_date_time.iso8601_basic_short }}"
+#
+# 下面這個只是「沒設定時的保底」。ansible_date_time 是 setup 一次採到的事實，
+# 同一台主機整場執行都不會變，所以 role 內多次引用是安全的；
+# 但不同主機可能差幾秒而拿到不同 id，所以還是建議由 playbook 統一設定。
+release_id: "{{ ansible_facts['date_time']['iso8601_basic_short'] | default('') }}"
+
+# release_id 會被拼進絕對路徑，也會被 prune 的 when 條件拿去比對，
+# 因此格式必須嚴格（不含 / 與 ..，長度 4–64）。
+backend_release_id_regex: '^[A-Za-z0-9][A-Za-z0-9._-]{3,63}$'
+backend_release_path: "{{ backend_releases_dir }}/{{ release_id }}"
+
+# ── git ─────────────────────────────────────────────────────────────────────
+# 主庫 https://github.com/Information-Study/pm 的 submodule pm-backend（public）。
+# 只用 https，不需要 deploy key，也絕不 push（本 role 沒有任何 push 動作）。
+backend_repo_url: "https://github.com/Information-Study/pm-backend.git"
+backend_repo_version: "main"
+# depth=1 夠用；要在機器上 `git log` 追歷史就設 0（0 = 完整 clone）。
+backend_repo_depth: 1
+backend_repo_single_branch: true
+# force: false —— 不覆蓋本機修改。release 目錄是全新的，本來就不該有本機修改；
+# 真的髒了要讓它失敗而不是默默丟掉東西。
+backend_repo_force: false
+
+# ── .env ────────────────────────────────────────────────────────────────────
+backend_shared_env_path: "{{ backend_shared_dir }}/.env"
+backend_shared_storage_path: "{{ backend_shared_dir }}/storage"
+
+# APP_KEY：優先用 vault 給的值；沒有就沿用 shared/.env 既有的；
+# 兩者都沒有才在 composer install 之後跑一次 `artisan key:generate --force`。
+# 換句話說，key:generate 只會在「shared/.env 還沒有 APP_KEY」時執行一次。
+backend_app_key: "{{ vault_app_key | default('') }}"
+
+backend_app_url: "https://{{ app_domain }}"
+backend_frontend_url: "{{ backend_app_url }}"
+# 同源拓撲：nginx 把 / 給 Nuxt、/api|/admin|/up|/storage 給 PHP，
+# 所以 SANCTUM_STATEFUL_DOMAINS 就是網域本身。
+backend_sanctum_stateful_domains: "{{ app_domain }}"
+backend_app_debug: false
+backend_log_channel: "stack"
+backend_log_stack: "daily"
+backend_log_level: "warning"
+backend_log_daily_days: 14
+
+backend_db_connection: "mysql"
+# A3：mysql role 開了 skip-name-resolve，並同時建了 'localhost' 與 '127.0.0.1'
+# 兩筆授權。這裡用 127.0.0.1 走 TCP；改成 localhost 會走 unix socket。
+backend_db_host: "127.0.0.1"
+backend_db_port: 3306
+backend_db_database: "{{ app_db_name | default('pm') }}"
+backend_db_username: "{{ app_db_user | default('pm') }}"
+backend_db_password: "{{ vault_mysql_app_password | default('') }}"
+
+backend_session_driver: "database"
+backend_session_lifetime: 120
+backend_session_domain: "null"
+# https 之下一定要 true，否則 Sanctum 的 SPA 認證會拿不到 cookie。
+backend_session_secure_cookie: "{{ backend_app_url.startswith('https://') }}"
+backend_session_same_site: "lax"
+
+backend_cache_store: "database"
+backend_queue_connection: "database"
+backend_broadcast_connection: "log"
+backend_filesystem_disk: "local"
+
+backend_locale: "zh_TW"
+backend_fallback_locale: "en"
+backend_faker_locale: "zh_TW"
+
+backend_mail_mailer: "log"
+backend_mail_from_address: "no-reply@{{ app_domain }}"
+backend_mail_from_name: "{{ app_name }}"
+
+# Redis 沒有任何 role 會安裝，所以預設不輸出 REDIS_* 區塊。
+backend_redis_enabled: false
+backend_redis_host: "127.0.0.1"
+backend_redis_port: 6379
+backend_redis_password: "{{ vault_redis_password | default('null') }}"
+
+# 額外的 key: value，原樣附加到 .env 尾端（值一樣會被跳脫與檢查）。
+backend_env_extra: {}
+
+# ── composer ────────────────────────────────────────────────────────────────
+backend_composer_timeout: 900          # 秒；ansible 任務層的 timeout
+backend_composer_process_timeout: 600  # 秒；COMPOSER_PROCESS_TIMEOUT
+
+# ── 資料庫 ──────────────────────────────────────────────────────────────────
+# A15：migration 用 groups['db_primary'] 明確 gate，不靠 run_once
+#（serial 之下 run_once 的作用域只有當前 batch，等同 no-op）。
+backend_migrate: true
+backend_migrate_extra_args: []         # 例如 ["--step"]
+backend_seed: false                    # 預設關閉；seeder 會寫入資料
+backend_seeder_class: ""
+
+# migrate 之前先 mysqldump 一份。這不是刪除動作，但仍給開關方便 staging 關掉。
+backend_backup_before_migrate: true
+backend_backup_dir: "/var/backups/{{ app_slug }}-premigrate"
+# 備份用的認證檔（本 role 產生，0600 root:root）。
+# 用「應用帳號」而不是 root：mysql role 的 mysql_remove_remote_root 刪掉了
+# root@'%'，skip-name-resolve 之下也沒有 root@'127.0.0.1'，root 走 TCP 必定 1045；
+# 而 A3 已經替應用帳號同時建了 localhost 與 127.0.0.1 兩筆授權。
+backend_backup_defaults_file: "/root/.{{ app_slug }}-backup.cnf"
+backend_backup_gzip: true
+backend_backup_timeout: 900
+# 舊備份清理：受「目錄 + maxdepth 1 + 檔名樣式 + mtime」四重限制，
+# 且由這個開關 gate。永遠不會出現無界遞迴刪除。
+backend_backup_prune_enabled: true
+backend_backup_retention_days: 30
+
+# ── 快取 / 最佳化 ───────────────────────────────────────────────────────────
+backend_config_cache: true
+backend_view_cache: true
+backend_event_cache: true
+
+# route:cache 預設 **關閉**，這不是保守，是本專案的事實：
+#   backend/routes/web.php:5   Route::get('/', function () { ... })
+#   backend/routes/api.php:6   Route::get('/user', function (Request $request) { ... })
+# 兩支 route 檔都用 Closure，`php artisan route:cache` 會直接失敗：
+#   LogicException: Unable to prepare route [/] for serialization. Uses Closure.
+# 要打開它，得先把這兩個 Closure 改成 controller 方法（例如
+# Route::get('/', [HomeController::class, 'index'])）再設 backend_route_cache: true。
+# 設成 true 而路由仍是 Closure 時，本 role 會 route:clear 並用上面這段訊息 fail。
+backend_route_cache: false
+
+# Filament 的元件快取。v3.3+/v4/v5 是 `filament:optimize`（含 cache-components +
+# icons cache）。本 role 會先用 `artisan list --raw` 探測指令是否存在，
+# 不存在就跳過並印訊息，不會硬跑一個不存在的指令。
+backend_filament_optimize: true
+backend_filament_optimize_command: "filament:optimize"
+
+backend_storage_link: true
+
+# ── systemd：queue worker + scheduler ───────────────────────────────────────
+# 對應 Docker 的 supervisord [program:laravel-queue]（numprocs=2、user=www-data）。
+backend_queue_enabled: true
+backend_queue_workers: 2
+# 縮放時的上界：1..max 之間，超過 workers 的實例會被 stop+disable。
+# 這是「有界的收斂」而不是無條件刪除，所以安全。
+backend_queue_max_workers: 8
+backend_queue_user: "{{ web_user }}"
+backend_queue_group: "{{ web_group }}"
+# Docker 版寫的是 --queue=media-library，那是舊專案殘留（composer.json 沒有
+# spatie/laravel-medialibrary）。原生部署用預設佇列。
+backend_queue_names: "default"
+backend_queue_sleep: 3
+backend_queue_tries: 3
+backend_queue_timeout: 90
+# --max-time：worker 每小時自行退出讓 systemd 重拉，換版後不會抱著舊程式碼不放。
+backend_queue_max_time: 3600
+backend_queue_memory_mb: 256
+backend_queue_restart_sec: 5
+backend_queue_stop_timeout_sec: 120
+backend_queue_nice: 5
+# 換版之後重啟 worker（讓它載入新 release 的程式碼）。
+backend_queue_restart_on_deploy: true
+
+backend_schedule_enabled: true
+backend_schedule_user: "{{ web_user }}"
+backend_schedule_group: "{{ web_group }}"
+# 每分鐘一次，跟 Laravel 官方的 `* * * * * php artisan schedule:run` 對齊。
+backend_schedule_on_calendar: "*:0/1:00"
+backend_schedule_accuracy: "1s"
+backend_schedule_randomized_delay: "0"
+backend_schedule_timeout_sec: 300
+
+backend_service_after:
+  - "network-online.target"
+backend_service_wants:
+  - "network-online.target"
+# php-fpm 與 mysql 只在本機真的有那個 unit 時才加進 After=（tasks 會探測）。
+backend_service_after_php_fpm: true
+backend_service_after_mysql: true
+
+# ── release prune（A1）──────────────────────────────────────────────────────
+# 絕不是「ls -1dt X/*/ | tail -n +N | xargs 遞迴刪除」那一套：
+#   (a) 那個寫法按 mtime 排序又不排除 current，rollback 之後下一次部署就把線上版本刪了；
+#   (b) 變數渲染成空字串時，作用範圍會塌成「/ 底下的每一個目錄」。
+# 這裡改用 find + stat 解析 current 的實體路徑，把它與本次 release 一起 reject 掉，
+# 再以 ansible.builtin.file: state=absent 逐一刪除，每一項都有 when 條件把關，
+# 且單次刪除數量有上界。
+keep_releases: 5
+backend_prune_enabled: true
+backend_prune_max_delete: 20
+
+# ── 換版後的服務動作 ────────────────────────────────────────────────────────
+# OPcache 在 php role 是 validate_timestamps=1（每次請求 stat），理論上不 reload
+# 也會生效；但 realpath cache 與 FPM 的 SCRIPT_FILENAME 解析會讓換版當下出現
+# 幾秒的混用，所以還是 reload 一次。
+backend_reload_php_fpm: true

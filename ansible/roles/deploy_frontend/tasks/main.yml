@@ -1,0 +1,65 @@
+---
+# ============================================================================
+# deploy_frontend —— 執行順序：
+#
+#   assert   → 前置條件（release_id、路徑、frontend_mode、node/npm/pm2 是否就緒）
+#   release  → 建立 releases/<id> 並 git clone
+#   install  → npm ci（--include=dev；Nuxt build 需要建置期相依）
+#   build    → 依 frontend_mode 分支（A20）
+#   verify   → 檢查產物存在，並驗證烘進 bundle 的 API base URL
+#   switch   → 原子換版（ln 臨時 symlink → mv -T）
+#   pm2      → ssr/spa 啟動；static 收掉舊 process（A10）
+#   prune    → 安全的舊 release 清理（A1）
+#
+# build 一定要在換版之前完成：任何一步失敗時 current 都還指著上一個能跑的版本。
+# pm2 一定要在換版之後：ecosystem 的 script 指向 current，
+# 換版前啟動會拿到舊的（或不存在的）進入點。
+# ============================================================================
+
+- name: Frontend | 前置斷言
+  ansible.builtin.import_tasks: assert.yml
+  tags: [deploy, deploy_frontend, frontend_assert]
+
+- name: Frontend | 建立 release 並 clone
+  ansible.builtin.import_tasks: release.yml
+  tags: [deploy, deploy_frontend, frontend_release]
+
+- name: Frontend | npm ci
+  ansible.builtin.import_tasks: install.yml
+  tags: [deploy, deploy_frontend, frontend_install]
+
+- name: Frontend | 依模式建置
+  ansible.builtin.import_tasks: build.yml
+  tags: [deploy, deploy_frontend, frontend_build]
+
+- name: Frontend | 驗證建置產物
+  ansible.builtin.import_tasks: verify_bundle.yml
+  tags: [deploy, deploy_frontend, frontend_verify]
+
+- name: Frontend | 原子換版
+  ansible.builtin.import_tasks: switch.yml
+  tags: [deploy, deploy_frontend, frontend_switch]
+
+- name: Frontend | PM2 狀態收斂
+  ansible.builtin.import_tasks: pm2.yml
+  tags: [deploy, deploy_frontend, frontend_pm2]
+
+- name: Frontend | 清理舊 release（A1）
+  ansible.builtin.import_tasks: prune.yml
+  tags: [deploy, deploy_frontend, frontend_prune]
+
+- name: Frontend | 佈署摘要
+  ansible.builtin.debug:
+    msg: >-
+      frontend release={{ release_id }}
+      | mode={{ frontend_mode }}
+      | commit={{ frontend_git_result.after | default('n/a') }}
+      | 產物={{ frontend_build_spec.expect_hint }}
+      | PM2={{ (frontend_pm2_desired_names | default([])) | join(', ') | default('（static，不起 PM2）', true) }}
+      | apiBaseUrl={{ frontend_public_api_base_url | default('（空＝同源）', true) }}
+      | 保留 release 數={{ keep_releases }}
+  tags: [deploy, deploy_frontend]
+
+- name: Frontend | 立即執行待處理的 handler
+  ansible.builtin.meta: flush_handlers
+  tags: [deploy, deploy_frontend]

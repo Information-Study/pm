@@ -1,0 +1,112 @@
+---
+# ssr / spa 才需要 PM2。static 模式下 PM2 應該一個 process 都沒有 ——
+# 有的話代表 deploy_frontend 的清理沒生效，舊 process 還佔著埠。
+
+- name: PM2 | 初始化結果（A7）
+  ansible.builtin.set_fact:
+    healthcheck_pm2_expected: >-
+      {{ (range(frontend_instances | int) | map('string')
+          | map('regex_replace', '^(.*)$', frontend_app_prefix ~ '-\\1') | list)
+         if healthcheck_actual_mode in ['ssr', 'spa'] else [] }}
+    healthcheck_pm2_online: []
+    healthcheck_pm2_bad: []
+
+- name: PM2 | jlist
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ pm2_bin }}", jlist]
+  environment:
+    PM2_HOME: "{{ pm2_home }}"
+    HOME: "{{ deploy_user_home }}"
+  register: healthcheck_pm2_jlist
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - healthcheck_check_pm2_processes | bool
+    - not ansible_check_mode
+
+- name: PM2 | 解析 jlist
+  ansible.builtin.set_fact:
+    healthcheck_pm2_online: >-
+      {{ (healthcheck_pm2_jlist.stdout | default('[]') | from_json)
+         | selectattr('name', 'match', healthcheck_managed_pm2_pattern)
+         | selectattr('pm2_env.status', 'equalto', 'online')
+         | map(attribute='name') | list }}
+    healthcheck_pm2_bad: >-
+      {{ (healthcheck_pm2_jlist.stdout | default('[]') | from_json)
+         | selectattr('name', 'match', healthcheck_managed_pm2_pattern)
+         | rejectattr('pm2_env.status', 'equalto', 'online')
+         | map(attribute='name') | list }}
+  when:
+    - healthcheck_check_pm2_processes | bool
+    - not ansible_check_mode
+    - (healthcheck_pm2_jlist.rc | default(1)) == 0
+    - (healthcheck_pm2_jlist.stdout | default('') | trim) is match('^\\[')
+
+- name: PM2 | 狀態
+  ansible.builtin.debug:
+    msg: >-
+      mode={{ healthcheck_actual_mode }}
+      | 預期 online：{{ healthcheck_pm2_expected | join(', ') | default('（無）', true) }}
+      | 實際 online：{{ healthcheck_pm2_online | join(', ') | default('（無）', true) }}
+      | 非 online：{{ healthcheck_pm2_bad | join(', ') | default('（無）', true) }}
+  when: healthcheck_check_pm2_processes | bool
+
+- name: PM2 | jlist 讀不到時記為失敗
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'pm2',
+           'what': 'pm2 jlist 沒有回傳可解析的 JSON（rc=' ~ (healthcheck_pm2_jlist.rc | default('n/a')) ~ '）',
+           'hint': ('sudo -u ' ~ deploy_user ~ ' PM2_HOME=' ~ pm2_home ~ ' ' ~ pm2_bin ~ ' jlist'
+                    ~ ' ｜ systemctl status ' ~ pm2_systemd_unit ~ ' -l --no-pager'
+                    ~ ' ｜ PM2 daemon 沒起來時 nginx upstream 會全部 502。')
+         }] }}
+  when:
+    - healthcheck_check_pm2_processes | bool
+    - not ansible_check_mode
+    - healthcheck_actual_mode in ['ssr', 'spa']
+    - ((healthcheck_pm2_jlist.rc | default(1)) != 0)
+      or ((healthcheck_pm2_jlist.stdout | default('') | trim) is not match('^\\['))
+
+- name: PM2 | process 沒有全部 online 時記為失敗
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'pm2',
+           'what': ('預期 ' ~ (healthcheck_pm2_expected | join(', '))
+                    ~ ' 全部 online，實際 online 的是 '
+                    ~ (healthcheck_pm2_online | join(', ') | default('（無）', true))),
+           'hint': ('sudo -u ' ~ deploy_user ~ ' PM2_HOME=' ~ pm2_home ~ ' ' ~ pm2_bin
+                    ~ ' logs --lines 100 --nostream'
+                    ~ ' ｜ ' ~ app_log_dir ~ '/' ~ frontend_app_prefix ~ '-0.err.log'
+                    ~ ' ｜ ERR_REQUIRE_ESM 代表 ecosystem 用了 cluster；'
+                    ~ 'Nuxt 的進入點是 ESM 的 .mjs，一律要用 exec_mode: fork（A10）。'
+                    ~ ' ｜ 埠被佔用：ss -lntp | grep :' ~ (frontend_port | string))
+         }] }}
+  when:
+    - healthcheck_check_pm2_processes | bool
+    - not ansible_check_mode
+    - healthcheck_actual_mode in ['ssr', 'spa']
+    - (healthcheck_pm2_online | length) != (healthcheck_pm2_expected | length)
+
+- name: PM2 | static 模式卻仍有 process 時記為失敗
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'pm2',
+           'what': ('static 模式不應該有 PM2 process，但還有 '
+                    ~ ((healthcheck_pm2_online + healthcheck_pm2_bad) | join(', '))),
+           'hint': ('sudo -u ' ~ deploy_user ~ ' PM2_HOME=' ~ pm2_home ~ ' ' ~ pm2_bin
+                    ~ ' delete <name> && ' ~ pm2_bin ~ ' save --force'
+                    ~ ' ｜ 舊 process 會繼續佔著 ' ~ (frontend_port | string) ~ ' 埠，'
+                    ~ 'nginx 若還有 proxy_pass 設定就會把流量送到舊版前端。'
+                    ~ ' ｜ 檢查 pm2_prune_stale_apps 是不是被設成 false。')
+         }] }}
+  when:
+    - healthcheck_check_pm2_processes | bool
+    - not ansible_check_mode
+    - healthcheck_actual_mode == 'static'
+    - ((healthcheck_pm2_online | length) + (healthcheck_pm2_bad | length)) > 0

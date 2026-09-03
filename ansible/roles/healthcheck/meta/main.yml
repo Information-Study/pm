@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: healthcheck
+  author: pm
+  description: >-
+    部署後的三層健康檢查：直接打 PM2（origin）、經 nginx 但繞過 DNS/TLS（edge）、
+    以及真正的公開網址（/up、/、/admin）。另外檢查 systemd unit 與 PM2 process 狀態。
+    每一項失敗都會指出該看哪個 log。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [healthcheck, smoke, verify]
+dependencies: []

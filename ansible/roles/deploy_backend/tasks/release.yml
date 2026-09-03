@@ -1,0 +1,86 @@
+---
+# A8：releases/、shared/、storage 樹都是 common role 建的。
+# 這裡只建 releases/<release_id> 這一層。
+#
+# 02750（setgid + rwxr-x---）跟 common 的 common_dir_mode 一致：
+#   setgid → git clone 出來的子目錄與檔案自動掛 {{ web_group }} 群組，
+#            php-fpm（以 {{ web_user }} 執行）才讀得到程式碼；
+#   others = 0 → 同機其他帳號讀不到 .env 與 storage。
+- name: Release | 建立 releases/{{ release_id }}
+  ansible.builtin.file:
+    path: "{{ backend_release_path }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+    mode: "02750"
+
+# git 模組跑在目標端。repo 是 public https，不需要 deploy key，
+# 也不需要 accept_hostkey（那只對 ssh:// 有意義）。
+#
+# 本 role 從頭到尾只讀遠端、不寫遠端：ansible.builtin.git 只做 clone/fetch/checkout，
+# 底下也沒有任何 command/shell 去呼叫會寫遠端的 git 子命令。
+- name: Release | clone {{ backend_repo_url }}（{{ backend_repo_version }}）
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.git:
+    repo: "{{ backend_repo_url }}"
+    dest: "{{ backend_release_path }}"
+    version: "{{ backend_repo_version }}"
+    # depth: 0 代表完整 clone；git 模組把 0 當成「不要 --depth」。
+    depth: "{{ (backend_repo_depth | int) if (backend_repo_depth | int) > 0 else omit }}"
+    single_branch: "{{ backend_repo_single_branch | bool }}"
+    force: "{{ backend_repo_force | bool }}"
+    update: true
+    # 全新目錄，不需要也不應該碰既有的 local branch。
+    track_submodules: false
+    recursive: false
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    GIT_TERMINAL_PROMPT: "0"
+  register: backend_git_result
+
+- name: Release | 記錄 commit
+  ansible.builtin.debug:
+    msg: >-
+      {{ backend_repo_url }}@{{ backend_repo_version }}
+      → {{ backend_git_result.after | default('（check mode，未 clone）') }}
+      （{{ backend_release_path }}）
+
+- name: Release | 確認 clone 出來的內容真的是這個 Laravel 專案
+  ansible.builtin.stat:
+    path: "{{ backend_release_path }}/{{ item }}"
+  register: backend_release_shape
+  loop:
+    - artisan
+    - composer.json
+    - bootstrap/app.php
+    - public/index.php
+  loop_control:
+    label: "{{ item }}"
+  when: not ansible_check_mode
+
+- name: Release | 專案結構不對就 fail fast
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    quiet: true
+    fail_msg: >-
+      {{ backend_release_path }}/{{ item.item }} 不存在。
+      clone 下來的東西不像 pm-backend（Laravel 13 骨架）。
+      確認 backend_repo_url（目前 {{ backend_repo_url }}）與
+      backend_repo_version（目前 {{ backend_repo_version }}）是否正確，
+      以及該分支上是否真的有 artisan / composer.json / bootstrap/app.php / public/index.php。
+  loop: "{{ backend_release_shape.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when: not ansible_check_mode
+
+# bootstrap/cache 必須是 www-data 可寫：config:cache / event:cache 的產物放這裡，
+# 執行期 Laravel 也會往裡面寫。02770 與 common 對 storage 的處理一致。
+- name: Release | bootstrap/cache 權限
+  ansible.builtin.file:
+    path: "{{ backend_release_path }}/bootstrap/cache"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+    mode: "02770"

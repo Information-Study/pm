@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# ============================================================================
+# {{ backend_schedule_timer_unit }}
+# 每分鐘觸發一次 {{ backend_schedule_service_unit }}。
+# ============================================================================
+[Unit]
+Description={{ app_name }} Laravel scheduler timer（每分鐘）
+Documentation=https://laravel.com/docs/scheduling
+
+[Timer]
+OnCalendar={{ backend_schedule_on_calendar }}
+AccuracySec={{ backend_schedule_accuracy }}
+RandomizedDelaySec={{ backend_schedule_randomized_delay }}
+# Persistent=false：機器關機期間錯過的排程不要在開機時一次補跑。
+# Laravel 的排程多半是「這個時間點做這件事」，補跑通常是錯的。
+Persistent=false
+Unit={{ backend_schedule_service_unit }}
+
+[Install]
+WantedBy=timers.target

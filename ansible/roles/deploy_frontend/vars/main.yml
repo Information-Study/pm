@@ -1,0 +1,30 @@
+---
+frontend_current_staging_link: "{{ frontend_current_path }}.new"
+frontend_entry_relative: ".output/server/index.mjs"
+frontend_static_relative: ".output/public"
+frontend_release_entry: "{{ frontend_release_path }}/{{ frontend_entry_relative }}"
+frontend_release_static_root: "{{ frontend_release_path }}/{{ frontend_static_relative }}"
+# 用戶端 chunk 的位置。三種模式都會有（static 與 spa 也要出用戶端 bundle）。
+frontend_release_client_dir: "{{ frontend_release_path }}/.output/public/_nuxt"
+frontend_managed_pm2_pattern: "^{{ frontend_app_prefix | regex_escape }}-[0-9]+$"
+
+# 三種模式的建置指令與預期產物。npm run 的腳本名來自 frontend/package.json：
+#   "build": "nuxt build"、"generate": "nuxt generate"
+frontend_build_matrix:
+  ssr:
+    npm_script: "build"
+    nuxt_ssr_env: "true"
+    expect_path: "{{ frontend_release_entry }}"
+    expect_hint: ".output/server/index.mjs（Nitro 伺服器進入點，交給 PM2 fork）"
+  spa:
+    npm_script: "build"
+    nuxt_ssr_env: "false"
+    expect_path: "{{ frontend_release_entry }}"
+    expect_hint: ".output/server/index.mjs（仍是 Nitro，只是不做伺服器端渲染）"
+  static:
+    npm_script: "generate"
+    nuxt_ssr_env: "false"
+    expect_path: "{{ frontend_release_static_root }}/index.html"
+    expect_hint: ".output/public/index.html（純靜態，由 Nginx 直送，不起 PM2）"
+
+frontend_build_spec: "{{ frontend_build_matrix[frontend_mode] }}"

@@ -1,0 +1,63 @@
+---
+# 第二層：打 127.0.0.1 並自己帶 Host 標頭。
+# 這樣就繞過了 DNS（網域也許還沒指過來）與 TLS（憑證也許還是 snakeoil，A5），
+# 只驗證「nginx 活著、而且認得這個 server_name」。
+#
+# follow_redirects: none —— nginx 通常會把 http 轉去 https，
+# 那個 301/308 本身就是 nginx 正常運作的證據，不需要真的跟過去。
+
+# 任務名稱一定要加引號：裡面的「Host: 」有冒號加空白，
+# YAML 會把它當成一個新的 mapping key 而報 "mapping values are not allowed here"。
+- name: "Edge | 打 {{ healthcheck_edge_url_clean }}/（Host {{ app_domain }}）"
+  ansible.builtin.uri:
+    url: "{{ healthcheck_edge_url_clean }}/"
+    method: GET
+    headers:
+      Host: "{{ app_domain }}"
+    status_code: "{{ healthcheck_edge_ok_status }}"
+    timeout: "{{ healthcheck_timeout | int }}"
+    follow_redirects: none
+    validate_certs: false
+    return_content: false
+  register: healthcheck_edge
+  retries: "{{ healthcheck_retries | int }}"
+  delay: "{{ healthcheck_delay | int }}"
+  until: (healthcheck_edge.status | default(0)) in healthcheck_edge_ok_status
+  ignore_errors: true
+  changed_when: false
+  when:
+    - healthcheck_check_edge | bool
+    - not ansible_check_mode
+
+- name: Edge | 結果
+  ansible.builtin.debug:
+    msg: >-
+      {{ healthcheck_edge_url_clean }}/ (Host: {{ app_domain }})
+      → HTTP {{ healthcheck_edge.status | default('無回應') }}
+      {{ '（3xx 是正常的：nginx 把 http 轉去 https）'
+         if (healthcheck_edge.status | default(0)) in [301, 302, 307, 308] else '' }}
+  when:
+    - healthcheck_check_edge | bool
+    - healthcheck_edge is defined
+
+- name: Edge | 記錄失敗
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'edge（127.0.0.1 + Host 標頭，未經 DNS/TLS）',
+           'what': ('HTTP ' ~ (healthcheck_edge.status | default('無回應'))
+                    ~ '，預期 ' ~ (healthcheck_edge_ok_status | join('/'))),
+           'hint': ('nginx 沒在服務 server_name ' ~ app_domain ~ '。'
+                    ~ ' ｜ nginx -t（不要加 -c，A12：-c 會把片段當成完整主設定，'
+                    ~ '沒有 events{} 區塊一定 emerg）'
+                    ~ ' ｜ systemctl status nginx -l --no-pager'
+                    ~ ' ｜ ' ~ healthcheck_nginx_error_log
+                    ~ ' ｜ ModSecurity 載入失敗也會讓 nginx 起不來：'
+                    ~ '兩個 ctl: 之間必須是逗號不是分號（A11）；'
+                    ~ 'CRS 排除規則（ruleRemoveById）必須載入在 CRS 之前，'
+                    ~ '也就是放在 exclusions-before/ 而不是 exclusions-after/。')
+         }] }}
+  when:
+    - healthcheck_check_edge | bool
+    - not ansible_check_mode
+    - (healthcheck_edge.status | default(0)) not in healthcheck_edge_ok_status

@@ -77,14 +77,18 @@ _scan_max() { local a=$1 b=$2; (( a > b )) && printf '%s\n' "$a" || printf '%s\n
 # ---------------------------------------------------------------------------
 _scan_code() {
     cx_step "① Quality — Larastan + SonarQube"
-    local worst=0 rc=0
+    # 累加器一律 lane 私有並明確 local。
+    # 曾經寫成 `local runner; runner=$(...) worst=0 rc=0` —— 那是一個賦值串，
+    # 只有 runner 是 local，worst/rc 在 bash 的動態作用域下會寫進呼叫者的變數，
+    # 把 cmd_scan_main 累積的 worst 歸零，導致 cx scan all 回傳 0。
+    local _lane_worst=0 rc=0
 
     if [[ -x $CX_ROOT/backend/vendor/bin/phpstan ]]; then
         _scan_step "$EX_SCAN_QUALITY" "Larastan" \
             env -C "$CX_ROOT/backend" ./vendor/bin/phpstan analyse \
                 --memory-limit=1G --no-progress \
                 --error-format=json > "$CX_REPORT_DIR/quality/larastan.json" || rc=$?
-        worst=$(_scan_max "$worst" "$rc")
+        _lane_worst=$(_scan_max "$_lane_worst" "$rc")
         if [[ -s $CX_REPORT_DIR/quality/larastan.json ]]; then
             local n; n=$(python3 -c 'import json,sys;print(json.load(sys.stdin).get("errors","?"))' \
                          < "$CX_REPORT_DIR/quality/larastan.json" 2>/dev/null || echo '?')
@@ -101,7 +105,7 @@ _scan_code() {
             cx_run docker run --rm -u "$(id -u):$(id -g)" \
                 --network pm_devsecops_net \
                 -e SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}" \
-                -e SONAR_TOKEN="${SONAR_TOKEN:?請先執行 cx sonar token}" \
+                -e SONAR_TOKEN="${SONAR_TOKEN:?尚未設定。cx sonar 待 Phase 2 實作，暫時請自行 export SONAR_TOKEN}" \
                 -v "$CX_ROOT:/usr/src" \
                 "${CX_IMG_SONAR_SCANNER:-sonarsource/sonar-scanner-cli:latest}" || rc=$?
             worst=$(_scan_max "$worst" "$rc")
@@ -111,7 +115,7 @@ _scan_code() {
     else
         cx_warn "native runner 無法執行 SonarQube scanner（需要 SonarQube server）"
     fi
-    return "$worst"
+    return "$_lane_worst"
 }
 
 # ---------------------------------------------------------------------------
@@ -159,7 +163,8 @@ _scan_sast() {
 # ---------------------------------------------------------------------------
 _scan_sca() {
     cx_step "③ SCA — Trivy + 套件管理器 audit"
-    local runner; runner=$(_scan_runner) worst=0 rc=0
+    local runner _lane_worst=0 rc=0
+    runner=$(_scan_runner)
 
     if [[ $runner == docker ]]; then
         _scan_step "$EX_SCAN_SCA" "Trivy fs" \
@@ -173,7 +178,7 @@ _scan_sca() {
                 fs --config /workspace/docker/security/trivy/trivy.yaml \
                    --scanners vuln,secret,misconfig --exit-code 1 \
                    --format json --output /out/sca/trivy-fs.json . || rc=$?
-        worst=$(_scan_max "$worst" "$rc")
+        _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     elif cx_have trivy; then
         rc=0
         _scan_step "$EX_SCAN_SCA" "Trivy fs（原生）" \
@@ -184,10 +189,10 @@ _scan_sca() {
                     --skip-dirs '**/.nuxt' --skip-dirs '**/.output' \
                     --skip-dirs '**/storage/framework' --skip-dirs '**/bootstrap/cache' \
                     --format json --output "$CX_REPORT_DIR/sca/trivy-fs.json" . || rc=$?
-        worst=$(_scan_max "$worst" "$rc")
+        _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     else
         cx_warn "Trivy 不可用"
-        worst=$(_scan_max "$worst" "$EX_PRECOND")
+        _lane_worst=$(_scan_max "$_lane_worst" "$EX_PRECOND")
     fi
 
     # composer audit（原生可用）
@@ -196,7 +201,7 @@ _scan_sca() {
         _scan_step "$EX_SCAN_SCA" "composer audit" \
             env -C "$CX_ROOT/backend" composer audit --no-interaction --format=json \
             > "$CX_REPORT_DIR/sca/composer-audit.json" || rc=$?
-        worst=$(_scan_max "$worst" "$rc")
+        _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     fi
 
     # npm audit（原生可用）
@@ -205,10 +210,10 @@ _scan_sca() {
         _scan_step "$EX_SCAN_SCA" "npm audit" \
             env -C "$CX_ROOT/frontend" npm audit --audit-level=high --json \
             > "$CX_REPORT_DIR/sca/npm-audit.json" || rc=$?
-        worst=$(_scan_max "$worst" "$rc")
+        _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     fi
 
-    return "$worst"
+    return "$_lane_worst"
 }
 
 # ---------------------------------------------------------------------------
@@ -216,6 +221,7 @@ _scan_sca() {
 # ---------------------------------------------------------------------------
 _scan_dast() {
     cx_step "④ DAST — OWASP ZAP"
+    local mode rc=0 _lane_worst=0
     if [[ $(_scan_runner) != docker ]]; then
         cx_warn "ZAP 需要 Docker（本機沒有 Java runtime）"
         cx_dim "  詳見 docker/security/zap/README.md"
@@ -224,9 +230,8 @@ _scan_dast() {
     local target=${ZAP_TARGET:-http://waf:8080}
     local net=${CX_TEST_NETWORK:-pm_test_net}
     docker network inspect "$net" >/dev/null 2>&1 \
-        || cx_die "$EX_PRECOND" "network $net 不存在 —— 先執行 cx test up"
+        || cx_die "$EX_PRECOND" "network $net 不存在。cx test up 待 Phase 2（見 docs/docker-verification.md）"
 
-    local mode rc=0 worst=0
     for mode in detect blocking; do
         cx_info "ZAP baseline（MODSEC_RULE_ENGINE=$mode）…"
         rc=0
@@ -237,12 +242,12 @@ _scan_dast() {
             zap-baseline.py -t "$target" \
                 -c /zap/wrk/../../../docker/security/zap/baseline.conf \
                 -J report.json -r report.html || rc=$?
-        (( rc == 1 )) && worst=$EX_SCAN_DAST
-        (( rc > 1 )) && worst=$EX_PRECOND
+        (( rc == 1 )) && _lane_worst=$EX_SCAN_DAST
+        (( rc > 1 )) && _lane_worst=$EX_PRECOND
     done
     cx_info "產生 WAF 攔截率對照 …"
     _scan_dast_compare
-    return "$worst"
+    return "$_lane_worst"
 }
 
 _scan_dast_compare() {
@@ -280,7 +285,7 @@ PY
 _scan_secrets() {
     cx_step "祕密掃描 — gitleaks（含 git 歷史）"
     cx_have gitleaks || { cx_warn "gitleaks 未安裝"; return "$EX_PRECOND"; }
-    local r worst=0 rc=0 slug
+    local r _lane_worst=0 rc=0 slug
     for r in "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT"; do
         slug=$(basename "$r")
         rc=0
@@ -291,7 +296,7 @@ _scan_secrets() {
                 --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
                 --report-format json \
                 --report-path "$CX_REPORT_DIR/sca/gitleaks-$slug.json" || rc=$?
-        worst=$(_scan_max "$worst" "$rc")
+        _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     done
     return "$worst"
 }
@@ -302,13 +307,23 @@ cmd_scan_main() {
     CX_RUNNER=auto
     while (( $# )); do
         case $1 in
-            --runner)   CX_RUNNER=${2:?}; shift 2 ;;
+            --runner)   [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--runner 需要一個值"
+                        CX_RUNNER=$2; shift 2 ;;
             --runner=*) CX_RUNNER=${1#*=}; shift ;;
             -h|--help)  _scan_usage; return 0 ;;
             *)          cx_die "$EX_USAGE" "未知參數：$1" ;;
         esac
     done
     [[ -n $lane ]] || { _scan_usage; return "$EX_USAGE"; }
+    case $lane in
+        code|sast|sca|dast|secrets|all) : ;;
+        -h|--help) _scan_usage; return 0 ;;
+        *) cx_die "$EX_USAGE" "未知防線：$lane（code|sast|sca|dast|secrets|all）" ;;
+    esac
+    case ${CX_RUNNER:-auto} in
+        docker|native|auto) : ;;
+        *) cx_die "$EX_USAGE" "--runner 只接受 docker|native|auto（收到 $CX_RUNNER）" ;;
+    esac
 
     _scan_ensure_dirs
     cx_info "runner = $(_scan_runner)"
@@ -330,8 +345,6 @@ cmd_scan_main() {
             worst=$(_scan_max "$worst" "$rc")
             rc=$worst
             ;;
-        -h|--help) _scan_usage; return 0 ;;
-        *)       cx_die "$EX_USAGE" "未知防線：$lane" ;;
     esac
 
     cx_step "結果"

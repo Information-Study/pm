@@ -16,11 +16,14 @@ CX_UI=auto
 
 while (( $# )); do
     case $1 in
-        --root)     CX_ROOT_OVERRIDE=${2:?--root 需要路徑}; shift 2 ;;
+        --root)     [[ -n ${2:-} ]] || { printf 'cx: --root 需要路徑\n' >&2; exit 2; }
+                    CX_ROOT_OVERRIDE=$2; shift 2 ;;
         --root=*)   CX_ROOT_OVERRIDE=${1#*=}; shift ;;
-        --mode)     CX_MODE_OVERRIDE=${2:?--mode 需要 dev|test|prod}; shift 2 ;;
+        --mode)     [[ -n ${2:-} ]] || { printf 'cx: --mode 需要 dev|test|prod\n' >&2; exit 2; }
+                    CX_MODE_OVERRIDE=$2; shift 2 ;;
         --mode=*)   CX_MODE_OVERRIDE=${1#*=}; shift ;;
-        --ui)       CX_UI=${2:?--ui 需要 whiptail|dialog|plain}; shift 2 ;;
+        --ui)       [[ -n ${2:-} ]] || { printf 'cx: --ui 需要 whiptail|dialog|plain\n' >&2; exit 2; }
+                    CX_UI=$2; shift 2 ;;
         --ui=*)     CX_UI=${1#*=}; shift ;;
         --dry-run)  CX_DRY_RUN=1; shift ;;
         --yes|-y)   CX_ASSUME_YES=1; shift ;;
@@ -30,6 +33,20 @@ while (( $# )); do
         *)          break ;;
     esac
 done
+# 必須驗證：未驗證的 --ui 會讓 _cx_dlg 的 case 找不到分支而「什麼都不做並回傳 0」，
+# 而 cx_interactive() 只排除 plain，於是 bogus 被當成互動模式 →
+# 每個 cx_confirm 直接回 0 = 已確認 → cx fresh 的刪除閘門、git push、
+# guard remove、branch delete、uninstall 全部形同虛設。
+case $CX_UI in
+    auto|whiptail|dialog|plain) : ;;
+    *) printf 'cx: --ui 只接受 whiptail|dialog|plain（收到 %s）\n' "$CX_UI" >&2; exit 2 ;;
+esac
+# CX_MODE 會被拿去組 -p pm_${CX_MODE} 與 -f docker/compose/${CX_MODE}.yml，
+# 不驗證等於留一個檔名／專案名注入面給 Phase 2。
+case $CX_MODE_OVERRIDE in
+    ''|dev|test|prod) : ;;
+    *) printf 'cx: --mode 只接受 dev|test|prod（收到 %s）\n' "$CX_MODE_OVERRIDE" >&2; exit 2 ;;
+esac
 export CX_DRY_RUN CX_ASSUME_YES CX_UI CX_INVOKE_PWD
 
 # ---- 定位根目錄 ----

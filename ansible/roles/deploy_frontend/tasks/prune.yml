@@ -1,0 +1,103 @@
+---
+# ============================================================================
+# A1 —— 安全的 release 清理（與 deploy_backend 同一套邏輯）
+#
+# 絕對不做：
+#     ls -1dt {{ frontend_releases_dir }}/*/ | tail -n +N | xargs 遞迴刪除
+#   (a) 按 mtime 排序又不排除 current → rollback 之後下一次部署刪掉線上版本；
+#   (b) 變數渲染成空字串 → 作用範圍塌成「/ 底下的每一個目錄」。
+#
+# 前端的 release 特別佔空間（每一份都有自己的 node_modules，
+# 刻意不共用 —— 共用會讓 rollback 拿到新版的相依，那不是回滾），
+# 所以這一步比後端更重要，但也更需要小心。
+# ============================================================================
+
+- name: Prune | 解析 current 的實體路徑
+  ansible.builtin.stat:
+    path: "{{ frontend_current_path }}"
+    follow: false
+  register: frontend_prune_current
+
+- name: Prune | 列出 releases 底下深度 1 的目錄
+  ansible.builtin.find:
+    paths: "{{ frontend_releases_dir }}"
+    file_type: directory
+    recurse: false
+    hidden: false
+    follow: false
+  register: frontend_prune_found
+
+- name: Prune | 組出保護名單
+  ansible.builtin.set_fact:
+    frontend_prune_protected: >-
+      {{ ([frontend_release_path]
+          + ([frontend_prune_current.stat.lnk_source]
+             if (frontend_prune_current.stat.islnk | default(false)) else []))
+         | map('regex_replace', '/+$', '') | select | unique | list }}
+
+- name: Prune | 依 ctime 由新到舊排序
+  ansible.builtin.set_fact:
+    frontend_prune_sorted: >-
+      {{ (frontend_prune_found.files | default([]))
+         | sort(attribute='ctime', reverse=true)
+         | map(attribute='path')
+         | map('regex_replace', '/+$', '')
+         | list }}
+
+- name: Prune | 扣掉保護名單後的候選
+  ansible.builtin.set_fact:
+    frontend_prune_candidates: >-
+      {{ frontend_prune_sorted | reject('in', frontend_prune_protected) | list }}
+
+# current 佔掉一個保留額度，候選裡再留 keep_releases - 1 個。
+# assert.yml 已確保 keep_releases >= 2，切片起點至少是 1。
+- name: Prune | 套用保留數與單次上界
+  ansible.builtin.set_fact:
+    frontend_prune_targets: >-
+      {{ (frontend_prune_candidates[((keep_releases | int) - 1):])[:(frontend_prune_max_delete | int)] }}
+
+- name: Prune | 清理計畫
+  ansible.builtin.debug:
+    msg: >-
+      releases 共 {{ frontend_prune_sorted | length }} 個
+      | 保護：{{ frontend_prune_protected | join(', ') }}
+      | 保留 {{ keep_releases }} 個（含 current）
+      | 本次刪除 {{ frontend_prune_targets | length }} 個：{{ frontend_prune_targets | join(', ') | default('（無）', true) }}
+
+- name: Prune | 未開啟清理時提醒
+  ansible.builtin.debug:
+    msg: >-
+      frontend_prune_enabled 是 false，{{ frontend_prune_targets | length }} 個舊 release
+      會繼續佔用磁碟。每個前端 release 都自帶一份 node_modules，
+      累積速度比後端快得多（{{ frontend_releases_dir }}）。
+  when:
+    - not (frontend_prune_enabled | bool)
+    - frontend_prune_targets | length > 0
+
+- name: Prune | 刪除舊 release（逐條 gate）
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ frontend_prune_targets }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - frontend_prune_enabled | bool
+    - (item | length) > 0
+    - item.startswith(frontend_releases_dir ~ '/')
+    # 父目錄必須「剛好」是 releases，擋掉 releases/x/y 這種深層路徑
+    - (item | dirname) == frontend_releases_dir
+    # basename 必須是合法的 release_id
+    - (item | basename) is match(frontend_release_id_regex)
+    - item not in frontend_prune_protected
+    - item != frontend_release_path
+  register: frontend_prune_deleted
+
+- name: Prune | 清理結果
+  ansible.builtin.debug:
+    msg: >-
+      已刪除 {{ (frontend_prune_deleted.results | default([]))
+                | selectattr('changed', 'defined')
+                | selectattr('changed') | list | length }} 個舊 release，
+      current（{{ frontend_prune_current.stat.lnk_source | default('尚未建立') }}）
+      與本次 release（{{ frontend_release_path }}）都在保護名單內，不會被碰到。

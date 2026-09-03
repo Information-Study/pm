@@ -1,0 +1,123 @@
+---
+# ============================================================================
+# roles/healthcheck/defaults/main.yml
+#
+# 部署流程的最後一個 role。分三層檢查，由內而外：
+#
+#   origin  → 直接打 PM2（{{ frontend_host }}:{{ frontend_port }}），繞過 nginx。
+#             用來區分「前端掛了」與「nginx 設定錯了」。
+#   edge    → 打 127.0.0.1 並自己帶 Host 標頭，繞過 DNS 與 TLS。
+#             用來確認 nginx 真的在服務這個 server_name。
+#   app     → 打真正的公開網址，驗 /up、/、/admin。
+#
+# 三層都有各自的開關，失敗訊息都會指出「該看哪個 log」。
+# ============================================================================
+
+healthcheck_enabled: true
+
+# ── 共用核心（正本：common）──────────────────────────────────────────────────
+app_name: "pm"
+app_slug: "pm"
+app_domain: ""
+app_root: "/srv/{{ app_slug }}"
+app_log_dir: "/var/log/{{ app_slug }}"
+app_state_dir: "/var/lib/{{ app_slug }}"
+frontend_mode_state_file: "{{ app_state_dir }}/frontend_mode"
+backend_root: "{{ app_root }}/backend"
+backend_current_path: "{{ backend_root }}/current"
+backend_shared_dir: "{{ backend_root }}/shared"
+frontend_root: "{{ app_root }}/frontend"
+frontend_current_path: "{{ frontend_root }}/current"
+deploy_user: "deploy"
+deploy_home: "/home/{{ deploy_user }}"
+deploy_user_home: "{{ deploy_home }}"
+web_user: "www-data"
+
+php_version: "8.5"
+php_fpm_service: "php{{ php_version }}-fpm"
+php_log_dir: "/var/log/php"
+
+frontend_mode: "ssr"
+frontend_host: "127.0.0.1"
+frontend_port: 3000
+frontend_instances: 1
+frontend_app_prefix: "{{ app_slug }}-frontend"
+pm2_bin: /usr/bin/pm2
+pm2_home: "{{ deploy_user_home }}/.pm2"
+pm2_systemd_unit: "pm2-{{ deploy_user }}"
+
+# deploy_backend 的 unit 命名（保底鏡像）
+backend_queue_enabled: true
+backend_queue_workers: 2
+backend_queue_unit_prefix: "{{ app_slug }}-queue@"
+backend_schedule_enabled: true
+backend_schedule_timer_unit: "{{ app_slug }}-schedule.timer"
+
+# ── 重試策略 ────────────────────────────────────────────────────────────────
+# php-fpm reload、pm2 reload、nginx reload 之後服務要幾秒才穩定。
+healthcheck_retries: 10
+healthcheck_delay: 3
+healthcheck_timeout: 15
+
+# ── 第一層：origin（直接打 PM2）─────────────────────────────────────────────
+# static 模式沒有 PM2，這一層會自動跳過。
+healthcheck_check_origin: true
+
+# ── 第二層：edge（127.0.0.1 + Host 標頭）────────────────────────────────────
+healthcheck_check_edge: true
+healthcheck_edge_url: "http://127.0.0.1/"
+# nginx 通常會把 http 導到 https，所以這裡「不跟隨轉址」並接受 3xx ——
+# 我們只想確認 nginx 活著而且認得這個 server_name。
+healthcheck_edge_ok_status: [200, 301, 302, 307, 308]
+
+# ── 第三層：app（真正的公開網址）────────────────────────────────────────────
+healthcheck_check_app: true
+healthcheck_scheme: "https"
+healthcheck_base_url: "{{ healthcheck_scheme }}://{{ app_domain }}"
+
+# Laravel 的健康檢查端點。backend/bootstrap/app.php 的 withRouting()
+# 有 health: '/up'，所以這條路由確定存在。
+healthcheck_health_path: "/up"
+healthcheck_health_ok_status: [200]
+
+healthcheck_frontend_path: "/"
+healthcheck_frontend_ok_status: [200]
+
+# Filament 的面板路徑。AdminPanelProvider 是 ->id('admin')->path('admin')->login()，
+# 未登入時 Filament 會導向 /admin/login，所以 200 與 302 都算正常。
+healthcheck_admin_path: "/admin"
+healthcheck_admin_ok_status: [200, 302]
+
+# A5：TLS 有先有雞先有蛋的問題 —— nginx 要先用 ssl-cert 的 snakeoil 憑證開機，
+# 憑證簽發之後才換成真的。憑證還是 snakeoil 的時候，驗證一定失敗。
+# 所以這裡「自動偵測」：Let's Encrypt 的 fullchain 存在才驗證憑證。
+healthcheck_validate_certs: true
+healthcheck_tls_cert_path: "/etc/letsencrypt/live/{{ app_domain }}/fullchain.pem"
+healthcheck_tls_autodetect: true
+
+# ── systemd ─────────────────────────────────────────────────────────────────
+healthcheck_check_services: true
+# 這個清單之外還會自動補上 queue worker 實例與（ssr/spa 時的）PM2 unit。
+healthcheck_core_units:
+  - "{{ php_fpm_service }}.service"
+  - "nginx.service"
+healthcheck_check_mysql_unit: true      # 只在本機是 db_primary 時檢查
+healthcheck_check_queue_units: true
+healthcheck_check_schedule_timer: true
+healthcheck_check_pm2_unit: true
+
+# ── PM2 ─────────────────────────────────────────────────────────────────────
+healthcheck_check_pm2_processes: true
+
+# ── 失敗訊息要指向的 log ────────────────────────────────────────────────────
+# nginx_myguard role 把 nginx 的 log 放在 {{ app_log_dir }} 而不是 /var/log/nginx
+#（nginx_error_log / waf_audit_log）。用 default() 接過來，
+# 這樣單獨跑 healthcheck（沒載入 nginx role 的變數）時也有一個合理的值。
+healthcheck_nginx_error_log: "{{ nginx_error_log | default(app_log_dir ~ '/nginx-error.log') }}"
+healthcheck_waf_audit_log: "{{ waf_audit_log | default(app_log_dir ~ '/modsec_audit.log') }}"
+healthcheck_laravel_log: "{{ backend_shared_dir }}/storage/logs/laravel.log"
+
+# ── 收尾 ────────────────────────────────────────────────────────────────────
+# true  = 任何一項失敗就中止（正式環境的預設）
+# false = 全部跑完再一次列出所有失敗項（除錯時比較好用）
+healthcheck_fail_on_error: true

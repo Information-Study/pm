@@ -1,0 +1,5 @@
+---
+healthcheck_managed_pm2_pattern: "^{{ frontend_app_prefix | regex_escape }}-[0-9]+$"
+# 三層檢查共用的 URL 組法。base_url 結尾不帶斜線，path 一定帶前導斜線。
+healthcheck_base_url_clean: "{{ healthcheck_base_url | regex_replace('/+$', '') }}"
+healthcheck_edge_url_clean: "{{ healthcheck_edge_url | regex_replace('/+$', '') }}"

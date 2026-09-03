@@ -1,0 +1,81 @@
+---
+# key:generate 只在「shared/.env 還沒有 APP_KEY」時執行一次。
+#
+# 為什麼放在 composer install 之後：artisan 需要 vendor/autoload.php。
+# composer 的 post-autoload-dump（package:discover / filament:upgrade）在
+# APP_KEY 還是空的時候就會跑，這是安全的 —— 那兩個指令不會解析 encrypter，
+# Laravel 只有在真的要加解密時才會丟
+# "No application encryption key has been specified"。
+# 若將來有套件在 discover 階段就需要金鑰，請改成在 vault 裡先給 vault_app_key。
+#
+# 為什麼 env.j2 把空的 APP_KEY 寫成不加引號的 `APP_KEY=`：
+# Laravel 的 KeyGenerateCommand 用 /^APP_KEY=<現值>/m 做替換。
+# 若寫成 APP_KEY=""，現值會被解析成空字串，替換後會留下尾巴變成
+#   APP_KEY=base64:xxxx""
+# 也就是一把永遠錯的金鑰。不加引號才會被乾淨取代。
+
+- name: AppKey | 是否需要產生
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'shared/.env 已有 APP_KEY，略過 key:generate'
+         if (backend_app_key_effective | string | length) > 0
+         else 'shared/.env 沒有 APP_KEY，將執行一次 artisan key:generate --force' }}
+
+- name: AppKey | artisan key:generate --force
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ php_cli_binary }}"
+      - artisan
+      - "key:generate"
+      - --force
+      - --no-interaction
+      - --no-ansi
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_keygen
+  changed_when: backend_keygen.rc == 0
+  failed_when: backend_keygen.rc != 0
+  when:
+    - (backend_app_key_effective | string | length) == 0
+    - not ansible_check_mode
+  no_log: true
+
+# key:generate 是透過 <release>/.env 這個 symlink 寫進 shared/.env 的
+#（PHP 的 file_put_contents 會跟隨 symlink）。再讀一次確認真的落地。
+- name: AppKey | 重新讀取 shared/.env
+  ansible.builtin.slurp:
+    src: "{{ backend_shared_env_path }}"
+  register: backend_env_slurp_after
+  when: not ansible_check_mode
+  no_log: true
+
+- name: AppKey | 解析最終的 APP_KEY
+  ansible.builtin.set_fact:
+    backend_app_key_final: >-
+      {{ ((backend_env_slurp_after.content | default('') | b64decode)
+          | regex_search('(?m)^[ \\t]*APP_KEY[ \\t]*=[ \\t]*"?([^"\\r\\n]*)"?[ \\t]*$', '\\1')
+          | default([''], true) | first | default('', true)) | trim }}
+  when: not ansible_check_mode
+  no_log: true
+
+- name: AppKey | 最終必須是合法的 base64 金鑰
+  ansible.builtin.assert:
+    that:
+      - backend_app_key_final is defined
+      - backend_app_key_final is match('^base64:[A-Za-z0-9+/]{40,}={0,2}$')
+    quiet: true
+    fail_msg: >-
+      {{ backend_shared_env_path }} 裡的 APP_KEY 不是合法的
+      base64:<32 bytes> 形式。
+      沒有 APP_KEY，session、簽章網址、加密欄位全部會丟
+      "No application encryption key has been specified."。
+      手動修：
+        sudo -u {{ deploy_user }} {{ php_cli_binary }} \
+          {{ backend_release_path }}/artisan key:generate --force
+      然後確認 {{ backend_shared_env_path }} 的 APP_KEY 那一行沒有殘留引號
+      （例如 APP_KEY=base64:xxx"" 就是被 KeyGenerateCommand 的替換規則咬到了）。
+  when: not ansible_check_mode

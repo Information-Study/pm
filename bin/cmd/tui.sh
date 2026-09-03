@@ -101,8 +101,16 @@ _tui_git_branch() {
                 ;;
             switch)
                 local -a br=(); local b f
-                while read -r b; do [[ -n $b ]] && br+=("$b" "分支"); done \
-                    < <(git -C "$CX_ROOT" for-each-ref --format='%(refname:short)' refs/heads/)
+                # 只列「三個 repo 都有」的分支 —— _git_branch_switch 要求三者皆存在，
+                # 只列主庫的話使用者會選到一個註定失敗的分支。
+                # 結尾的 || true 是必要的：<(...) 子 shell 裡 errexit 仍有效。
+                while read -r b; do
+                    [[ -n $b ]] || continue
+                    git -C "$CX_ROOT/backend"  show-ref --verify --quiet "refs/heads/$b" || continue
+                    git -C "$CX_ROOT/frontend" show-ref --verify --quiet "refs/heads/$b" || continue
+                    br+=("$b" "三個 repo 皆有")
+                done < <(git -C "$CX_ROOT" for-each-ref --format='%(refname:short)' refs/heads/ \
+                         2>/dev/null || true)
                 (( ${#br[@]} )) || { cx_msg "切換分支" "主庫沒有任何分支。"; continue; }
                 f=$(mktemp)
                 if _cx_dlg --title "切換分支" --menu "\n選擇要切換到的分支：" 20 70 10 \

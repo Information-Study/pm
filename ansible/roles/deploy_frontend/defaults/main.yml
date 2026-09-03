@@ -1,0 +1,113 @@
+---
+# ============================================================================
+# roles/deploy_frontend/defaults/main.yml
+#
+# Nuxt 4 的 releases / shared / current 佈署，三種模式：
+#   ssr    → nuxt build                    → .output/server/index.mjs → PM2 fork
+#   spa    → NUXT_SSR=false nuxt build     → .output/server/index.mjs → PM2 fork
+#   static → NUXT_SSR=false nuxt generate  → .output/public/          → Nginx 直送
+#
+# 目錄骨架已由 common role 建好（A8）；ecosystem.config.cjs 與 PM2 本身
+# 由 nodejs_pm2 role 準備。本 role 只負責 clone / build / 換版 / 啟動與清理。
+# ============================================================================
+
+# ── 共用核心（正本：common）──────────────────────────────────────────────────
+app_name: "pm"
+app_slug: "pm"
+app_env: "production"
+app_domain: ""
+app_root: "/srv/{{ app_slug }}"
+app_shared_dir: "{{ app_root }}/shared"
+app_log_dir: "/var/log/{{ app_slug }}"
+app_state_dir: "/var/lib/{{ app_slug }}"
+frontend_mode_state_file: "{{ app_state_dir }}/frontend_mode"
+frontend_root: "{{ app_root }}/frontend"
+frontend_releases_dir: "{{ frontend_root }}/releases"
+frontend_shared_dir: "{{ frontend_root }}/shared"
+frontend_current_path: "{{ frontend_root }}/current"
+frontend_current: "{{ frontend_current_path }}"
+deploy_user: "deploy"
+deploy_group: "deploy"
+deploy_home: "/home/{{ deploy_user }}"
+deploy_user_home: "{{ deploy_home }}"
+web_group: "www-data"
+
+# nodejs_pm2 role 的值（這裡是保底鏡像）
+nodejs_bin: /usr/bin/node
+npm_bin: /usr/bin/npm
+pm2_bin: /usr/bin/pm2
+pm2_home: "{{ deploy_user_home }}/.pm2"
+pm2_ecosystem_dir: "{{ app_shared_dir }}/pm2"
+pm2_ecosystem_path: "{{ pm2_ecosystem_dir }}/ecosystem.config.cjs"
+pm2_systemd_unit: "pm2-{{ deploy_user }}"
+pm2_prune_stale_apps: true
+
+# A20：nuxt.config.ts 已經是 `const ssr = process.env.NUXT_SSR !== 'false'`
+#（不是舊版那種寫死 ssr: false），所以預設可以放心用 ssr。
+# preflight 仍會 grep 一次，讓錯誤在 5 秒內出現而不是等 npm ci 跑完。
+frontend_mode: "ssr"
+frontend_host: "127.0.0.1"
+frontend_port: 3000
+frontend_instances: 1
+frontend_app_prefix: "{{ app_slug }}-frontend"
+
+# ── release 識別（與 deploy_backend 同一個 release_id）──────────────────────
+release_id: "{{ ansible_facts['date_time']['iso8601_basic_short'] | default('') }}"
+frontend_release_id_regex: '^[A-Za-z0-9][A-Za-z0-9._-]{3,63}$'
+frontend_release_path: "{{ frontend_releases_dir }}/{{ release_id }}"
+
+# ── git ─────────────────────────────────────────────────────────────────────
+frontend_repo_url: "https://github.com/Information-Study/pm-frontend.git"
+frontend_repo_version: "main"
+frontend_repo_depth: 1
+frontend_repo_single_branch: true
+frontend_repo_force: false
+
+# ── npm / build ─────────────────────────────────────────────────────────────
+frontend_npm_cache_dir: "{{ deploy_user_home }}/.npm"
+# npm ci 一定要帶 --include=dev。Nuxt 的 build 需要建置期相依，
+# 而 NODE_ENV=production 在某些 npm 版本會被解讀成 omit=dev。
+# 明寫比依賴 npm 的預設行為安全。
+frontend_npm_ci_args:
+  - "--include=dev"
+  - "--no-audit"
+  - "--no-fund"
+  - "--loglevel=warn"
+frontend_npm_timeout: 1800
+frontend_build_timeout: 1800
+# Nuxt 4 的 build 尖峰大約 1.5 GB。preflight 要求至少 1800 MB（RAM + swap）。
+frontend_build_heap_mb: 2048
+
+# 空字串 = 同源。nginx 把 / 給 Nuxt、/api|/admin|/up|/storage 給 PHP，
+# 所以同源是正確預設；frontend/nuxt.config.ts 的 runtimeConfig.public.apiBaseUrl
+# 預設也是空字串。
+frontend_public_api_base_url: ""
+frontend_extra_build_env: {}
+
+# ── 建置產物驗證 ────────────────────────────────────────────────────────────
+# spa 與 static 的 NUXT_PUBLIC_API_BASE_URL 是 **build 時** 烘進 bundle 的
+#（Nitro 把 runtimeConfig.public 序列化進用戶端 chunk）；
+# 只有 ssr 才能在啟動時用環境變數覆寫。
+# 所以值非空時一定要在 .output/public/_nuxt/ 裡 grep 得到，否則就是
+# 「build 時沒帶對環境變數」，而這種錯誤在瀏覽器打開之前不會有任何徵兆。
+frontend_verify_baked_api_base_url: true
+# 值為空（同源）時沒有東西可以 grep。這個開關會改成檢查
+# 「_nuxt 裡沒有出現任何 http(s):// 開頭的 apiBaseUrl」——
+# 依賴 Nitro 目前把它壓成 apiBaseUrl:"" 的寫法，minifier 換了就可能誤判，
+# 所以預設只印出觀察到的內容當提示，不讓它中止部署。
+frontend_assert_empty_api_base_url: false
+
+# ── PM2 ─────────────────────────────────────────────────────────────────────
+# A10：一律 fork，絕不 cluster。
+# cluster 走 CJS require() 載不動 Nuxt 的 ESM .mjs（ERR_REQUIRE_ESM；
+# pm2#5946、nuxt#13916），就算換到能 require ESM 的 Node，
+# Nitro 的 top-level await 也會變成 ERR_REQUIRE_ASYNC_MODULE。
+# 要水平擴充就開 N 個 fork 綁 N 個埠，nginx upstream 用 least_conn。
+frontend_pm2_manage: true
+frontend_pm2_wait_retries: 20
+frontend_pm2_wait_delay: 3
+
+# ── release prune（A1，與 deploy_backend 同一套邏輯）────────────────────────
+keep_releases: 5
+frontend_prune_enabled: true
+frontend_prune_max_delete: 20

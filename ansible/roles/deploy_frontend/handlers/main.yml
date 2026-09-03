@@ -1,0 +1,18 @@
+---
+# PM2 的狀態收斂是 pm2.yml 裡的顯式任務（必須在換版之後才跑），不是 handler。
+# 這裡只留一個：把目前的 process 清單存進 dump.pm2，供開機 resurrect。
+#
+# --force 是必要的：static 模式下要存的是「空清單」，
+# 少了它 pm2 會印 "PM2 is not managing any process, skipping save..." 而不寫檔，
+# 下次開機 resurrect 就會把上一個模式的 process 又叫回來。
+- name: deploy_frontend | pm2 save
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ pm2_bin }}", save, "--force"]
+  environment:
+    PM2_HOME: "{{ pm2_home }}"
+    HOME: "{{ deploy_user_home }}"
+  register: frontend_pm2_save_handler
+  changed_when: frontend_pm2_save_handler.rc == 0
+  failed_when: frontend_pm2_save_handler.rc != 0

@@ -2,9 +2,11 @@
 # cx doctor — 檢查工具鏈與環境，並明確指出哪些能力目前被阻擋。
 
 _dr_pass=0 _dr_warn=0 _dr_fail=0
-_ok()   { printf '  \033[32m✔\033[0m %-34s %s\n' "$1" "${2:-}"; _dr_pass=$((_dr_pass+1)); }
-_wr()   { printf '  \033[33m⚠\033[0m %-34s %s\n' "$1" "${2:-}"; _dr_warn=$((_dr_warn+1)); }
-_fl()   { printf '  \033[31m✘\033[0m %-34s %s\n' "$1" "${2:-}"; _dr_fail=$((_dr_fail+1)); }
+# 與 cx_* 家族一致：輸出走 stderr，顏色由 common.sh 依 [[ -t 2 ]] 決定，
+# 這樣 `cx doctor > report.txt` 才不會夾雜跳脫序列、也不會把區段標題丟到另一個串流。
+_ok()   { printf '  %s✔%s %-34s %s\n' "$C_GRN" "$C_RST" "$1" "${2:-}" >&2; _dr_pass=$((_dr_pass+1)); }
+_wr()   { printf '  %s⚠%s %-34s %s\n' "$C_YLW" "$C_RST" "$1" "${2:-}" >&2; _dr_warn=$((_dr_warn+1)); }
+_fl()   { printf '  %s✘%s %-34s %s\n' "$C_RED" "$C_RST" "$1" "${2:-}" >&2; _dr_fail=$((_dr_fail+1)); }
 
 cmd_doctor_main() {
     cx_step "專案"
@@ -19,8 +21,8 @@ cmd_doctor_main() {
             _ok "Docker daemon" "$(docker version --format '{{.Server.Version}}')"
         else
             _fl "Docker daemon" "CLI 在 PATH 但 daemon 不通"
-            printf '      \033[2m開啟 Docker Desktop → Settings → Resources → WSL Integration\033[0m\n'
-            printf '      \033[2m阻擋：Phase 2 全部、Semgrep、ZAP、SonarQube、WAF\033[0m\n'
+            cx_dim '開啟 Docker Desktop → Settings → Resources → WSL Integration'
+            cx_dim '阻擋：Phase 2 全部、Semgrep、ZAP、SonarQube、WAF'
         fi
     else
         _fl "Docker" "未安裝"
@@ -46,8 +48,8 @@ cmd_doctor_main() {
         php -m | grep -qix pdo_sqlite || opt+=("pdo_sqlite")
         (( ${#opt[@]} == 0 )) && _ok "PHP 選用擴充" "齊備" \
             || { _wr "PHP 選用擴充缺少" "${opt[*]}"
-                 (( ${#pkgs[@]} )) && printf '      \033[2msudo apt install -y %s\033[0m\n' "${pkgs[*]}"
-                 printf '      \033[2m阻擋：php artisan test（phpunit.xml 用記憶體 sqlite）\033[0m\n'; }
+                 (( ${#pkgs[@]} )) && cx_dim "sudo apt install -y ${pkgs[*]}"
+                 cx_dim '阻擋：php artisan test（phpunit.xml 用記憶體 sqlite）'; }
     else
         _fl "PHP" "未安裝"
     fi
@@ -80,8 +82,8 @@ cmd_doctor_main() {
         _ok "ansible-playbook" "$(ansible-playbook --version 2>/dev/null | head -1 | awk '{print $NF}' | tr -d ']')"
     else
         _wr "ansible" "未安裝 —— 只能用 cx lint 做靜態檢查"
-        printf '      \033[2msudo apt install -y ansible-core（或 pipx install ansible）\033[0m\n'
-        printf '      \033[2m阻擋：Phase 5 連 --syntax-check 都跑不了\033[0m\n'
+        cx_dim 'sudo apt install -y ansible-core（或 pipx install ansible）'
+        cx_dim '阻擋：Phase 5 連 --syntax-check 都跑不了'
     fi
     cx_have ansible-lint && _ok "ansible-lint" || _wr "ansible-lint" "未安裝"
 
@@ -100,7 +102,7 @@ cmd_doctor_main() {
     (( n == tot )) && _ok "push guard" "$n/$tot 個 repo" || _fl "push guard" "只有 $n/$tot —— 執行 cx git guard install"
 
     cx_step "結果"
-    printf '  通過 %d  警告 %d  失敗 %d\n' "$_dr_pass" "$_dr_warn" "$_dr_fail"
+    printf '  通過 %d  警告 %d  失敗 %d\n' "$_dr_pass" "$_dr_warn" "$_dr_fail" >&2
     if (( _dr_fail )); then
         cx_warn "有阻擋項目。未驗證清單見 claude.md §12"
         return "$EX_PRECOND"

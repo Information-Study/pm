@@ -1,0 +1,21 @@
+---
+# 由 defaults 推導出來的值。放 vars/ 是刻意的：不希望被個別覆蓋成互相矛盾的組合。
+
+# systemd unit 名稱。queue 用 template unit（@），縮放實例數只要改
+# backend_queue_workers，不必新增檔案。
+backend_queue_unit_template: "{{ app_slug }}-queue@.service"
+backend_queue_unit_prefix: "{{ app_slug }}-queue@"
+backend_schedule_service_unit: "{{ app_slug }}-schedule.service"
+backend_schedule_timer_unit: "{{ app_slug }}-schedule.timer"
+backend_systemd_dir: "/etc/systemd/system"
+
+# 換版用的臨時 symlink。mv -T 從這裡搬到 current，rename(2) 是原子的。
+backend_current_staging_link: "{{ backend_current_path }}.new"
+
+# .env 值的安全檢查：phpdotenv 對雙引號字串會處理 \\ \" 轉義，並對 ${...}
+# 做巢狀變數展開。換行、雙引號、反斜線、${ 都會讓 .env 解析出非預期的值，
+# 與其產生一個「看起來成功但連不上資料庫」的部署，不如在這裡失敗。
+backend_env_forbidden_regex: '[\r\n"\\]|\$\{'
+
+backend_premigrate_dump_path: >-
+  {{ backend_backup_dir }}/{{ app_slug }}-premigrate-{{ release_id }}.sql{{ '.gz' if backend_backup_gzip | bool else '' }}

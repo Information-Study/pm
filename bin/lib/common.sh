@@ -29,7 +29,9 @@ cx_on_err() {
     local rc=$? cmd=$BASH_COMMAND
     cx_error "指令失敗 (exit $rc)：$cmd"
     local i
-    for ((i = 1; i < ${#FUNCNAME[@]} - 1; i++)); do
+    # FUNCNAME[0] 是 cx_on_err 自己，所以從 1 開始；但上界不能減 1，
+    # 否則最外層的呼叫者永遠不會被印出來。
+    for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
         cx_dim "  於 ${FUNCNAME[i]}() ${BASH_SOURCE[i]}:${BASH_LINENO[i-1]}"
     done
     exit "$rc"
@@ -73,4 +75,15 @@ cx_run() {
 cx_q() { local a out=(); for a in "$@"; do printf -v a '%q' "$a"; out+=("$a"); done; printf '%s' "${out[*]}"; }
 
 cx_have() { command -v "$1" >/dev/null 2>&1; }
-cx_docker_ok() { cx_have docker && docker version --format '{{.Server.Version}}' >/dev/null 2>&1; }
+# 記憶化：一次 cx doctor 會問 4 次，daemon 掛在無回應的 TCP socket 上時
+# 每次都要等 timeout。command -v docker 不能拿來判斷（WSL 上 CLI 在 PATH 但 daemon 不通）。
+cx_docker_ok() {
+    if [[ -z ${_CX_DOCKER_OK:-} ]]; then
+        if cx_have docker && docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+            _CX_DOCKER_OK=0
+        else
+            _CX_DOCKER_OK=1
+        fi
+    fi
+    return "$_CX_DOCKER_OK"
+}

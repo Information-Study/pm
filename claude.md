@@ -599,20 +599,22 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 
 ## 7. 常用指令對照
 
+> ⚠ 標記 **[待實作]** 的動詞目前不存在，打了會得到 exit 2。實作狀態以 `cx help` 為準。
+
 | 目的 | `cx` | 原生等價 |
 |---|---|---|
-| 起開發環境 | `cx dev up -d` | `docker compose --project-directory . -p pm_dev -f docker-compose.yml -f docker/compose/dev.yml --env-file .env --env-file docker/env/dev.env up -d` |
+| 起開發環境 | `cx dev up -d` **[待實作 Phase 2]** | `docker compose --project-directory . -p pm_dev -f docker-compose.yml -f docker/compose/dev.yml --env-file .env --env-file docker/env/dev.env up -d` |
 | artisan | `cx art migrate` | `… run --rm --entrypoint php app artisan migrate` |
 | composer | `cx composer install` | `… run --rm --no-deps --entrypoint composer app install` |
 | npm | `cx npm ci` | `… run --rm --no-deps --entrypoint npm nuxt ci` |
-| 後端測試 | `cx test back` | `… run --rm --entrypoint php app artisan test` |
-| 進 shell | `cx sh app` | `… exec app sh` |
-| 資料庫 | `cx db migrate\|seed\|fresh\|dump\|restore` | — |
+| 後端測試 | `cx test back` **[待實作]** | `… run --rm --entrypoint php app artisan test` |
+| 進 shell | `cx sh app` **[待實作 Phase 2]** | `… exec app sh` |
+| 資料庫 | `cx db …` **[待實作 Phase 2]** | — |
 | 掃描 | `cx scan all` | 見 §5 |
 | Git 同步 | `cx git sync\|save\|status` |
 | 建立遠端 | `cx git remote-init`（gh 建 3 個 public repo） |
 | 推送 | `cx git push`（白名單 + 祕密掃描 + 子模組順序） |
-| 部署 | `cx deploy check\|run\|rollback` | `ansible-playbook -i inventory/hosts.yml site.yml` |
+| 部署 | `cx deploy …` **[待實作 Phase 5]** | `ansible-playbook -i inventory/hosts.yml site.yml` |
 | 診斷 | `cx doctor` | — |
 
 `cx` 可從專案任何子目錄執行（向上找 `.cxroot` 標記 —— **不用 `git rev-parse`**，
@@ -690,9 +692,9 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 ├── .gitignore              主庫（PUBLIC repo，git init 前即就位）
 ├── claude.md               本文件
 ├── bin/
-│   ├── lib/{common,ui,archive}.sh
-│   ├── lib/guard.sh        push guard（白名單 + 黑名單）
-│   └── cmd/{fresh,git,help}.sh
+│   ├── lib/{common,ui,archive,guard}.sh + ansible_lint.py
+│   ├── cmd/{tui,doctor,lint,scan,git,fresh,install,art,composer,npm,help}.sh
+│   └── completion/cx.bash  bash 補全
 ├── templates/gitignore/{main,backend,frontend}
 ├── docker/
 │   ├── php/                舊 PHP 容器設定（待 Phase 2 重寫為多階段）

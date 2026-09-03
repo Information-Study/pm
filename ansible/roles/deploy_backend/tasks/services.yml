@@ -1,0 +1,113 @@
+---
+# queue worker（對應 Docker 的 supervisord [program:laravel-queue]）
+# 與 scheduler（對應 `* * * * * php artisan schedule:run`）。
+#
+# queue 用 systemd 的 template unit（{{ backend_queue_unit_prefix }}N.service），
+# 縮放實例數只要改 backend_queue_workers，不用新增或刪除檔案。
+
+# After= 只列真的存在的 unit（探測在 assert.yml 做過了）。
+# 列一個不存在的 unit 不會讓 systemd 報錯，但會讓 `systemctl list-dependencies`
+# 一直顯示紅字，除錯時很干擾。
+- name: Services | 組出 After= 清單
+  ansible.builtin.set_fact:
+    backend_service_after_effective: >-
+      {{ (backend_service_after | default([]))
+         + ([php_fpm_service ~ '.service']
+            if ((backend_service_after_php_fpm | bool) and (backend_php_fpm_unit_present | bool))
+            else [])
+         + (['mysql.service']
+            if ((backend_service_after_mysql | bool) and (backend_mysql_unit_present | bool))
+            else []) }}
+
+# ── queue worker ────────────────────────────────────────────────────────────
+- name: Services | 佈署 queue worker 的 systemd template unit
+  ansible.builtin.template:
+    src: queue.service.j2
+    dest: "{{ backend_systemd_dir }}/{{ backend_queue_unit_template }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: backend_queue_unit_written
+  notify: deploy_backend | daemon-reload
+
+- name: Services | 立即 daemon-reload（後面要馬上 enable/start）
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: backend_queue_unit_written.changed
+
+# 1..backend_queue_workers 啟用；backend_queue_workers+1..max 停用。
+# 這是「有界的收斂」而不是刪除：上界由 backend_queue_max_workers 固定，
+# 只會碰到 {{ backend_queue_unit_prefix }}N 這個命名空間內的 unit。
+- name: Services | 對齊 queue worker 實例數
+  ansible.builtin.systemd_service:
+    name: "{{ backend_queue_unit_prefix }}{{ item }}.service"
+    enabled: "{{ (item | int) <= (backend_queue_workers | int) and (backend_queue_enabled | bool) }}"
+    state: >-
+      {{ 'started'
+         if ((item | int) <= (backend_queue_workers | int) and (backend_queue_enabled | bool))
+         else 'stopped' }}
+  loop: "{{ range(1, (backend_queue_max_workers | int) + 1) | list }}"
+  loop_control:
+    label: "{{ backend_queue_unit_prefix }}{{ item }}.service"
+  when:
+    - (backend_queue_max_workers | int) >= (backend_queue_workers | int)
+    - not ansible_check_mode
+
+- name: Services | queue 實例對齊結果
+  ansible.builtin.debug:
+    msg: >-
+      queue worker：啟用 1..{{ backend_queue_workers if backend_queue_enabled | bool else 0 }}
+      （unit {{ backend_queue_unit_prefix }}N.service），
+      {{ (backend_queue_workers | int) + 1 }}..{{ backend_queue_max_workers }} 停用。
+      log：{{ app_log_dir }}/queue-N.log
+
+# ── scheduler ───────────────────────────────────────────────────────────────
+- name: Services | 佈署 scheduler 的 service
+  ansible.builtin.template:
+    src: schedule.service.j2
+    dest: "{{ backend_systemd_dir }}/{{ backend_schedule_service_unit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: backend_schedule_service_written
+  notify: deploy_backend | daemon-reload
+
+- name: Services | 佈署 scheduler 的 timer
+  ansible.builtin.template:
+    src: schedule.timer.j2
+    dest: "{{ backend_systemd_dir }}/{{ backend_schedule_timer_unit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: backend_schedule_timer_written
+  notify: deploy_backend | daemon-reload
+
+- name: Services | daemon-reload（scheduler）
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: backend_schedule_service_written.changed or backend_schedule_timer_written.changed
+
+# 只 enable/start timer。service 本身是 Type=oneshot，由 timer 觸發，
+# 不要 enable 它（會在開機時被跑一次，而且 systemd 會警告 oneshot 沒有 Install）。
+- name: Services | 啟用 scheduler timer
+  ansible.builtin.systemd_service:
+    name: "{{ backend_schedule_timer_unit }}"
+    enabled: "{{ backend_schedule_enabled | bool }}"
+    state: "{{ 'started' if backend_schedule_enabled | bool else 'stopped' }}"
+  when: not ansible_check_mode
+
+# 換版之後強制重啟 worker。上面那個「對齊實例數」用的是 state: started，
+# 對「已經在跑」的 unit 是 no-op —— 舊 worker 會抱著舊 release 的程式碼不放，
+# 直到 --max-time（{{ backend_queue_max_time }} 秒）到期才自己退出。
+- name: Services | 換版後重啟 queue worker
+  ansible.builtin.systemd_service:
+    name: "{{ backend_queue_unit_prefix }}{{ item }}.service"
+    state: restarted
+  loop: "{{ range(1, (backend_queue_workers | int) + 1) | list }}"
+  loop_control:
+    label: "{{ backend_queue_unit_prefix }}{{ item }}.service"
+  when:
+    - backend_queue_enabled | bool
+    - backend_queue_restart_on_deploy | bool
+    - backend_switch_changed | default(false) | bool
+    - not ansible_check_mode

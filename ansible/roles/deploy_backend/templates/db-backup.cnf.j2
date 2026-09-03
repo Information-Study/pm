@@ -1,0 +1,30 @@
+# {{ ansible_managed }}
+# ============================================================================
+# {{ backend_backup_defaults_file }} —— 0600 root:root
+#
+# 存在的理由：不要把密碼放進 mysqldump 的 argv。
+# 命令列參數會出現在 ps 的輸出與 /proc/<pid>/cmdline，同機的任何帳號都讀得到。
+# --defaults-file 是唯一乾淨的做法（而且必須是 mysqldump 的第一個參數）。
+#
+# 為什麼用「應用帳號」而不是 root：
+#   * mysql role 的 mysql_remove_remote_root 會刪掉 root@'%'，而
+#     skip-name-resolve 之下並沒有 root@'127.0.0.1'（只有 root@'localhost'），
+#     所以 root 走 TCP 一定是 1045（A3 的另一面）；
+#   * A3 已經替應用帳號同時建了 'localhost' 與 '127.0.0.1' 兩筆授權，
+#     而 mysql_app_priv 是 {{ backend_db_database }}.*:ALL，
+#     涵蓋 SELECT / LOCK TABLES / SHOW VIEW / TRIGGER / EVENT，
+#     加上 --no-tablespaces 之後就不需要全域的 PROCESS 權限；
+#   * 資料庫搬到別台機器時這份設定原樣可用，不必在那邊開 root。
+# ============================================================================
+[client]
+host={{ backend_db_host }}
+port={{ backend_db_port | int }}
+user={{ backend_db_username }}
+password="{{ backend_db_password | string | replace('\\', '\\\\') | replace('"', '\\"') }}"
+
+[mysqldump]
+# 單一 row 很大（LONGBLOB 附件）時，預設的 packet 會讓 dump 中斷。
+# mysql role 的 mysql_max_allowed_packet_mb 是 app_max_upload_mb + 32，
+# 這裡取一個明顯更大的固定值即可。
+max_allowed_packet=512M
+default-character-set=utf8mb4

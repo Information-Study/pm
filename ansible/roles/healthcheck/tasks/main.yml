@@ -1,0 +1,37 @@
+---
+# healthcheck 是流程的最後一個 role。它只讀不寫，任何一項都不會改變目標端狀態。
+#
+# 設計原則：每一個 uri / command 都先 ignore_errors 收集結果，再用 assert
+# 統一判斷。這樣「三層都失敗」時你會一次看到三層的訊息，
+# 而不是在第一層就中止、以為只有 PM2 有問題。
+
+- name: Healthcheck | 未啟用
+  ansible.builtin.debug:
+    msg: "healthcheck_enabled 是 false，跳過所有檢查。"
+  when: not (healthcheck_enabled | bool)
+  tags: [healthcheck]
+
+- name: Healthcheck | 執行
+  when: healthcheck_enabled | bool
+  tags: [healthcheck]
+  block:
+    - name: Healthcheck | 前置與環境探測
+      ansible.builtin.import_tasks: prepare.yml
+
+    - name: Healthcheck | systemd unit
+      ansible.builtin.import_tasks: services.yml
+
+    - name: Healthcheck | PM2 process
+      ansible.builtin.import_tasks: pm2.yml
+
+    - name: Healthcheck | 第一層 origin（直接打 PM2）
+      ansible.builtin.import_tasks: origin.yml
+
+    - name: Healthcheck | 第二層 edge（127.0.0.1 + Host 標頭）
+      ansible.builtin.import_tasks: edge.yml
+
+    - name: Healthcheck | 第三層 app（公開網址 /up、/、/admin）
+      ansible.builtin.import_tasks: app.yml
+
+    - name: Healthcheck | 彙整與判定
+      ansible.builtin.import_tasks: report.yml

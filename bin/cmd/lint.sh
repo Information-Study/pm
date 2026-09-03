@@ -14,6 +14,7 @@ cmd_lint_main() {
             printf '  這是 ansible-playbook --syntax-check 的替代品，不是等價物。\n' >&2
             return 0 ;;
     esac
+    (( $# <= 1 )) || cx_die "$EX_USAGE" "lint 只接受一個目錄（收到 $# 個參數）"
     local target="${1:-$CX_ROOT/ansible}"
     [[ $target == /* ]] || target=$(cx_resolve "$target")
     [[ -d $target ]] || cx_die "$EX_PRECOND" "找不到 $target"

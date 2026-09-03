@@ -23,3 +23,12 @@ paths = [
     '''(^|/)\.nuxt/''',
     '''(^|/)\.output/''',
 ]
+
+[[allowlists]]
+description = "APT/GPG 公鑰指紋是公開資訊，用來驗證套件來源，不是憑證"
+regexTarget = "line"
+regexes = [
+    '''(?i)_key_fingerprint:\s*"?[0-9A-Fa-f]{40}"?''',
+    '''(?i)signing_key_fingerprint''',
+    '''keyserver\.ubuntu\.com/pks/lookup''',
+]

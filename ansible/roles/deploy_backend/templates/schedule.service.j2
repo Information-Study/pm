@@ -1,0 +1,35 @@
+# {{ ansible_managed }}
+# ============================================================================
+# {{ backend_schedule_service_unit }}
+#
+# 對應 Laravel 官方的 `* * * * * php artisan schedule:run`。
+# Type=oneshot，由 {{ backend_schedule_timer_unit }} 每分鐘觸發一次。
+# 刻意不給 [Install] —— 這個 unit 不該被 enable，否則開機時會被獨立跑一次。
+# ============================================================================
+[Unit]
+Description={{ app_name }} Laravel scheduler (artisan schedule:run)
+Documentation=https://laravel.com/docs/scheduling
+{% for unit in (backend_service_after_effective | default(backend_service_after) | unique) %}
+After={{ unit }}
+{% endfor %}
+
+[Service]
+Type=oneshot
+User={{ backend_schedule_user }}
+Group={{ backend_schedule_group }}
+WorkingDirectory={{ backend_current_path }}
+ExecStart={{ php_cli_binary }} {{ backend_current_path }}/artisan schedule:run --no-interaction
+
+# schedule:run 本身應該在幾秒內結束（真正的工作交給 queue）。
+# 卡超過這個時間就砍掉，免得下一分鐘的觸發疊上來。
+TimeoutStartSec={{ backend_schedule_timeout_sec | int }}
+
+StandardOutput=append:{{ app_log_dir }}/schedule.log
+StandardError=append:{{ app_log_dir }}/schedule.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths={{ backend_shared_dir }} {{ app_log_dir }}
+ReadWritePaths={{ backend_root }}

@@ -52,7 +52,13 @@ DevSecOps（四道防線，runner 自動偵測 docker/native）
 Ansible
   lint [目錄]     靜態檢查（ansible 未安裝時的替代品，不等於 --syntax-check）
 
-Docker 動詞（up/down/build 等）待 Phase 2，見 docs/docker-verification.md。
+尚未實作（文件或訊息若提到，一律以此為準）
+  up down build ps logs sh   Phase 2，見 docs/docker-verification.md
+  db  test  sonar            Phase 2
+  deploy                     Phase 5（ansible 尚未安裝）
+  fresh --rollback           見 claude.md §12
+  fresh --mode carryover|scaffold 的重建階段  見 claude.md §12
+
 未驗證項目清單見 claude.md §12。
 TXT
 }

@@ -1,0 +1,150 @@
+---
+# 第三層：真正的公開網址。這一層通過才代表使用者真的能用。
+#
+# 三個端點各有意義：
+#   /up      backend/bootstrap/app.php 的 withRouting(health: '/up')，
+#            Laravel 內建的健康檢查（會實際 boot 應用，抓得到 .env 與 DB 的問題）
+#   /        前端（ssr/spa 走 PM2，static 由 nginx 直送）
+#   /admin   Filament 面板。AdminPanelProvider 是 ->id('admin')->path('admin')->login()，
+#            未登入時會導向 /admin/login，所以 200 與 302 都算正常。
+
+- name: "App | GET {{ healthcheck_base_url_clean }}{{ healthcheck_health_path }}（Laravel /up）"
+  ansible.builtin.uri:
+    url: "{{ healthcheck_base_url_clean }}{{ healthcheck_health_path }}"
+    method: GET
+    status_code: "{{ healthcheck_health_ok_status }}"
+    timeout: "{{ healthcheck_timeout | int }}"
+    validate_certs: "{{ healthcheck_validate_certs_effective | bool }}"
+    follow_redirects: safe
+    return_content: false
+  register: healthcheck_up
+  retries: "{{ healthcheck_retries | int }}"
+  delay: "{{ healthcheck_delay | int }}"
+  until: (healthcheck_up.status | default(0)) in healthcheck_health_ok_status
+  ignore_errors: true
+  changed_when: false
+  when:
+    - healthcheck_check_app | bool
+    - not ansible_check_mode
+
+- name: App | /up 失敗時記錄
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'app：' ~ healthcheck_base_url_clean ~ healthcheck_health_path,
+           'what': ('HTTP ' ~ (healthcheck_up.status | default('無回應'))
+                    ~ '，預期 ' ~ (healthcheck_health_ok_status | join('/'))),
+           'hint': ('/up 會實際 boot Laravel，所以它失敗通常是 PHP 端的問題，不是 nginx。'
+                    ~ ' ｜ ' ~ healthcheck_laravel_log
+                    ~ ' ｜ ' ~ php_log_dir ~ '/fpm-error.log（或 journalctl -u '
+                    ~ php_fpm_service ~ ' -n 100 --no-pager）'
+                    ~ ' ｜ ' ~ healthcheck_nginx_error_log
+                    ~ ' ｜ 500 且 log 說 "No application encryption key" → shared/.env 的 APP_KEY 沒生出來；'
+                    ~ ' 說 "could not be opened in append mode" → storage 權限不對'
+                    ~ '（應為 02770 ' ~ deploy_user ~ ':' ~ web_user ~ '）；'
+                    ~ ' 說 SQLSTATE[HY000] [1045] → .env 的 DB_PASSWORD 與 MySQL 授權不一致，'
+                    ~ '或少了 127.0.0.1 那一筆授權（A3）。')
+         }] }}
+  when:
+    - healthcheck_check_app | bool
+    - not ansible_check_mode
+    - (healthcheck_up.status | default(0)) not in healthcheck_health_ok_status
+
+- name: "App | GET {{ healthcheck_base_url_clean }}{{ healthcheck_frontend_path }}（前端）"
+  ansible.builtin.uri:
+    url: "{{ healthcheck_base_url_clean }}{{ healthcheck_frontend_path }}"
+    method: GET
+    status_code: "{{ healthcheck_frontend_ok_status }}"
+    timeout: "{{ healthcheck_timeout | int }}"
+    validate_certs: "{{ healthcheck_validate_certs_effective | bool }}"
+    follow_redirects: safe
+    return_content: false
+  register: healthcheck_front
+  retries: "{{ healthcheck_retries | int }}"
+  delay: "{{ healthcheck_delay | int }}"
+  until: (healthcheck_front.status | default(0)) in healthcheck_frontend_ok_status
+  ignore_errors: true
+  changed_when: false
+  when:
+    - healthcheck_check_app | bool
+    - not ansible_check_mode
+
+- name: App | 前端失敗時記錄
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'app：' ~ healthcheck_base_url_clean ~ healthcheck_frontend_path,
+           'what': ('HTTP ' ~ (healthcheck_front.status | default('無回應'))
+                    ~ '，預期 ' ~ (healthcheck_frontend_ok_status | join('/'))),
+           'hint': (
+             (('origin 層已經通過，所以 Nuxt 是好的 —— 問題在 nginx 的 upstream 或 location。'
+               ~ ' upstream 應該是 least_conn 指到 ' ~ frontend_host ~ ':'
+               ~ (frontend_port | string) ~ ' 起的那幾個埠。')
+              if healthcheck_actual_mode in ['ssr', 'spa']
+              else ('static 模式由 nginx 直送 ' ~ frontend_current_path ~ '/.output/public，'
+                    ~ '先確認該目錄存在且 ' ~ web_user ~ ' 走得進去'
+                    ~ '（每一層父目錄都要有 x 權限）。'))
+             ~ ' ｜ ' ~ healthcheck_nginx_error_log
+             ~ ' ｜ 404 而且是 Laravel 的 404 頁面 → vhost 的 location 優先序寫反了：'
+             ~ 'Laravel public 目錄裡「實際存在的檔案」要優先，再 fallback 到前端（A13）。')
+         }] }}
+  when:
+    - healthcheck_check_app | bool
+    - not ansible_check_mode
+    - (healthcheck_front.status | default(0)) not in healthcheck_frontend_ok_status
+
+- name: "App | GET {{ healthcheck_base_url_clean }}{{ healthcheck_admin_path }}（Filament）"
+  ansible.builtin.uri:
+    url: "{{ healthcheck_base_url_clean }}{{ healthcheck_admin_path }}"
+    method: GET
+    status_code: "{{ healthcheck_admin_ok_status }}"
+    timeout: "{{ healthcheck_timeout | int }}"
+    validate_certs: "{{ healthcheck_validate_certs_effective | bool }}"
+    # 刻意不跟隨轉址：未登入時 Filament 會 302 到 /admin/login，
+    # 那個 302 本身就是「面板活著」的證據。跟過去反而會把 login 頁的
+    # 200 跟面板的 200 混為一談。
+    follow_redirects: none
+    return_content: false
+  register: healthcheck_admin
+  retries: "{{ healthcheck_retries | int }}"
+  delay: "{{ healthcheck_delay | int }}"
+  until: (healthcheck_admin.status | default(0)) in healthcheck_admin_ok_status
+  ignore_errors: true
+  changed_when: false
+  when:
+    - healthcheck_check_app | bool
+    - not ansible_check_mode
+
+- name: App | Filament 失敗時記錄
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'app：' ~ healthcheck_base_url_clean ~ healthcheck_admin_path,
+           'what': ('HTTP ' ~ (healthcheck_admin.status | default('無回應'))
+                    ~ '，預期 ' ~ (healthcheck_admin_ok_status | join('/'))),
+           'hint': ('/up 通過但 /admin 不通 → 多半是 nginx 的 location 或 WAF。'
+                    ~ ' ｜ Filament 的資產是 asset(「css/filament/…」)、asset(「js/filament/…」)，'
+                    ~ '而它也會用 asset(「images/xxx.png」) 這種不帶 filament 前綴的路徑；'
+                    ~ 'location 若寫成 ^/(css|js|images)/filament/ 就接不到 /images/xxx.png，'
+                    ~ '那些請求會被代理到 Nitro 變成 404 破圖（A13）。'
+                    ~ ' ｜ /livewire/ 與 /sanctum/csrf-cookie 也要走 PHP。'
+                    ~ ' ｜ 403 且 ' ~ healthcheck_waf_audit_log ~ ' 有紀錄 → CRS 誤判，'
+                    ~ '排除規則要放在 exclusions-before/（ruleRemoveById 只影響同 phase '
+                    ~ '尚未執行的規則），而且兩個 ctl: 之間是逗號不是分號（A11）。'
+                    ~ ' ｜ 500 → ' ~ healthcheck_laravel_log ~ '；'
+                    ~ 'Filament v5 需要 ext-intl，缺了會在面板頁才炸。')
+         }] }}
+  when:
+    - healthcheck_check_app | bool
+    - not ansible_check_mode
+    - (healthcheck_admin.status | default(0)) not in healthcheck_admin_ok_status
+
+- name: App | 三個端點的結果
+  ansible.builtin.debug:
+    msg: >-
+      {{ healthcheck_health_path }} → {{ healthcheck_up.status | default('無回應') }}
+      | {{ healthcheck_frontend_path }} → {{ healthcheck_front.status | default('無回應') }}
+      | {{ healthcheck_admin_path }} → {{ healthcheck_admin.status | default('無回應') }}
+      （base={{ healthcheck_base_url_clean }}，
+      驗證憑證={{ healthcheck_validate_certs_effective }}）
+  when: healthcheck_check_app | bool

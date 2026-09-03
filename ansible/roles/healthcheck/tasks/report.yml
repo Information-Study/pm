@@ -1,0 +1,55 @@
+---
+# 把三層檢查收集到的失敗一次列出來。
+# 這是刻意的：如果在第一層就中止，你只會看到「PM2 沒回應」，
+# 而看不到「其實 php-fpm 也沒起來」——那才是根因。
+
+- name: Report | 全部通過
+  ansible.builtin.debug:
+    msg: >-
+      healthcheck 全數通過 —— {{ inventory_hostname }}
+      | 模式={{ healthcheck_actual_mode }}
+      | release={{ release_id | default('n/a') }}
+      | {{ healthcheck_base_url_clean }}{{ healthcheck_health_path }}
+        / {{ healthcheck_frontend_path }}
+        / {{ healthcheck_admin_path }} 都在預期狀態
+      | systemd unit {{ healthcheck_units | default([]) | length }} 個全部 active
+      | PM2 online：{{ (healthcheck_pm2_online | default([])) | join(', ') | default('（static，不需要）', true) }}
+  when: (healthcheck_failures | length) == 0
+
+- name: Report | 逐項列出失敗
+  ansible.builtin.debug:
+    msg: >-
+      [{{ item.layer }}] {{ item.what }}
+      → 該看這裡：{{ item.hint }}
+  loop: "{{ healthcheck_failures }}"
+  loop_control:
+    label: "{{ item.layer }}"
+  when: (healthcheck_failures | length) > 0
+
+- name: Report | 有失敗但設定成不中止
+  ansible.builtin.debug:
+    msg: >-
+      healthcheck 有 {{ healthcheck_failures | length }} 項失敗，
+      但 healthcheck_fail_on_error 是 false，本次不中止。
+      正式環境請把它設回 true —— 否則「部署成功」這件事會失去意義。
+  when:
+    - (healthcheck_failures | length) > 0
+    - not (healthcheck_fail_on_error | bool)
+
+- name: Report | 中止並彙整
+  ansible.builtin.fail:
+    msg: >-
+      healthcheck 失敗 {{ healthcheck_failures | length }} 項（{{ inventory_hostname }}，
+      模式 {{ healthcheck_actual_mode }}）：
+      {% for f in healthcheck_failures %}
+      ({{ loop.index }}) [{{ f.layer }}] {{ f.what }}｜{{ f.hint }}
+      {% endfor %}
+      —— 三層由內而外分別是 origin（直接打 PM2）、edge（127.0.0.1 + Host 標頭）、
+      app（公開網址）。哪一層先斷，問題就在那一層與它內側之間；
+      例如 origin 通過而 edge 失敗，就不必去看 Nuxt 的 log，問題在 nginx。
+      程式碼本身沒有被動到：{{ backend_current_path }} 與 {{ frontend_current_path }}
+      仍指向本次 release，要回上一版請把 current 指回 releases 底下的前一個目錄
+      （不要手動 rm 任何東西）。
+  when:
+    - (healthcheck_failures | length) > 0
+    - healthcheck_fail_on_error | bool

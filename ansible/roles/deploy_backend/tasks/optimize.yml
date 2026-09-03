@@ -1,0 +1,210 @@
+---
+# storage:link 與各種快取。全部在「換版之前」做完，
+# 這樣 current 一旦切過去就是完整可用的狀態。
+
+# public/storage → ../storage/app/public。
+# 因為 <release>/storage 已經是指向 shared/storage 的 symlink，
+# 這條連結最後會落在 shared/storage/app/public，換版不會遺失上傳檔。
+# --force 讓既有連結被重建（每個 release 都是新目錄，所以每次都要做）。
+- name: Optimize | artisan storage:link
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ php_cli_binary }}"
+      - artisan
+      - "storage:link"
+      - --force
+      - --no-interaction
+      - --no-ansi
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  # register 的名字刻意跟開關變數 backend_storage_link 不同 ——
+  # 同名會讓 register 的結果覆蓋掉 defaults 裡的布林值（host facts 優先權更高），
+  # 之後任何引用 backend_storage_link 的地方都會拿到一個 dict。
+  register: backend_storage_link_result
+  changed_when: backend_storage_link_result.rc == 0
+  failed_when: backend_storage_link_result.rc != 0
+  when:
+    - backend_storage_link | bool
+    - not ansible_check_mode
+
+- name: Optimize | config:cache
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ php_cli_binary }}", artisan, "config:cache", --no-interaction, --no-ansi]
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_config_cache_result
+  changed_when: backend_config_cache_result.rc == 0
+  failed_when: backend_config_cache_result.rc != 0
+  when:
+    - backend_config_cache | bool
+    - not ansible_check_mode
+
+- name: Optimize | view:cache
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ php_cli_binary }}", artisan, "view:cache", --no-interaction, --no-ansi]
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_view_cache_result
+  changed_when: backend_view_cache_result.rc == 0
+  failed_when: backend_view_cache_result.rc != 0
+  when:
+    - backend_view_cache | bool
+    - not ansible_check_mode
+
+- name: Optimize | event:cache
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ php_cli_binary }}", artisan, "event:cache", --no-interaction, --no-ansi]
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_event_cache_result
+  changed_when: backend_event_cache_result.rc == 0
+  failed_when: backend_event_cache_result.rc != 0
+  when:
+    - backend_event_cache | bool
+    - not ansible_check_mode
+
+# ── route:cache ─────────────────────────────────────────────────────────────
+# 預設關閉，理由寫在 defaults：本專案的 routes/web.php 與 routes/api.php
+# 目前都是 Closure，route:cache 會直接丟
+#   LogicException: Unable to prepare route [/] for serialization. Uses Closure.
+# 打開的話用 block/rescue：失敗就 route:clear（免得留下半截的 routes cache），
+# 再用一段講得清楚的訊息中止。
+- name: Optimize | route:cache（預設關閉，見 defaults 說明）
+  when:
+    - backend_route_cache | bool
+    - not ansible_check_mode
+  block:
+    - name: Optimize | artisan route:cache
+      become: true
+      become_user: "{{ deploy_user }}"
+      ansible.builtin.command:
+        argv: ["{{ php_cli_binary }}", artisan, "route:cache", --no-interaction, --no-ansi]
+        chdir: "{{ backend_release_path }}"
+      environment:
+        HOME: "{{ deploy_user_home }}"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      register: backend_route_cache_result
+      changed_when: backend_route_cache_result.rc == 0
+      failed_when: backend_route_cache_result.rc != 0
+
+  rescue:
+    - name: Optimize | route:cache 失敗 → 清掉半截的快取
+      become: true
+      become_user: "{{ deploy_user }}"
+      ansible.builtin.command:
+        argv: ["{{ php_cli_binary }}", artisan, "route:clear", --no-interaction, --no-ansi]
+        chdir: "{{ backend_release_path }}"
+      environment:
+        HOME: "{{ deploy_user_home }}"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      register: backend_route_clear_result
+      changed_when: backend_route_clear_result.rc == 0
+      failed_when: false
+
+    - name: Optimize | 中止並說明 route:cache 為什麼失敗
+      ansible.builtin.fail:
+        msg: >-
+          `artisan route:cache` 失敗。
+          {{ 'Laravel 明確說了路由用 Closure，無法序列化。'
+             if ('Closure' in (backend_route_cache_result.stderr | default('')
+                               ~ backend_route_cache_result.stdout | default('')))
+             else '完整輸出見上一個任務。' }}
+          本專案 backend/routes/web.php 與 backend/routes/api.php 目前都是 Closure：
+            Route::get('/', function () { ... });
+            Route::get('/user', function (Request $request) { ... })->middleware('auth:sanctum');
+          要用 route:cache，得先把它們改成 controller 方法，例如
+            Route::get('/', [HomeController::class, 'index']);
+          改完再設 backend_route_cache: true。
+          在那之前請把 backend_route_cache 設回 false —— 路由快取不是必要的，
+          少了它只是每次請求多解析一次 route 檔。
+
+# ── Filament 元件快取 ───────────────────────────────────────────────────────
+# 指令名在 Filament 各版本間換過（v3 早期是 filament:cache-components，
+# 之後併進 filament:optimize）。所以先探測，不存在就跳過並說明，
+# 不硬跑一個可能不存在的指令。
+- name: Optimize | 探測 {{ backend_filament_optimize_command }} 是否存在
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ php_cli_binary }}", artisan, list, --raw, --no-ansi]
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_artisan_list
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - backend_filament_optimize | bool
+    - not ansible_check_mode
+
+- name: Optimize | 記下探測結果（A7：一定要真的定義出來）
+  ansible.builtin.set_fact:
+    backend_filament_cmd_available: >-
+      {{ (backend_filament_optimize | bool)
+         and ((backend_artisan_list.rc | default(1)) == 0)
+         and ((backend_filament_optimize_command ~ ' ')
+              in ((backend_artisan_list.stdout | default('')) ~ ' ')) }}
+
+- name: Optimize | artisan {{ backend_filament_optimize_command }}
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ php_cli_binary }}"
+      - artisan
+      - "{{ backend_filament_optimize_command }}"
+      - --no-interaction
+      - --no-ansi
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_filament_optimize_result
+  changed_when: backend_filament_optimize_result.rc == 0
+  failed_when: backend_filament_optimize_result.rc != 0
+  when:
+    - backend_filament_cmd_available | bool
+    - not ansible_check_mode
+
+- name: Optimize | Filament 指令不存在時說明（不是錯誤）
+  ansible.builtin.debug:
+    msg: >-
+      artisan 沒有 {{ backend_filament_optimize_command }} 這個指令，本次略過。
+      Filament 的元件快取指令名在版本之間換過
+      （v3 早期是 filament:cache-components，後來併進 filament:optimize）。
+      要指定別的名字就改 backend_filament_optimize_command，
+      或設 backend_filament_optimize: false 徹底關掉。
+      這不影響功能，只是每次請求會多掃描一次 Filament 元件。
+  when:
+    - backend_filament_optimize | bool
+    - not (backend_filament_cmd_available | bool)
+    - not ansible_check_mode
+
+# 快取檔是 deploy 產生的（0644，群組 {{ web_group }} 來自父目錄的 setgid），
+# php-fpm 以 {{ web_user }} 執行只需要讀。這裡再確認一次目錄本身的權限，
+# 因為 Laravel 執行期也可能往 bootstrap/cache 寫東西。
+- name: Optimize | 再次確認 bootstrap/cache 可寫
+  ansible.builtin.file:
+    path: "{{ backend_release_path }}/bootstrap/cache"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+    mode: "02770"

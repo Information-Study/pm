@@ -1,0 +1,109 @@
+---
+# A8：releases/ 與 shared/ 都是 common role 建的，這裡只建 releases/<release_id>。
+- name: Release | 建立 releases/{{ release_id }}
+  ansible.builtin.file:
+    path: "{{ frontend_release_path }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+    mode: "02750"
+
+- name: Release | clone {{ frontend_repo_url }}（{{ frontend_repo_version }}）
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.git:
+    repo: "{{ frontend_repo_url }}"
+    dest: "{{ frontend_release_path }}"
+    version: "{{ frontend_repo_version }}"
+    depth: "{{ (frontend_repo_depth | int) if (frontend_repo_depth | int) > 0 else omit }}"
+    single_branch: "{{ frontend_repo_single_branch | bool }}"
+    force: "{{ frontend_repo_force | bool }}"
+    update: true
+    track_submodules: false
+    recursive: false
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    GIT_TERMINAL_PROMPT: "0"
+  register: frontend_git_result
+
+- name: Release | 記錄 commit
+  ansible.builtin.debug:
+    msg: >-
+      {{ frontend_repo_url }}@{{ frontend_repo_version }}
+      → {{ frontend_git_result.after | default('（check mode，未 clone）') }}
+      （{{ frontend_release_path }}）
+
+- name: Release | 確認 clone 出來的內容真的是這個 Nuxt 專案
+  ansible.builtin.stat:
+    path: "{{ frontend_release_path }}/{{ item }}"
+  register: frontend_release_shape
+  loop:
+    - package.json
+    - package-lock.json
+    - nuxt.config.ts
+  loop_control:
+    label: "{{ item }}"
+  when: not ansible_check_mode
+
+- name: Release | 專案結構不對就 fail fast
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    quiet: true
+    fail_msg: >-
+      {{ frontend_release_path }}/{{ item.item }} 不存在。
+      {{ 'package-lock.json 缺席時 `npm ci` 會直接拒絕執行
+          （"can only install packages when your package.json and package-lock.json are in sync"），
+          必須把 lockfile commit 進版控。'
+         if item.item == 'package-lock.json'
+         else 'clone 下來的東西不像 pm-frontend（Nuxt 4 專案）。' }}
+      確認 frontend_repo_url（目前 {{ frontend_repo_url }}）與
+      frontend_repo_version（目前 {{ frontend_repo_version }}）。
+  loop: "{{ frontend_release_shape.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when: not ansible_check_mode
+
+# A20 的目標端複查。preflight 已經在控制端 grep 過一次（5 秒內失敗），
+# 這裡再對「真的要拿去 build 的那一份原始碼」確認一次 ——
+# 兩者之間有可能因為 repo 版本不同而不一致。
+# grep 只花幾毫秒，遠比 npm ci 跑完才發現划算。
+- name: Release | 檢查 nuxt.config.ts 有沒有把 ssr 寫死（A20）
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/grep
+      - -nE
+      # 錨在行首：只抓「該行第一個非空白 token 就是 ssr:」的情形，
+      # 也就是真的寫在 defineNuxtConfig 物件裡的那一種。
+      # 這樣本專案 nuxt.config.ts 第 8 行的註解
+      #   // 絕不寫死 ssr: false —— …
+      # 就不會被誤判（實測 rc=1）。
+      - "^[[:space:]]*ssr[[:space:]]*:[[:space:]]*(true|false)"
+      - "{{ frontend_release_path }}/nuxt.config.ts"
+  register: frontend_ssr_hardcoded
+  changed_when: false
+  # grep 找不到 → rc=1，那才是我們要的結果。rc>=2 是真的出錯。
+  failed_when: frontend_ssr_hardcoded.rc not in [0, 1]
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Release | ssr 被寫死時 fail fast（A20）
+  ansible.builtin.assert:
+    that:
+      - frontend_ssr_hardcoded.rc == 1
+    quiet: true
+    fail_msg: >-
+      {{ frontend_release_path }}/nuxt.config.ts 把 ssr 寫死了：
+        {{ frontend_ssr_hardcoded.stdout_lines | default([]) | join(' / ') }}
+      寫死之後 NUXT_SSR 這個環境變數就不再有作用，
+      frontend_mode 的 ssr / spa 分支會變成同一件事 ——
+      而且要等到 npm ci 加上大半個 build 跑完才會看出不對。
+      正確寫法（本專案目前就是這樣）：
+        const ssr = process.env.NUXT_SSR !== 'false'
+        export default defineNuxtConfig({ ssr, ... })
+      改好再重跑。
+  when:
+    - not ansible_check_mode
+    - frontend_ssr_hardcoded.rc is defined

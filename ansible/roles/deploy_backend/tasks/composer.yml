@@ -1,0 +1,107 @@
+---
+# A2：這一步是 proc_open 問題最容易爆的地方。
+# backend/composer.json 的 post-autoload-dump 有
+#   "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump"
+#   "@php artisan package:discover --ansi"
+#   "@php artisan filament:upgrade"
+# 後兩者經 Symfony Process 呼叫 proc_open。CLI 少了它就會停在
+#   The Process class relies on proc_open, which is not available on your PHP installation.
+# assert.yml 已經先驗過一次，這裡只是把失敗訊息接上。
+
+- name: Composer | 確認 composer 可執行
+  ansible.builtin.stat:
+    path: "{{ composer_bin_path }}"
+  register: backend_composer_stat
+
+- name: Composer | composer 不存在就 fail fast
+  ansible.builtin.assert:
+    that:
+      - backend_composer_stat.stat.exists
+      - backend_composer_stat.stat.executable | default(false)
+    quiet: true
+    fail_msg: >-
+      {{ composer_bin_path }} 不存在或不可執行。
+      請先跑 composer role（`ansible-playbook site.yml --tags composer`）。
+  when: not ansible_check_mode
+
+# 用 block/rescue 而不是「失敗任務 + when: is failed」：
+# failed_when 觸發時 play 會立刻中止，後面那個 debug 根本沒機會執行，
+# 使用者只會看到一大坨 composer 輸出而沒有任何指引。
+- name: Composer | 安裝相依
+  block:
+    - name: Composer | install --no-dev --optimize-autoloader
+      become: true
+      become_user: "{{ deploy_user }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ composer_bin_path }}"
+          - install
+          - --no-dev
+          - --optimize-autoloader
+          - --prefer-dist
+          - --no-interaction
+          - --no-progress
+          - --no-ansi
+        chdir: "{{ backend_release_path }}"
+      environment:
+        HOME: "{{ deploy_user_home }}"
+        COMPOSER_HOME: "{{ composer_home }}"
+        COMPOSER_CACHE_DIR: "{{ composer_cache_dir }}"
+        COMPOSER_NO_INTERACTION: "1"
+        COMPOSER_PROCESS_TIMEOUT: "{{ backend_composer_process_timeout | int }}"
+        # clear_env 只影響 FPM child；這裡是 CLI，仍給一個明確的最小 PATH，
+        # 免得 post-autoload-dump 裡的 @php 找不到執行檔。
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      register: backend_composer_install
+      # 全新 clone 一定要真的安裝，所以正常情況都是 changed。
+      # 保留這個判斷是為了「同一個 release_id 重跑」的情境。
+      changed_when: >-
+        'Nothing to install, update or remove' not in
+        ((backend_composer_install.stdout | default('')) ~ (backend_composer_install.stderr | default('')))
+      failed_when: backend_composer_install.rc != 0
+      timeout: "{{ backend_composer_timeout | int }}"
+      notify: deploy_backend | reload php-fpm
+
+  rescue:
+    - name: Composer | 安裝失敗時的線索
+      ansible.builtin.debug:
+        msg: >-
+          composer install 失敗（rc={{ backend_composer_install.rc | default('n/a') }}）。
+          最常見的三個原因：
+          (1) CLI 缺 proc_open（A2）—— post-autoload-dump 會跑
+              `@php artisan package:discover` 與 `@php artisan filament:upgrade`，
+              兩者走 Symfony Process。檢查
+              {{ '/etc/php/' ~ php_version ~ '/cli/conf.d/' }} 有沒有被塞進
+              disable_functions，以及 php_disable_functions 是否含 proc_open；
+          (2) 缺 ext-intl —— Filament v5 的硬性需求，套件名 php{{ php_version }}-intl；
+          (3) COMPOSER_HOME（{{ composer_home }}）或
+              COMPOSER_CACHE_DIR（{{ composer_cache_dir }}）不可寫 ——
+              composer 會退回 root 家目錄或直接停用快取。
+          手動重現：
+            sudo -u {{ deploy_user }} COMPOSER_HOME={{ composer_home }} \
+              {{ composer_bin_path }} install --no-dev -o -d {{ backend_release_path }}
+
+    - name: Composer | 中止部署（current 仍指著上一個可用版本）
+      ansible.builtin.fail:
+        msg: >-
+          composer install 失敗，本次不換版。
+          {{ backend_current_path }} 仍指向上一個 release，線上服務不受影響。
+          stderr 末段：{{ (backend_composer_install.stderr | default('')) | regex_replace('\\s+', ' ') | truncate(400, true, '…') }}
+
+- name: Composer | 確認 vendor/autoload.php 產出
+  ansible.builtin.stat:
+    path: "{{ backend_release_path }}/vendor/autoload.php"
+  register: backend_vendor_stat
+  when: not ansible_check_mode
+
+- name: Composer | vendor 沒生出來就 fail fast
+  ansible.builtin.assert:
+    that:
+      - backend_vendor_stat.stat.exists | default(false)
+    quiet: true
+    fail_msg: >-
+      {{ backend_release_path }}/vendor/autoload.php 不存在。
+      composer install 回報成功但沒有產出 autoloader，
+      通常代表 --no-dev 之下 optimize-autoloader 被中斷。
+      重跑前先看 {{ composer_cache_dir }} 是否被塞滿或權限不對。
+  when: not ansible_check_mode

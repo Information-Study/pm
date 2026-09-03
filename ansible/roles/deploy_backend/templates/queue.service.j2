@@ -1,0 +1,71 @@
+# {{ ansible_managed }}
+# ============================================================================
+# {{ backend_queue_unit_template }}
+#
+# 對應 Docker 版的 supervisord [program:laravel-queue]（numprocs=2、user=www-data）。
+# 這是 systemd 的 template unit：實例是 {{ backend_queue_unit_prefix }}1.service、
+# {{ backend_queue_unit_prefix }}2.service …，%i 就是後面那個數字。
+# 縮放只要改 backend_queue_workers，不必新增或刪除檔案。
+#
+# 註：Docker 版寫的是 --queue=media-library，那是舊專案殘留
+#（backend/composer.json 沒有 spatie/laravel-medialibrary）。
+# 原生部署用 backend_queue_names（預設 {{ backend_queue_names }}）。
+# ============================================================================
+[Unit]
+Description={{ app_name }} Laravel queue worker %i
+Documentation=https://laravel.com/docs/queues
+{% for unit in (backend_service_after_effective | default(backend_service_after) | unique) %}
+After={{ unit }}
+{% endfor %}
+{% for unit in (backend_service_wants | unique) %}
+Wants={{ unit }}
+{% endfor %}
+# StartLimit：崩潰迴圈時不要無限重拉。超過就進 failed，交給監控去叫人。
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User={{ backend_queue_user }}
+Group={{ backend_queue_group }}
+# WorkingDirectory 指向 current symlink。systemd 在啟動當下解析一次，
+# 換版之後既有的 worker 仍抱著舊的 inode —— 所以 deploy 完要重啟它們
+#（services.yml 的「換版後重啟 queue worker」），
+# --max-time 則是最後一道保險。
+WorkingDirectory={{ backend_current_path }}
+ExecStart={{ php_cli_binary }} {{ backend_current_path }}/artisan queue:work \
+    --queue={{ backend_queue_names }} \
+    --sleep={{ backend_queue_sleep | int }} \
+    --tries={{ backend_queue_tries | int }} \
+    --timeout={{ backend_queue_timeout | int }} \
+    --max-time={{ backend_queue_max_time | int }} \
+    --memory={{ backend_queue_memory_mb | int }} \
+    --no-interaction
+
+# queue:work 收到 SIGTERM 會做 graceful shutdown（把手上那個 job 跑完再退）。
+# TimeoutStopSec 必須大於單一 job 的 --timeout，否則 systemd 會在 job 還沒
+# 收尾時就 SIGKILL，那個 job 會變成「已保留但沒完成」。
+KillSignal=SIGTERM
+TimeoutStopSec={{ backend_queue_stop_timeout_sec | int }}
+
+Restart=always
+RestartSec={{ backend_queue_restart_sec | int }}
+Nice={{ backend_queue_nice | int }}
+
+# {{ app_log_dir }} 是 0770 {{ deploy_user }}:{{ web_group }}（common role 建的），
+# 而且 common 的 logrotate 已經涵蓋 {{ app_log_dir }}/*.log（copytruncate），
+# 所以這裡用 append: 而不是自己再寫一份 logrotate。
+StandardOutput=append:{{ app_log_dir }}/queue-%i.log
+StandardError=append:{{ app_log_dir }}/queue-%i.log
+
+# 基本沙箱。NoNewPrivileges 之下 worker 沒辦法再提權；
+# ReadWritePaths 只開放它真的要寫的地方。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths={{ backend_shared_dir }} {{ app_log_dir }}
+ReadWritePaths={{ backend_root }}
+
+[Install]
+WantedBy=multi-user.target

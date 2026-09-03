@@ -25,7 +25,8 @@ auth.json
 
 # cx 執行期狀態
 /.cx/
-/_archive/
+# 封存實際放在專案外（$(dirname CX_ROOT)/pm_archive），這裡保留規則以防未來改放專案內
+/pm_archive/
 
 # 系統與編輯器
 .DS_Store

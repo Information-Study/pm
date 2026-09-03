@@ -1,0 +1,68 @@
+---
+# 第一層：繞過 nginx，直接打 PM2 監聽的埠。
+# 這一層的意義是「切開責任」——
+#   origin 通過但 edge 失敗 → 問題在 nginx（vhost、upstream、WAF）
+#   origin 也失敗           → 問題在 Nuxt/PM2 本身
+# static 模式沒有 PM2，整層跳過（Nginx 直送 .output/public）。
+
+- name: Origin | 逐一打每個 PM2 實例
+  ansible.builtin.uri:
+    url: "http://{{ frontend_host }}:{{ (frontend_port | int) + (idx | int) }}/"
+    method: GET
+    status_code: [200]
+    timeout: "{{ healthcheck_timeout | int }}"
+    follow_redirects: none
+    validate_certs: false
+    return_content: false
+  register: healthcheck_origin
+  loop: "{{ range(frontend_instances | int) | list }}"
+  loop_control:
+    loop_var: idx
+    label: "{{ frontend_host }}:{{ (frontend_port | int) + (idx | int) }}"
+  retries: "{{ healthcheck_retries | int }}"
+  delay: "{{ healthcheck_delay | int }}"
+  until: healthcheck_origin.status | default(0) == 200
+  ignore_errors: true
+  changed_when: false
+  when:
+    - healthcheck_check_origin | bool
+    - healthcheck_actual_mode in ['ssr', 'spa']
+    - not ansible_check_mode
+
+# 取 url 而不是 idx：idx 是整數，接 regex_replace 會直接爆
+#（該過濾器只吃字串）；url 本來就是字串，訊息也更直接可用。
+- name: Origin | 整理失敗的實例
+  ansible.builtin.set_fact:
+    healthcheck_origin_down: >-
+      {{ (healthcheck_origin.results | default([]))
+         | rejectattr('skipped', 'defined')
+         | selectattr('failed', 'defined')
+         | selectattr('failed')
+         | map(attribute='url', default='(未取得 url)') | list }}
+
+- name: Origin | 記錄失敗
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'origin（直接打 PM2，未經 nginx）',
+           'what': ((healthcheck_origin_down | join(', ')) ~ ' 沒有回 200'),
+           'hint': ('前端本身就沒起來，先不用看 nginx。'
+                    ~ ' ｜ sudo -u ' ~ deploy_user ~ ' PM2_HOME=' ~ pm2_home ~ ' ' ~ pm2_bin
+                    ~ ' logs --lines 100 --nostream'
+                    ~ ' ｜ ' ~ app_log_dir ~ '/' ~ frontend_app_prefix ~ '-0.err.log'
+                    ~ ' ｜ 檢查監聽狀況：ss -lntp | grep :' ~ (frontend_port | string)
+                    ~ ' ｜ Nitro 預設綁 HOST/PORT，ecosystem 的 env 有沒有帶對？'
+                    ~ ' ｜ ERR_REQUIRE_ESM = ecosystem 誤用了 cluster（必須 fork，A10）。')
+         }] }}
+  when:
+    - healthcheck_check_origin | bool
+    - healthcheck_actual_mode in ['ssr', 'spa']
+    - not ansible_check_mode
+    - (healthcheck_origin_down | default([])) | length > 0
+
+- name: Origin | static 模式略過
+  ansible.builtin.debug:
+    msg: >-
+      static 模式沒有 PM2，略過 origin 層。
+      Nginx 直送 {{ frontend_current_path }}/.output/public。
+  when: healthcheck_actual_mode == 'static'

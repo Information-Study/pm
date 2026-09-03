@@ -77,12 +77,16 @@ HOOK
 
 # 列出所有 repo（主庫 + 子模組），輸出絕對路徑
 cx_guard_repos() {
+    # 結尾必須成功：這個函式常被放進 <(...)，而子 shell 裡的 errexit 仍有效，
+    # 迴圈最後一次條件為假就會讓整個 process substitution 以非零結束並觸發 ERR trap。
     printf '%s\n' "$CX_ROOT"
     local c
     for c in backend frontend; do
-        [[ -d $CX_ROOT/$c ]] && git -C "$CX_ROOT/$c" rev-parse --git-dir >/dev/null 2>&1 \
-            && printf '%s\n' "$CX_ROOT/$c"
+        if [[ -d $CX_ROOT/$c ]] && git -C "$CX_ROOT/$c" rev-parse --git-dir >/dev/null 2>&1; then
+            printf '%s\n' "$CX_ROOT/$c"
+        fi
     done
+    return 0
 }
 
 cx_guard_install() {

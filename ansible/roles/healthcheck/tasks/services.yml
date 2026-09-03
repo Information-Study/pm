@@ -1,0 +1,71 @@
+---
+# systemctl is-active。用 command + failed_when: false 而不是 service_facts：
+# service_facts 在有幾百個 unit 的機器上要跑好幾秒，而我們只關心這幾個。
+
+- name: Services | 組出要檢查的 unit 清單（A7）
+  ansible.builtin.set_fact:
+    healthcheck_units: >-
+      {{ (healthcheck_core_units | default([]))
+         + ((range(1, (backend_queue_workers | int) + 1) | map('string')
+             | map('regex_replace', '^(.*)$', backend_queue_unit_prefix ~ '\\1.service') | list)
+            if ((healthcheck_check_queue_units | bool) and (backend_queue_enabled | bool)) else [])
+         + ([backend_schedule_timer_unit]
+            if ((healthcheck_check_schedule_timer | bool) and (backend_schedule_enabled | bool)) else [])
+         + ([pm2_systemd_unit ~ '.service']
+            if ((healthcheck_check_pm2_unit | bool) and healthcheck_actual_mode in ['ssr', 'spa']) else [])
+         + (['mysql.service']
+            if ((healthcheck_check_mysql_unit | bool)
+                and (inventory_hostname in (groups['db_primary'] | default([])))) else []) }}
+
+- name: Services | systemctl is-active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - "{{ item }}"
+  register: healthcheck_unit_state
+  loop: "{{ healthcheck_units }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+  # is-active 對「非 active」的 unit 會回非 0，那是我們要的資訊不是錯誤。
+  failed_when: false
+  check_mode: false
+  when: healthcheck_check_services | bool
+
+- name: Services | 整理結果
+  ansible.builtin.set_fact:
+    healthcheck_units_down: >-
+      {{ (healthcheck_unit_state.results | default([]))
+         | rejectattr('skipped', 'defined')
+         | selectattr('rc', 'defined')
+         | rejectattr('rc', 'equalto', 0)
+         | map(attribute='item') | list }}
+
+- name: Services | 逐一列出狀態
+  ansible.builtin.debug:
+    msg: "{{ item.item }} = {{ item.stdout | default('') | trim | default('（無輸出）', true) }}"
+  loop: "{{ healthcheck_unit_state.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when:
+    - healthcheck_check_services | bool
+    - item.skipped is not defined
+
+- name: Services | 記錄失敗項
+  ansible.builtin.set_fact:
+    healthcheck_failures: >-
+      {{ healthcheck_failures + [{
+           'layer': 'systemd',
+           'what': (healthcheck_units_down | join(', ')),
+           'hint': (
+             'systemctl status ' ~ (healthcheck_units_down | first) ~ ' -l --no-pager'
+             ~ ' ｜ journalctl -u ' ~ (healthcheck_units_down | first) ~ ' -n 100 --no-pager'
+             ~ ' ｜ php-fpm 起不來最常見的原因是 slowlog 目錄不存在（A9）：'
+             ~ 'ERROR: Unable to create or open slowlog(' ~ php_log_dir ~ '/...) → FPM initialization failed。'
+             ~ ' 確認 ' ~ php_log_dir ~ ' 與 ' ~ app_log_dir ~ ' 都存在且屬主正確。'
+             ~ ' queue worker 起不來則看 ' ~ app_log_dir ~ '/queue-1.log。')
+         }] }}
+  when:
+    - healthcheck_check_services | bool
+    - (healthcheck_units_down | default([])) | length > 0

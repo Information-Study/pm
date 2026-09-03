@@ -1,0 +1,240 @@
+---
+# 全部是斷言，不改變任何狀態。目標一樣是「5 秒內失敗」。
+
+- name: Assert | release_id 必須存在且格式安全
+  ansible.builtin.assert:
+    that:
+      - release_id is defined
+      - release_id | string | length > 0
+      - release_id is match(backend_release_id_regex)
+    quiet: true
+    fail_msg: >-
+      release_id =「{{ release_id | default('<未定義>') }}」不合法
+      （必須符合 {{ backend_release_id_regex }}，不能含 / 或 ..）。
+      release_id 會被拼進 {{ backend_releases_dir }}/<id> 這個絕對路徑，
+      也會被 prune 的 when 條件拿去比對；空字串或含 / 會讓刪除的作用範圍失控。
+      正確做法是在 site.yml 開頭用一個 set_fact 統一產生（值取
+      ansible_date_time.iso8601_basic_short，例如 20260903T181200），
+      讓同一批主機拿到同一個 id。
+
+- name: Assert | 路徑安全（A1 在 role 內的第二道防線）
+  ansible.builtin.assert:
+    that:
+      - app_root is match('^/..*')
+      - not (app_root.endswith('/'))
+      - backend_root.startswith(app_root ~ '/')
+      - backend_releases_dir.startswith(backend_root ~ '/')
+      - backend_shared_dir.startswith(backend_root ~ '/')
+      - backend_current_path.startswith(backend_root ~ '/')
+      - backend_release_path.startswith(backend_releases_dir ~ '/')
+      - (backend_release_path | dirname) == backend_releases_dir
+      - "'..' not in backend_release_path.split('/')"
+      - (backend_releases_dir.strip('/').split('/') | reject('equalto', '') | list | length) >= 3
+    quiet: true
+    fail_msg: >-
+      路徑組合不安全：
+        app_root             = {{ app_root | default('<未定義>') }}
+        backend_releases_dir = {{ backend_releases_dir | default('<未定義>') }}
+        backend_release_path = {{ backend_release_path | default('<未定義>') }}
+      release prune 會對這些路徑做遞迴刪除，任何一項渲染成空字串、
+      跑到 app_root 之外、或深度不足三層都不允許。
+
+- name: Assert | 保留數量（A1）
+  ansible.builtin.assert:
+    that:
+      - keep_releases is defined
+      - (keep_releases | int) >= 2
+      - (keep_releases | int) <= 50
+      - (backend_prune_max_delete | int) >= 1
+      - (backend_prune_max_delete | int) <= 200
+    quiet: true
+    fail_msg: >-
+      keep_releases = {{ keep_releases | default('<未定義>') }} 不合理。
+      至少 2（rollback 需要上一版），最多 50。設 0 或空字串會讓
+      「保留 N-1 個」的切片變成 [0:]，也就是把所有非 current 的 release 全刪。
+      backend_prune_max_delete（目前 {{ backend_prune_max_delete }}）是單次刪除上界，
+      必須介於 1..200。
+
+- name: Assert | 使用者與 repo
+  ansible.builtin.assert:
+    that:
+      - deploy_user not in ['root', 'www-data', 'nobody']
+      - deploy_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - backend_repo_url is match('^(https://|git@)')
+      - backend_repo_version | string | length > 0
+    quiet: true
+    fail_msg: >-
+      deploy_user =「{{ deploy_user }}」或 backend_repo_url
+      =「{{ backend_repo_url }}」不合法。
+      repo 只接受 https:// 或 git@（本專案 pm-backend 是 public，用 https 即可）。
+      本 role 只讀不寫遠端，不會有任何 push。
+
+# A15：serial 之下 run_once 只在當前 batch 內生效，等同 no-op。
+# migration 必須靠 inventory 的 db_primary 群組 gate。
+- name: Assert | db_primary 群組（A15）
+  ansible.builtin.assert:
+    that:
+      - (groups['db_primary'] | default([])) | length == 1
+    quiet: true
+    fail_msg: >-
+      inventory 的 db_primary 群組有
+      {{ (groups['db_primary'] | default([])) | length }} 台
+      （{{ (groups['db_primary'] | default([])) | join(', ') | default('（空）', true) }}）。
+      migration 是用 `when: inventory_hostname in groups['db_primary']` 來 gate，
+      不是 run_once —— site.yml 一旦用了 serial，run_once 的作用域只有當前 batch，
+      等於沒有 gate。這個群組必須剛好一台：
+        db_primary:
+          hosts:
+            web1:
+      如果這次真的不需要跑 migration，請設 backend_migrate: false。
+  when: backend_migrate | bool
+
+# 刻意「不」用 loop 也「不」用 no_log：
+#   loop 會把 item（也就是密碼本身）印進失敗輸出；
+#   no_log 又會連 fail_msg 一起吃掉，讓錯誤變得無法行動。
+# 拆成兩個獨立斷言，條件字串裡只有變數名稱，值不會外洩。
+- name: Assert | DB_PASSWORD 不可含會破壞 dotenv 解析的字元
+  ansible.builtin.assert:
+    that:
+      - (backend_db_password | string) is not search(backend_env_forbidden_regex)
+    quiet: true
+    fail_msg: >-
+      vault_mysql_app_password 含換行、雙引號、反斜線或 ${...}。
+      這些字元會讓 phpdotenv 解析出非預期的值（${...} 還會被當成巢狀變數展開），
+      結果是一個「Ansible 說成功、但 Laravel 連不上資料庫」的部署。
+      請換一個不含這些字元的密碼。
+      注意：本 role 用 template 產生 .env（不是 lineinfile/sed），所以密碼含
+      & | * ? $ 空白之類的 shell 元字元是安全的，只有上面那四種不行。
+
+- name: Assert | APP_KEY 不可含會破壞 dotenv 解析的字元
+  ansible.builtin.assert:
+    that:
+      - (backend_app_key | string) is not search(backend_env_forbidden_regex)
+    quiet: true
+    fail_msg: >-
+      vault_app_key 含換行、雙引號、反斜線或 ${...}。
+      Laravel 的 APP_KEY 是 base64:… 形式，正常不會出現這些字元；
+      出現就代表值被貼壞了。
+
+- name: Assert | 正式環境必須有 DB 密碼與網域
+  ansible.builtin.assert:
+    that:
+      - (backend_db_password | string | length) >= 12
+      - app_domain | string | length > 0
+      - backend_app_url is match('^https?://')
+    quiet: true
+    fail_msg: >-
+      app_env = production，但 DB_PASSWORD 長度不足 12（目前
+      {{ backend_db_password | string | length }}）或 app_domain 沒設。
+      請在 vault 設 vault_mysql_app_password，並在 group_vars/all 設 app_domain。
+      這兩個值同時決定 mysql role 的授權與 .env 的 DB_PASSWORD，不一致就是 1045。
+  when: app_env == 'production'
+
+- name: Assert | APP_KEY 格式（有給的話）
+  ansible.builtin.assert:
+    that:
+      - backend_app_key is match('^base64:[A-Za-z0-9+/]{40,}={0,2}$')
+    quiet: true
+    fail_msg: >-
+      vault_app_key 的格式不對。Laravel 的 APP_KEY 是
+      base64:<32 bytes 的 base64>，例如 base64:xxxxxxxx…=。
+      不想自己準備就把它留空 —— 本 role 會在 shared/.env 還沒有 APP_KEY 時
+      自動跑一次 `artisan key:generate --force`。
+  when: (backend_app_key | string | length) > 0
+
+# A2 的最後一道關卡。composer.json 的 post-autoload-dump 有
+# `@php artisan package:discover` 與 `@php artisan filament:upgrade`，
+# 兩者都經 Symfony Process 呼叫 proc_open。
+- name: Assert | PHP CLI 可用且有 proc_open（A2）
+  ansible.builtin.command:
+    argv:
+      - "{{ php_cli_binary }}"
+      - "-r"
+      - "echo function_exists('proc_open') ? 'yes' : 'no';"
+  register: backend_proc_open
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Assert | 缺 proc_open 就不要往下走
+  ansible.builtin.assert:
+    that:
+      - backend_proc_open.rc == 0
+      - (backend_proc_open.stdout | default('') | trim) == 'yes'
+    quiet: true
+    fail_msg: >-
+      {{ php_cli_binary }} 不可執行，或 CLI 的 disable_functions 含 proc_open
+      （rc={{ backend_proc_open.rc }}，輸出
+      "{{ backend_proc_open.stdout | default('') | trim }}"）。
+      本專案 backend/composer.json 的 post-autoload-dump 會跑
+      `@php artisan package:discover` 與 `@php artisan filament:upgrade`，
+      走 Symfony Process → proc_open。少了它，composer install 必死於
+      "The Process class relies on proc_open, which is not available on your PHP installation."
+      檢查點：
+        1. {{ '/etc/php/' ~ php_version ~ '/cli/conf.d/' }} 底下不該有 99-app.ini
+           （php role 的 disable_functions 只寫 fpm/conf.d）
+        2. php_disable_functions 不可含 proc_open
+        3. {{ php_cli_binary }} -i | grep disable_functions
+
+- name: Assert | 目錄骨架必須已由 common role 建好（A8）
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: backend_skeleton_stat
+  loop:
+    - "{{ backend_releases_dir }}"
+    - "{{ backend_shared_dir }}"
+    - "{{ backend_shared_storage_path }}"
+    - "{{ app_log_dir }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Assert | 骨架不存在時給出可行動的訊息
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    quiet: true
+    fail_msg: >-
+      {{ item.item }} 不存在或不是目錄。
+      releases / shared / storage / log 目錄必須由 common role 先建好（A8），
+      owner 是 {{ deploy_user }}，否則本 role 以 {{ deploy_user }} 身分 clone 時
+      父目錄還是 root:root 0755，git 會回
+      "could not create work tree dir: Permission denied"。
+      修正：先跑 `ansible-playbook site.yml --tags common` 或整份 site.yml。
+  loop: "{{ backend_skeleton_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode
+
+# systemd unit 探測放在這裡（而不是 services.yml）是刻意的：
+# handlers 需要 backend_php_fpm_unit_present，而 handler 可能在 services.yml
+# 之前就被 flush（例如 composer 那一步 notify 之後遇到 meta: flush_handlers）。
+# 事實必須在任何 notify 發生之前就存在，否則 `| default(false)` 會讓 reload 被靜靜跳過。
+- name: Assert | 探測相關 systemd unit 是否存在（唯讀）
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  register: backend_unit_probe
+  loop:
+    - key: php_fpm
+      path: "/usr/lib/systemd/system/{{ php_fpm_service }}.service"
+    - key: mysql
+      path: "/usr/lib/systemd/system/mysql.service"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Assert | 整理探測結果（A7：一定要真的定義出來）
+  ansible.builtin.set_fact:
+    backend_php_fpm_unit_present: >-
+      {{ (backend_unit_probe.results | selectattr('item.key', 'equalto', 'php_fpm')
+          | map(attribute='stat.exists') | list | first | default(false)) }}
+    backend_mysql_unit_present: >-
+      {{ (backend_unit_probe.results | selectattr('item.key', 'equalto', 'mysql')
+          | map(attribute='stat.exists') | list | first | default(false)) }}
+
+- name: Assert | php-fpm unit 不存在時提醒
+  ansible.builtin.debug:
+    msg: >-
+      找不到 /usr/lib/systemd/system/{{ php_fpm_service }}.service。
+      換版之後不會 reload php-fpm，OPcache 與 realpath cache 可能還抓著舊 release。
+      正常情況下 php role 會裝好它；只跑 --tags deploy_backend 時看到這則訊息是預期的。
+  when: not (backend_php_fpm_unit_present | bool)

@@ -14,7 +14,7 @@ _cx_completion() {
     fi
 
     local global_flags='--root --mode --ui --dry-run --yes -y -h --help'
-    local verbs='help doctor lint scan git fresh tui'
+    local verbs='help doctor lint scan git fresh tui install uninstall art composer npm'
 
     # 先找出動詞的位置（跳過全域旗標與其參數）
     local i=1 verb='' sub='' argn=0
@@ -92,6 +92,8 @@ _cx_completion() {
             ;;
         lint)
             [[ $cur != -* ]] && COMPREPLY=($(compgen -d -- "$cur")) ;;
+        install|uninstall)
+            COMPREPLY=($(compgen -W '--rc --help -h' -- "$cur")) ;;
         doctor|help|tui)
             COMPREPLY=($(compgen -W '--help -h' -- "$cur")) ;;
     esac

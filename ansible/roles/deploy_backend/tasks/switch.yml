@@ -1,0 +1,126 @@
+---
+# 原子換版。
+#
+# `ln -sfn new current` **不是**原子的：coreutils 對已存在的目標會先 unlink
+# 再 symlink，中間有一個 current 不存在的視窗，正好落在那一瞬間的請求會拿到 404/500。
+# 正確做法是先建一個臨時 symlink，再用 `mv -T` 覆蓋過去 —— mv -T 走 rename(2)，
+# 同一個檔案系統上是原子的。
+
+- name: Switch | current 目前指向哪裡
+  ansible.builtin.stat:
+    path: "{{ backend_current_path }}"
+    follow: false
+  register: backend_current_stat
+
+- name: Switch | current 若存在，必須是 symlink
+  ansible.builtin.assert:
+    that:
+      - (not (backend_current_stat.stat.exists | default(false)))
+        or (backend_current_stat.stat.islnk | default(false))
+    quiet: true
+    fail_msg: >-
+      {{ backend_current_path }} 存在但不是 symlink（是一般目錄或檔案）。
+      本 role 只會用 `mv -T` 把一個 symlink 換成另一個 symlink；
+      對著一個真的目錄做 mv -T 會得到 "cannot overwrite directory"，
+      而自動把它刪掉是不能接受的（那可能是別人手動放的線上程式碼）。
+      請人工確認 {{ backend_current_path }} 的內容後手動處理，例如：
+        mv {{ backend_current_path }} {{ backend_current_path }}.manual-backup
+      再重跑本 playbook。
+
+- name: Switch | 判斷是否需要換版
+  ansible.builtin.set_fact:
+    backend_switch_needed: >-
+      {{ (not (backend_current_stat.stat.exists | default(false)))
+         or ((backend_current_stat.stat.lnk_source | default('')) != backend_release_path) }}
+
+- name: Switch | 換版前的狀態
+  ansible.builtin.debug:
+    msg: >-
+      current = {{ backend_current_stat.stat.lnk_source | default('（尚不存在）') }}
+      → {{ backend_release_path }}
+      （{{ '需要換版' if backend_switch_needed | bool else '已經指向本次 release，略過' }}）
+
+# force: true 只是為了蓋掉上一次中斷留下的 .new，不會碰到 current。
+- name: Switch | 建立臨時 symlink {{ backend_current_staging_link | basename }}
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.file:
+    src: "{{ backend_release_path }}"
+    dest: "{{ backend_current_staging_link }}"
+    state: link
+    force: true
+    follow: false
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+  when:
+    - backend_switch_needed | bool
+    - not ansible_check_mode
+
+# mv -T：把「來源」當成一個普通檔案搬過去，而不是「搬進目標目錄裡面」。
+# 少了 -T，當 current 已經是指向某個目錄的 symlink 時，mv 會把 .new 搬進
+# 那個目錄底下變成 <舊release>/current.new —— 換版完全沒發生，卻回報成功。
+- name: Switch | mv -T 原子換版
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mv
+      - -T
+      - "{{ backend_current_staging_link }}"
+      - "{{ backend_current_path }}"
+  register: backend_switch_mv
+  changed_when: backend_switch_mv.rc == 0
+  failed_when: backend_switch_mv.rc != 0
+  when:
+    - backend_switch_needed | bool
+    - not ansible_check_mode
+  notify: deploy_backend | reload php-fpm
+
+- name: Switch | 記錄換版結果（services.yml 要用）
+  ansible.builtin.set_fact:
+    backend_switch_changed: >-
+      {{ (backend_switch_mv.changed | default(false)) | bool }}
+
+- name: Switch | 驗證 current 真的指到本次 release
+  ansible.builtin.stat:
+    path: "{{ backend_current_path }}"
+    follow: false
+  register: backend_current_after
+  when: not ansible_check_mode
+
+- name: Switch | 換版沒生效就 fail fast
+  ansible.builtin.assert:
+    that:
+      - backend_current_after.stat.exists | default(false)
+      - backend_current_after.stat.islnk | default(false)
+      - (backend_current_after.stat.lnk_source | default('')) == backend_release_path
+    quiet: true
+    fail_msg: >-
+      {{ backend_current_path }} 沒有指向 {{ backend_release_path }}
+      （實際：{{ backend_current_after.stat.lnk_source | default('不存在') }}）。
+      mv -T 回報成功卻沒生效，最可能的原因是
+      {{ backend_current_staging_link }} 與 {{ backend_current_path }}
+      不在同一個檔案系統（rename(2) 會失敗）。
+      兩者都在 {{ backend_root }} 底下，正常不會跨檔案系統；
+      若你把 releases 或 current 掛到別的裝置上，請改回來。
+  when: not ansible_check_mode
+
+# 殘留的 .new 只可能來自「建立臨時 symlink 之後、mv 之前」被中斷的那一次。
+# 它一定是本 role 自己建的 symlink，而且路徑固定，所以清掉是安全的；
+# 仍然加上 islnk 的條件，避免誤刪一個同名的真目錄。
+- name: Switch | 清掉殘留的臨時 symlink
+  ansible.builtin.stat:
+    path: "{{ backend_current_staging_link }}"
+    follow: false
+  register: backend_staging_leftover
+  when: not ansible_check_mode
+
+- name: Switch | 移除殘留的臨時 symlink（僅限 symlink）
+  ansible.builtin.file:
+    path: "{{ backend_current_staging_link }}"
+    state: absent
+  when:
+    - not ansible_check_mode
+    - backend_staging_leftover.stat.exists | default(false)
+    - backend_staging_leftover.stat.islnk | default(false)
+    - backend_current_staging_link == (backend_current_path ~ '.new')

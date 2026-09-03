@@ -66,24 +66,57 @@ cmd_git_main() {
 _git_status() {
     local r
     while read -r r; do
-        printf '\n%s%s%s\n' "$C_BLU" "$(basename "$r")" "$C_RST"
+        printf '\n%s%s%s\n' "$C_BLU" "$(_git_repo_slug "$r")" "$C_RST"
+        if ! _git_is_repo_root "$r"; then
+            printf '  %s✘ 不是 git repo 的根%s（子模組未初始化？ git submodule update --init）\n' \
+                "$C_RED" "$C_RST"
+            continue
+        fi
         printf '  branch : %s\n' "$(git -C "$r" branch --show-current 2>/dev/null || echo '<detached>')"
         printf '  head   : %s\n' "$(git -C "$r" rev-parse --short HEAD 2>/dev/null || echo '<unborn>')"
-        printf '  dirty  : %s 項\n' "$(git -C "$r" status --porcelain | wc -l)"
+        printf '  dirty  : %s 項\n' "$(git -C "$r" status --porcelain 2>/dev/null | wc -l)"
         printf '  origin : %s\n' "$(git -C "$r" remote get-url origin 2>/dev/null || echo '(未設定)')"
     done < <(_git_repos_order)
 }
 
+# 這個路徑本身是不是一個 git repo 的根？
+# 不能只用 `git -C "$r" rev-parse --git-dir` —— 那會沿著父目錄往上找，
+# 所以「$CX_ROOT/backend 是空目錄、但 $CX_ROOT 是 repo」時它會回傳成功。
+_git_is_repo_root() {
+    local r=$1 top
+    top=$(git -C "$r" rev-parse --show-toplevel 2>/dev/null) || return 1
+    [[ $(cd "$r" && pwd -P) == "$(cd "$top" && pwd -P)" ]]
+}
+
+# 三 repo 操作的共同前置檢查：子模組沒初始化時，
+# 後面每一個 git 指令都會失敗，但因為 dispatcher 關掉了 errexit，
+# cx_ok 仍會無條件印出「✔」。
+_git_require_repos() {
+    local r slug bad=0
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        _git_is_repo_root "$r" \
+            || { cx_error "$slug（$r）不是 git repo 的根"; bad=1; }
+    done < <(_git_repos_order)
+    (( bad == 0 )) || {
+        cx_dim "  子模組尚未初始化？ git submodule update --init --recursive"
+        return "$EX_PRECOND"
+    }
+}
+
 _git_sync() {
+    _git_require_repos || return $?
     cx_step "同步子模組到追蹤分支"
     local c b
     for c in backend frontend; do
-        b=$(git config -f "$CX_ROOT/.gitmodules" --get "submodule.$c.branch" || echo main)
+        b=$(git config -f "$CX_ROOT/.gitmodules" --get "submodule.$c.branch" 2>/dev/null || echo main)
         if git -C "$CX_ROOT/$c" symbolic-ref -q HEAD >/dev/null 2>&1; then
             cx_ok "$c 已在分支 $(git -C "$CX_ROOT/$c" branch --show-current)"
-        else
-            cx_run git -C "$CX_ROOT/$c" checkout -q "$b"
+        elif cx_run git -C "$CX_ROOT/$c" checkout -q "$b"; then
             cx_ok "$c → $b（原本是 detached HEAD）"
+        else
+            cx_error "$c 切換到 $b 失敗"
+            return "$EX_FAIL"
         fi
     done
 }
@@ -92,7 +125,8 @@ _git_commit() {
     local msg='' amend=0 no_verify_scan=0
     while (( $# )); do
         case $1 in
-            -m|--message) msg=${2:?-m 需要訊息}; shift 2 ;;
+            -m|--message) [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "-m 需要訊息"
+                          msg=$2; shift 2 ;;
             --amend)      amend=1; shift ;;
             --skip-scan)  no_verify_scan=1; shift ;;
             *)            cx_die "$EX_USAGE" "commit: 未知參數 $1" ;;
@@ -101,11 +135,17 @@ _git_commit() {
 
     # 沒給訊息就引導產生（Conventional Commits）
     if [[ -z $msg && $amend -eq 0 ]]; then
-        msg=$(_git_compose_message) || return "$EX_ABORT"
+        local _mrc=0
+        msg=$(_git_compose_message) || _mrc=$?
+        (( _mrc == 0 )) || return "$_mrc"
     fi
 
     # 提交前掃一次祕密 —— 三個 repo 都是 public
-    (( no_verify_scan )) || _git_scan_secrets
+    if (( no_verify_scan )); then
+        cx_warn "[--skip-scan] 已略過祕密掃描 —— cx git push 仍會擋"
+    else
+        _git_scan_secrets
+    fi
 
     cx_step "提交"
     local c changed=0 n
@@ -175,6 +215,11 @@ _git_compose_message() {
             || { rm -f "$f"; return 1; }
         subject=$(<"$f"); rm -f "$f"
     else
+        if ! _cx_can_ask; then
+            cx_error "非互動環境無法引導產生提交訊息"
+            cx_dim "  請改用： cx git commit -m 'feat(scope): 摘要'"
+            return "$EX_USAGE"
+        fi
         printf '提交類型 (%s): ' "${types[*]}" >&2
         read -r type </dev/tty || return 1
         printf '影響範圍（可留空）: ' >&2; read -r scope </dev/tty || return 1
@@ -198,9 +243,13 @@ _git_branch() {
     local sub=${1:-list}; shift || true
     case $sub in
         list)   _git_branch_list ;;
-        new)    _git_branch_new "${1:?branch new 需要名稱}" ;;
-        switch) _git_branch_switch "${1:?branch switch 需要名稱}" ;;
-        delete) _git_branch_delete "${1:?branch delete 需要名稱}" ;;
+        -h|--help) _git_usage; return 0 ;;
+        new)    [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "branch new 需要名稱"
+                _git_branch_new "$1" ;;
+        switch) [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "branch switch 需要名稱"
+                _git_branch_switch "$1" ;;
+        delete) [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "branch delete 需要名稱"
+                _git_branch_delete "$1" ;;
         *)      cx_die "$EX_USAGE" "branch: 未知子指令 $sub（list|new|switch|delete）" ;;
     esac
 }
@@ -215,8 +264,12 @@ _git_branch_list() {
         while IFS='|' read -r b date up track; do
             mark='  '; [[ $b == "$cur" ]] && mark=' *'
             printf '%s %-24s %-16s %-18s %s\n' "$mark" "$b" "$date" "${up:-（無上游）}" "$track"
+        # <(...) 開的是子 shell，errexit 與 ERR trap 在裡面仍然有效
+        # （dispatcher 的 || _rc=$? 只關掉主 shell 的）。
+        # 子模組尚未初始化時 git 會 exit 128 並吐出整串 stack dump。
         done < <(git -C "$r" for-each-ref --sort=-committerdate refs/heads/ \
-            --format='%(refname:short)|%(committerdate:relative)|%(upstream:short)|%(upstream:track)')
+            --format='%(refname:short)|%(committerdate:relative)|%(upstream:short)|%(upstream:track)' \
+            2>/dev/null || true)
     done < <(_git_repos_order)
     printf '\n'
 }
@@ -344,17 +397,19 @@ _git_branch_delete() {
 # ---------------------------------------------------------------------------
 _git_scan_secrets() {
     cx_step "祕密掃描（三個 repo 皆為 PUBLIC）"
-    local r slug bad=0 files hits
+    local r slug bad=0 repo_bad files hits
 
     while read -r r; do
         slug=$(_git_repo_slug "$r")
+        repo_bad=0        # per-repo 重置：否則第一個 repo 髒之後，
+                          # 後面每個 repo 的「✔ 乾淨」都會被吞掉
         files=$(git -C "$r" ls-files)
         [[ -n $files ]] || continue
 
         # 1) 檔名層級
         hits=$(printf '%s\n' "$files" | grep -iE '(^|/)\.env$|\.key$|\.pem$|\.p12$|\.pfx$|(^|/)auth\.json$|(^|/)id_rsa|\.sqlite$' || true)
         if [[ -n $hits ]]; then
-            cx_error "$slug 有不該進版控的檔案："; printf '%s\n' "$hits" | sed 's/^/      /' >&2; bad=1
+            cx_error "$slug 有不該進版控的檔案："; printf '%s\n' "$hits" | sed 's/^/      /' >&2; repo_bad=1
         fi
 
         # 2) 內容層級（排除 .example / lock 檔）
@@ -363,7 +418,7 @@ _git_scan_secrets() {
                  'APP_KEY=base64:[A-Za-z0-9+/=]{20,}|BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]{10,}' \
                  2>/dev/null || true)
         if [[ -n $hits ]]; then
-            cx_error "$slug 疑似含憑證："; printf '%s\n' "$hits" | sed 's/^/      /' >&2; bad=1
+            cx_error "$slug 疑似含憑證："; printf '%s\n' "$hits" | sed 's/^/      /' >&2; repo_bad=1
         fi
 
         # 3) 絕對路徑洩漏（symlink 指向 $HOME）
@@ -371,7 +426,7 @@ _git_scan_secrets() {
         while IFS= read -r l; do
             [[ -n $l ]] || continue
             local tgt; tgt=$(git -C "$r" show ":$l" 2>/dev/null || true)
-            [[ $tgt == /* ]] && { cx_error "$slug symlink 指向絕對路徑：$l → $tgt"; bad=1; }
+            [[ $tgt == /* ]] && { cx_error "$slug symlink 指向絕對路徑：$l → $tgt"; repo_bad=1; }
         done <<< "$hits"
 
         # 4) gitleaks 掃「整個歷史」——祕密一旦進過 commit，改掉當前檔案是不夠的
@@ -380,16 +435,20 @@ _git_scan_secrets() {
                     --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
                     >/dev/null 2>&1; then
                 cx_error "$slug gitleaks 在 git 歷史中發現祕密"
-                gitleaks git "$r" --no-banner --redact \
+                # 必須加 -v：gitleaks 8.30 不加 -v 只印 INF/WRN 摘要，
+                # 沒有 -v 的話下面的 grep 永遠抓不到東西，使用者只看到
+                # 「發現祕密」卻不知道是哪一筆。
+                gitleaks git "$r" --no-banner --redact -v \
                     --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" 2>&1 \
-                    | grep -E 'RuleID|File|Commit' | sed 's/^/      /' >&2 || true
-                bad=1
+                    | grep -E 'RuleID|File:|Line:|Commit:' | sed 's/^/      /' >&2 || true
+                repo_bad=1
             fi
         else
             cx_warn "gitleaks 未安裝 —— 略過歷史掃描（建議安裝）"
         fi
 
-        (( bad )) || cx_ok "$slug 乾淨（$(printf '%s\n' "$files" | wc -l) 個檔案，含歷史）"
+        (( repo_bad )) && bad=1
+        (( repo_bad )) || cx_ok "$slug 乾淨（$(printf '%s\n' "$files" | wc -l) 個檔案，含歷史）"
     done < <(_git_repos_order)
 
     (( bad == 0 )) || cx_die "$EX_FAIL" "祕密掃描未通過，已中止"

@@ -1,0 +1,254 @@
+---
+# ============================================================================
+# PM2 狀態收斂（A10）
+#
+#   ssr / spa → pm2 startOrReload {{ pm2_ecosystem_path }} --update-env
+#   static    → 不啟動任何 process，並把上一個模式留下的 process delete 掉，
+#               再 pm2 save --force 把「空清單」寫進 dump.pm2 ——
+#               少了 --force，pm2 會印 "PM2 is not managing any process,
+#               skipping save..." 而不寫檔，下次開機 resurrect 就把舊 process
+#               又叫回來，繼續佔著 {{ frontend_port }} 埠。
+#
+# ecosystem.config.cjs 由 nodejs_pm2 role 產生，裡面每個 app 都是
+# exec_mode: 'fork'、instances: 1（A10）。本 role 不重寫它，只驅動狀態。
+# ============================================================================
+
+# A7：先無條件定義成空清單，static 模式就直接是這個值，
+# 後面所有引用都有東西可以用（不會出現 undefined）。
+# 名稱格式必須跟 nodejs_pm2 的 ecosystem 完全一致：<prefix>-<索引>，索引從 0 起算。
+- name: PM2 | 初始化目標 process 清單
+  ansible.builtin.set_fact:
+    frontend_pm2_desired_names: []
+
+- name: PM2 | 本次模式要有哪些 process
+  ansible.builtin.set_fact:
+    frontend_pm2_desired_names: >-
+      {{ frontend_pm2_desired_names + [frontend_app_prefix ~ '-' ~ idx] }}
+  loop: "{{ range(frontend_instances | int) | list }}"
+  loop_control:
+    loop_var: idx
+    label: "{{ frontend_app_prefix }}-{{ idx }} :{{ (frontend_port | int) + (idx | int) }}"
+  when: frontend_mode in ['ssr', 'spa']
+
+- name: PM2 | 喚醒 daemon（吃掉第一次呼叫的 "Spawning PM2 daemon" 訊息）
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ pm2_bin }}", ping]
+  environment:
+    PM2_HOME: "{{ pm2_home }}"
+    HOME: "{{ deploy_user_home }}"
+  register: frontend_pm2_ping
+  changed_when: false
+  failed_when: frontend_pm2_ping.rc != 0
+  check_mode: false
+  when:
+    - frontend_pm2_manage | bool
+    - not ansible_check_mode
+
+- name: PM2 | 讀取目前的 process 清單
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ pm2_bin }}", jlist]
+  environment:
+    PM2_HOME: "{{ pm2_home }}"
+    HOME: "{{ deploy_user_home }}"
+  register: frontend_pm2_jlist
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - frontend_pm2_manage | bool
+    - not ansible_check_mode
+
+- name: PM2 | jlist 無法解析就 fail fast
+  ansible.builtin.assert:
+    that:
+      - frontend_pm2_jlist.rc == 0
+      - (frontend_pm2_jlist.stdout | trim) is match('^\\[')
+    quiet: true
+    fail_msg: >-
+      `pm2 jlist` 沒有回傳可解析的 JSON（rc={{ frontend_pm2_jlist.rc }}）。
+      stdout 前 200 字：{{ frontend_pm2_jlist.stdout | default('') | truncate(200, true, '…') }}
+      stderr：{{ frontend_pm2_jlist.stderr | default('') | truncate(200, true, '…') }}
+      這一步不能靜靜跳過 —— 模式切換要靠它判斷哪些舊 process 該收掉，
+      判斷不了就會出現 ssr 與 static 的 process 同時佔著 {{ frontend_port }} 埠。
+      手動重現：
+        sudo -u {{ deploy_user }} PM2_HOME={{ pm2_home }} {{ pm2_bin }} jlist
+  when:
+    - frontend_pm2_manage | bool
+    - not ansible_check_mode
+
+- name: PM2 | 算出現況與待清除清單
+  ansible.builtin.set_fact:
+    frontend_pm2_current_names: >-
+      {{ (frontend_pm2_jlist.stdout | default('[]') | from_json) | map(attribute='name') | list }}
+    frontend_pm2_stale_names: >-
+      {{ (frontend_pm2_jlist.stdout | default('[]') | from_json) | map(attribute='name') | list
+         | select('match', frontend_managed_pm2_pattern)
+         | reject('in', frontend_pm2_desired_names) | list }}
+  when:
+    - frontend_pm2_manage | bool
+    - not ansible_check_mode
+
+- name: PM2 | 狀態差異
+  ansible.builtin.debug:
+    msg: >-
+      mode={{ frontend_mode }}
+      | 目標={{ (frontend_pm2_desired_names | default([])) | join(', ') | default('（無，static 不起 PM2）', true) }}
+      | 現況={{ (frontend_pm2_current_names | default([])) | join(', ') | default('（無）', true) }}
+      | 待清除={{ (frontend_pm2_stale_names | default([])) | join(', ') | default('（無）', true) }}
+  when: frontend_pm2_manage | bool
+
+# 刪除的三重 gate：
+#   1. pm2_prune_stale_apps 開關；
+#   2. 名稱必須完全符合 ^{{ frontend_app_prefix }}-<數字>$；
+#   3. 名稱不在本次的目標清單裡。
+# 就算 desired 因故算成空清單，也只可能刪到本專案自己的 process，
+# 不會碰到同一台機器上別人的 PM2 應用。
+- name: PM2 | 收掉不屬於目前模式的 process
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ pm2_bin }}", delete, "{{ item }}"]
+  environment:
+    PM2_HOME: "{{ pm2_home }}"
+    HOME: "{{ deploy_user_home }}"
+  loop: "{{ frontend_pm2_stale_names | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: frontend_pm2_delete
+  changed_when: frontend_pm2_delete.rc == 0
+  failed_when: frontend_pm2_delete.rc != 0
+  when:
+    - frontend_pm2_manage | bool
+    - pm2_prune_stale_apps | bool
+    - (item | length) > 0
+    - item is match(frontend_managed_pm2_pattern)
+    - item not in (frontend_pm2_desired_names | default([]))
+    - not ansible_check_mode
+  notify: deploy_frontend | pm2 save
+
+- name: PM2 | 未清除的殘留提出警告
+  ansible.builtin.debug:
+    msg: >-
+      pm2_prune_stale_apps 是 false，下列 process 會繼續執行：
+      {{ (frontend_pm2_stale_names | default([])) | join(', ') }}。
+      從 ssr/spa 切到 static 時它們會繼續佔用 {{ frontend_port }} 起的埠，
+      nginx 的 upstream 也還連得上舊版前端。
+  when:
+    - frontend_pm2_manage | bool
+    - not (pm2_prune_stale_apps | bool)
+    - (frontend_pm2_stale_names | default([])) | length > 0
+
+# 換版之後 current 已經指向新 release，ecosystem 的 script
+# （{{ frontend_current_path }}/.output/server/index.mjs）才是新的進入點。
+# --update-env 讓 PM2 重新讀取 ecosystem 裡的 env 區塊；
+# 少了它，改過的 PORT / NUXT_PUBLIC_* 不會生效。
+- name: PM2 | 確認換版後的進入點存在
+  ansible.builtin.stat:
+    path: "{{ frontend_current_path }}/{{ frontend_entry_relative }}"
+  register: frontend_current_entry_stat
+  when:
+    - frontend_pm2_manage | bool
+    - frontend_mode in ['ssr', 'spa']
+    - not ansible_check_mode
+
+- name: PM2 | 進入點不存在就 fail fast
+  ansible.builtin.assert:
+    that:
+      - frontend_current_entry_stat.stat.exists | default(false)
+    quiet: true
+    fail_msg: >-
+      {{ frontend_current_path }}/{{ frontend_entry_relative }} 不存在。
+      {{ frontend_mode }} 模式一定要有它，PM2 才啟得動。
+      硬起會讓 PM2 進入 errored 迴圈並在 log 裡刷
+      "Script not found: .../index.mjs"。
+      先確認換版有沒有成功：ls -l {{ frontend_current_path }}
+  when:
+    - frontend_pm2_manage | bool
+    - frontend_mode in ['ssr', 'spa']
+    - not ansible_check_mode
+
+- name: PM2 | startOrReload
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ pm2_bin }}"
+      - startOrReload
+      - "{{ pm2_ecosystem_path }}"
+      - "--update-env"
+    chdir: "{{ pm2_ecosystem_dir }}"
+  environment:
+    PM2_HOME: "{{ pm2_home }}"
+    HOME: "{{ deploy_user_home }}"
+  register: frontend_pm2_start
+  changed_when: frontend_pm2_start.rc == 0
+  failed_when: frontend_pm2_start.rc != 0
+  when:
+    - frontend_pm2_manage | bool
+    - frontend_mode in ['ssr', 'spa']
+    - not ansible_check_mode
+  notify: deploy_frontend | pm2 save
+
+- name: PM2 | static 模式不啟動任何 process
+  ansible.builtin.debug:
+    msg: >-
+      static 模式：Nginx 直送 {{ frontend_current_path }}/{{ frontend_static_relative }}，
+      不需要 PM2。已清除 {{ (frontend_pm2_stale_names | default([])) | length }} 個舊 process，
+      並會把空清單存進 {{ pm2_home }}/dump.pm2（pm2 save --force）。
+  when:
+    - frontend_pm2_manage | bool
+    - frontend_mode == 'static'
+
+# 等到 process 真的 online 再往下（healthcheck 會馬上打 HTTP）。
+- name: PM2 | 等待 process 進入 online
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: ["{{ pm2_bin }}", jlist]
+  environment:
+    PM2_HOME: "{{ pm2_home }}"
+    HOME: "{{ deploy_user_home }}"
+  register: frontend_pm2_wait
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  retries: "{{ frontend_pm2_wait_retries | int }}"
+  delay: "{{ frontend_pm2_wait_delay | int }}"
+  until: >-
+    (frontend_pm2_wait.rc == 0)
+    and ((frontend_pm2_wait.stdout | default('[]') | from_json)
+         | selectattr('name', 'in', frontend_pm2_desired_names)
+         | selectattr('pm2_env.status', 'equalto', 'online')
+         | list | length) == (frontend_pm2_desired_names | length)
+  when:
+    - frontend_pm2_manage | bool
+    - frontend_mode in ['ssr', 'spa']
+    - (frontend_pm2_desired_names | default([])) | length > 0
+    - not ansible_check_mode
+  ignore_errors: true
+
+- name: PM2 | 沒有全部 online 就給出可行動的訊息
+  ansible.builtin.assert:
+    that:
+      - frontend_pm2_wait is not failed
+    quiet: true
+    fail_msg: >-
+      等了 {{ (frontend_pm2_wait_retries | int) * (frontend_pm2_wait_delay | int) }} 秒，
+      {{ frontend_pm2_desired_names | join(', ') }} 仍未全部進入 online。
+      該看哪裡：
+        1. PM2 自己的錯誤：
+           sudo -u {{ deploy_user }} PM2_HOME={{ pm2_home }} {{ pm2_bin }} logs --lines 100 --nostream
+        2. 應用的 stderr：{{ app_log_dir }}/{{ frontend_app_prefix }}-0.err.log
+        3. 埠被佔用：ss -lntp | grep :{{ frontend_port }}
+      最常見的原因是 ERR_REQUIRE_ESM —— 那代表 ecosystem 用了
+      exec_mode: 'cluster'。Nuxt 的進入點是 ESM 的 .mjs，
+      cluster 走 CJS require() 載不動（pm2#5946、nuxt#13916），一律要用 fork（A10）。
+  when:
+    - frontend_pm2_manage | bool
+    - frontend_mode in ['ssr', 'spa']
+    - (frontend_pm2_desired_names | default([])) | length > 0
+    - not ansible_check_mode

@@ -1,0 +1,113 @@
+---
+# 原子換版，跟 deploy_backend 同一套：
+# `ln -sfn` 對已存在的目標會先 unlink 再 symlink，中間有一個 current 不存在的
+# 視窗；正確做法是先建臨時 symlink，再用 `mv -T` 走 rename(2) 覆蓋過去。
+
+- name: Switch | current 目前指向哪裡
+  ansible.builtin.stat:
+    path: "{{ frontend_current_path }}"
+    follow: false
+  register: frontend_current_stat
+
+- name: Switch | current 若存在，必須是 symlink
+  ansible.builtin.assert:
+    that:
+      - (not (frontend_current_stat.stat.exists | default(false)))
+        or (frontend_current_stat.stat.islnk | default(false))
+    quiet: true
+    fail_msg: >-
+      {{ frontend_current_path }} 存在但不是 symlink。
+      本 role 只會用 mv -T 把一個 symlink 換成另一個 symlink；
+      對著真的目錄做 mv -T 會得到 "cannot overwrite directory"，
+      而自動刪掉它是不能接受的。請人工確認內容後手動處理：
+        mv {{ frontend_current_path }} {{ frontend_current_path }}.manual-backup
+
+- name: Switch | 判斷是否需要換版
+  ansible.builtin.set_fact:
+    frontend_switch_needed: >-
+      {{ (not (frontend_current_stat.stat.exists | default(false)))
+         or ((frontend_current_stat.stat.lnk_source | default('')) != frontend_release_path) }}
+
+- name: Switch | 換版前的狀態
+  ansible.builtin.debug:
+    msg: >-
+      current = {{ frontend_current_stat.stat.lnk_source | default('（尚不存在）') }}
+      → {{ frontend_release_path }}
+      （{{ '需要換版' if frontend_switch_needed | bool else '已經指向本次 release，略過' }}）
+
+- name: Switch | 建立臨時 symlink
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.file:
+    src: "{{ frontend_release_path }}"
+    dest: "{{ frontend_current_staging_link }}"
+    state: link
+    force: true
+    follow: false
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+  when:
+    - frontend_switch_needed | bool
+    - not ansible_check_mode
+
+# 少了 -T，當 current 已經是指向某個目錄的 symlink 時，mv 會把 .new 搬進
+# 那個目錄裡面變成 <舊release>/current.new —— 換版沒發生，卻回報成功。
+- name: Switch | mv -T 原子換版
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mv
+      - -T
+      - "{{ frontend_current_staging_link }}"
+      - "{{ frontend_current_path }}"
+  register: frontend_switch_mv
+  changed_when: frontend_switch_mv.rc == 0
+  failed_when: frontend_switch_mv.rc != 0
+  when:
+    - frontend_switch_needed | bool
+    - not ansible_check_mode
+
+- name: Switch | 記錄換版結果（pm2.yml 要用）
+  ansible.builtin.set_fact:
+    frontend_switch_changed: >-
+      {{ (frontend_switch_mv.changed | default(false)) | bool }}
+
+- name: Switch | 驗證 current 真的指到本次 release
+  ansible.builtin.stat:
+    path: "{{ frontend_current_path }}"
+    follow: false
+  register: frontend_current_after
+  when: not ansible_check_mode
+
+- name: Switch | 換版沒生效就 fail fast
+  ansible.builtin.assert:
+    that:
+      - frontend_current_after.stat.exists | default(false)
+      - frontend_current_after.stat.islnk | default(false)
+      - (frontend_current_after.stat.lnk_source | default('')) == frontend_release_path
+    quiet: true
+    fail_msg: >-
+      {{ frontend_current_path }} 沒有指向 {{ frontend_release_path }}
+      （實際：{{ frontend_current_after.stat.lnk_source | default('不存在') }}）。
+      mv -T 回報成功卻沒生效，最可能是
+      {{ frontend_current_staging_link }} 與 {{ frontend_current_path }}
+      不在同一個檔案系統（rename(2) 會失敗）。
+  when: not ansible_check_mode
+
+- name: Switch | 檢查殘留的臨時 symlink
+  ansible.builtin.stat:
+    path: "{{ frontend_current_staging_link }}"
+    follow: false
+  register: frontend_staging_leftover
+  when: not ansible_check_mode
+
+- name: Switch | 移除殘留的臨時 symlink（僅限 symlink）
+  ansible.builtin.file:
+    path: "{{ frontend_current_staging_link }}"
+    state: absent
+  when:
+    - not ansible_check_mode
+    - frontend_staging_leftover.stat.exists | default(false)
+    - frontend_staging_leftover.stat.islnk | default(false)
+    - frontend_current_staging_link == (frontend_current_path ~ '.new')

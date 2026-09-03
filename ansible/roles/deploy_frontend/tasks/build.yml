@@ -1,0 +1,64 @@
+---
+# A20：三種模式的建置指令與環境變數。對照表在 vars/main.yml 的
+# frontend_build_matrix，本檔只負責把它跑起來。
+#
+#   ssr    → NUXT_SSR=true  npm run build     → .output/server/index.mjs
+#   spa    → NUXT_SSR=false npm run build     → .output/server/index.mjs
+#   static → NUXT_SSR=false npm run generate  → .output/public/
+#
+# frontend/nuxt.config.ts 的第 9 行是
+#     const ssr = process.env.NUXT_SSR !== 'false'
+# 所以 NUXT_SSR 這個變數真的有作用（release.yml 已經複查過沒被寫死）。
+
+- name: Build | 本次要跑什麼
+  ansible.builtin.debug:
+    msg: >-
+      mode={{ frontend_mode }}
+      | 指令=NUXT_SSR={{ frontend_build_spec.nuxt_ssr_env }} npm run {{ frontend_build_spec.npm_script }}
+      | 預期產物={{ frontend_build_spec.expect_hint }}
+      | NUXT_PUBLIC_API_BASE_URL={{ frontend_public_api_base_url | default('（空＝同源）', true) }}
+
+- name: Build | 執行 Nuxt 建置
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ npm_bin }}"
+      - run
+      - "{{ frontend_build_spec.npm_script }}"
+    chdir: "{{ frontend_release_path }}"
+  environment: >-
+    {{ {
+         'HOME': deploy_user_home,
+         'PATH': '/usr/local/bin:/usr/bin:/bin',
+         'NODE_ENV': 'production',
+         'CI': '1',
+         'npm_config_cache': frontend_npm_cache_dir,
+         'NUXT_TELEMETRY_DISABLED': '1',
+         'NUXT_SSR': frontend_build_spec.nuxt_ssr_env,
+         'NUXT_PUBLIC_API_BASE_URL': (frontend_public_api_base_url | string),
+         'NODE_OPTIONS': ('--max-old-space-size=' ~ (frontend_build_heap_mb | int))
+       } | combine(frontend_extra_build_env | default({})) }}
+  register: frontend_build
+  changed_when: frontend_build.rc == 0
+  failed_when: frontend_build.rc != 0
+  timeout: "{{ frontend_build_timeout | int }}"
+  when: not ansible_check_mode
+
+- name: Build | 建置輸出的最後幾行
+  ansible.builtin.debug:
+    msg: "{{ (frontend_build.stdout_lines | default([]))[-12:] }}"
+  when:
+    - frontend_build is defined
+    - frontend_build.stdout_lines is defined
+
+# 狀態檔給 nginx role 與 healthcheck 用：它們要知道「現在到底是哪個模式」，
+# 才能決定要不要 proxy 到 PM2、要不要檢查 pm2 jlist。
+# common role 已經建好父目錄（A9 的同型處理）。
+- name: Build | 寫入 frontend_mode 狀態檔
+  ansible.builtin.copy:
+    dest: "{{ frontend_mode_state_file }}"
+    content: "{{ frontend_mode }}\n"
+    owner: root
+    group: "{{ web_group }}"
+    mode: "0644"

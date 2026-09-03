@@ -1,0 +1,86 @@
+---
+# ============================================================================
+# deploy_backend —— 執行順序是刻意的，不要重排：
+#
+#   assert   → 前置條件（release_id 格式、路徑安全、db_primary 數量、A2 proc_open）
+#   release  → 建立 releases/<id> 並 git clone
+#   env      → 渲染 shared/.env（template，不是 lineinfile/sed）
+#   symlinks → release/.env → shared/.env、release/storage → shared/storage
+#   composer → install --no-dev --optimize-autoloader（需要 proc_open，A2）
+#   appkey   → shared/.env 沒有 APP_KEY 時才 key:generate
+#   database → mysqldump 備份 → migrate（groups['db_primary'] gate，A15）
+#   optimize → storage:link、config/view/event cache（route:cache 見 defaults 說明）
+#   switch   → 原子換版（ln 臨時 symlink → mv -T）
+#   services → queue worker + scheduler 的 systemd unit
+#              （刻意排在 switch 之後：unit 的 WorkingDirectory/ExecStart 指向
+#                current，第一次部署時 current 在換版前根本不存在，
+#                先 start 一定會 "Failed to determine working directory"）
+#   prune    → 安全的舊 release 清理（A1）
+#
+# switch 一定要在 composer / migration / cache 全部成功之後，
+# 這樣任何一步失敗時 current 都還指著上一個能跑的版本。
+# ============================================================================
+
+- name: Backend | 前置斷言
+  ansible.builtin.import_tasks: assert.yml
+  tags: [deploy, deploy_backend, backend_assert]
+
+- name: Backend | 建立 release 並 clone
+  ansible.builtin.import_tasks: release.yml
+  tags: [deploy, deploy_backend, backend_release]
+
+- name: Backend | 渲染 shared/.env
+  ansible.builtin.import_tasks: env.yml
+  tags: [deploy, deploy_backend, backend_env]
+
+- name: Backend | release 內的 symlink 與權限
+  ansible.builtin.import_tasks: symlinks.yml
+  tags: [deploy, deploy_backend, backend_symlinks]
+
+- name: Backend | composer install
+  ansible.builtin.import_tasks: composer.yml
+  tags: [deploy, deploy_backend, backend_composer]
+
+- name: Backend | APP_KEY
+  ansible.builtin.import_tasks: appkey.yml
+  tags: [deploy, deploy_backend, backend_appkey]
+
+- name: Backend | 備份與 migration
+  ansible.builtin.import_tasks: database.yml
+  tags: [deploy, deploy_backend, backend_database]
+
+- name: Backend | storage:link 與各種快取
+  ansible.builtin.import_tasks: optimize.yml
+  tags: [deploy, deploy_backend, backend_optimize]
+
+- name: Backend | 原子換版
+  ansible.builtin.import_tasks: switch.yml
+  tags: [deploy, deploy_backend, backend_switch]
+
+- name: Backend | queue / scheduler 的 systemd unit
+  ansible.builtin.import_tasks: services.yml
+  tags: [deploy, deploy_backend, backend_services]
+
+- name: Backend | 清理舊 release（A1）
+  ansible.builtin.import_tasks: prune.yml
+  tags: [deploy, deploy_backend, backend_prune]
+
+- name: Backend | 佈署摘要
+  ansible.builtin.debug:
+    msg: >-
+      backend release={{ release_id }}
+      | path={{ backend_release_path }}
+      | commit={{ backend_git_result.after | default('n/a') }}
+      | current → {{ backend_release_path }}
+      | migration={{ '已執行' if (backend_migrate | bool)
+                     and (inventory_hostname in (groups['db_primary'] | default([])))
+                     else '本機不是 db_primary，未執行' }}
+      | queue workers={{ backend_queue_workers if backend_queue_enabled | bool else 0 }}
+      | 保留 release 數={{ keep_releases }}
+  tags: [deploy, deploy_backend]
+
+# handler 在 play 結束時才會 flush，而 healthcheck 可能是同一個 play 的下一個 role。
+# 明確 flush 一次，確保 php-fpm 已經 reload、queue 已經重啟，健康檢查才有意義。
+- name: Backend | 立即執行待處理的 handler
+  ansible.builtin.meta: flush_handlers
+  tags: [deploy, deploy_backend]

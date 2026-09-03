@@ -23,7 +23,15 @@ cx_ui_init() {
 
 cx_interactive() { [[ -t 8 ]] && [[ $CX_UI != plain ]]; }
 
-_cx_dlg() { case $CX_UI in whiptail) whiptail "$@" ;; dialog) dialog "$@" ;; esac; }
+# 沒有 *) 分支的話，非法的 CX_UI 會讓這個函式「什麼都不做並回傳 0」，
+# 而回傳 0 在 cx_confirm 眼中就是「使用者按了 Yes」。
+_cx_dlg() {
+    case $CX_UI in
+        whiptail) whiptail "$@" ;;
+        dialog)   dialog "$@" ;;
+        *) cx_error "內部錯誤：_cx_dlg 在 CX_UI=$CX_UI 下被呼叫"; return 1 ;;
+    esac
+}
 
 # whiptail 的訊息裡用 \n 表示換行；純文字模式要自己解讀，
 # 否則使用者會看到字面的 "\n" 而不是換行。

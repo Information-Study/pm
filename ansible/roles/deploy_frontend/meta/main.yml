@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: deploy_frontend
+  author: pm
+  description: >-
+    Nuxt 4 的 releases/shared/current 佈署：git clone、npm ci、依 ssr/spa/static
+    分支建置、驗證烘進 bundle 的 API base URL、原子換版、PM2（一律 fork）與
+    安全的 release prune。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [nuxt, nodejs, pm2, deploy]
+dependencies: []

@@ -1,0 +1,197 @@
+---
+# A15：migration 一律用 groups['db_primary'] 明確 gate。
+#
+# 不用 run_once 的理由：run_once 的作用域是「當前 serial batch」。
+# site.yml 只要寫了 serial: 1，每個 batch 都只有一台主機，run_once 就永遠成立，
+# 等於完全沒有 gate —— 十台機器就會跑十次 migrate。
+# 下面這個 fact 在每台主機上都算得出來，跟 serial 無關。
+
+- name: DB | 判斷本機是不是 db_primary（A15）
+  ansible.builtin.set_fact:
+    backend_is_db_primary: >-
+      {{ inventory_hostname in (groups['db_primary'] | default([])) }}
+
+- name: DB | 說明本機的角色
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}
+      {{ '屬於 db_primary，會執行備份與 migration'
+         if backend_is_db_primary | bool
+         else '不是 db_primary（' ~ ((groups['db_primary'] | default([])) | join(', ') | default('未定義', true)) ~ '），略過備份與 migration' }}
+
+# ── migrate 前的備份 ────────────────────────────────────────────────────────
+- name: DB | 建立備份目錄
+  ansible.builtin.file:
+    path: "{{ backend_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when:
+    - backend_is_db_primary | bool
+    - backend_migrate | bool
+    - backend_backup_before_migrate | bool
+
+# 認證檔由本 role 產生，內容是應用帳號（不是 root）。
+# 密碼寫進 0600 的檔案而不是命令列 —— argv 會出現在 ps 與 /proc/<pid>/cmdline。
+- name: DB | 佈署備份用的 MySQL 認證檔
+  ansible.builtin.template:
+    src: db-backup.cnf.j2
+    dest: "{{ backend_backup_defaults_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - backend_is_db_primary | bool
+    - backend_migrate | bool
+    - backend_backup_before_migrate | bool
+  no_log: true
+
+# 用 shell 是因為要接 gzip。set -o pipefail 讓 mysqldump 失敗時整條管線也失敗，
+# 否則 gzip 成功就會讓 rc=0，備出一個 0 byte 的「成功」檔案。
+#
+# host / port / user / password 全部來自 --defaults-file（見 db-backup.cnf.j2），
+# 命令列上沒有任何機密。--defaults-file 必須是 mysqldump 的第一個參數。
+#
+# 先寫 .part 再 mv：中途失敗不會留下一個看起來完好的半截備份，
+# 而 creates: 指向最終檔名，讓同一個 release_id 重跑時不會重複備份。
+- name: DB | migrate 前 mysqldump 備份
+  ansible.builtin.shell:
+    cmd: >-
+      set -o errexit -o nounset -o pipefail;
+      /usr/bin/mysqldump
+      --defaults-file={{ backend_backup_defaults_file | quote }}
+      --single-transaction
+      --quick
+      --routines
+      --events
+      --triggers
+      --no-tablespaces
+      --set-gtid-purged=OFF
+      --databases {{ backend_db_database | quote }}
+      {{ '| /usr/bin/gzip -c' if backend_backup_gzip | bool else '' }}
+      > {{ (backend_premigrate_dump_path ~ '.part') | quote }}
+      && /usr/bin/mv -f {{ (backend_premigrate_dump_path ~ '.part') | quote }}
+         {{ backend_premigrate_dump_path | quote }}
+    executable: /bin/bash
+    creates: "{{ backend_premigrate_dump_path }}"
+  register: backend_dump
+  # creates 命中時模組會回 skipped 且不一定有 rc，所以兩個判斷都套 default()。
+  changed_when:
+    - (backend_dump.rc | default(0)) == 0
+    - not (backend_dump.skipped | default(false))
+  failed_when: (backend_dump.rc | default(0)) != 0
+  timeout: "{{ backend_backup_timeout | int }}"
+  when:
+    - backend_is_db_primary | bool
+    - backend_migrate | bool
+    - backend_backup_before_migrate | bool
+    - not ansible_check_mode
+
+- name: DB | 備份檔必須非空
+  ansible.builtin.stat:
+    path: "{{ backend_premigrate_dump_path }}"
+  register: backend_dump_stat
+  when:
+    - backend_is_db_primary | bool
+    - backend_migrate | bool
+    - backend_backup_before_migrate | bool
+    - not ansible_check_mode
+
+- name: DB | 備份檔為 0 byte 就不要往下 migrate
+  ansible.builtin.assert:
+    that:
+      - backend_dump_stat.stat.exists | default(false)
+      - (backend_dump_stat.stat.size | default(0) | int) > 0
+    quiet: true
+    fail_msg: >-
+      {{ backend_premigrate_dump_path }} 不存在或是 0 byte。
+      沒有可用的備份就不做 migration —— 一旦 migration 破壞資料就回不去了。
+      先手動確認：
+        mysqldump --defaults-file={{ backend_backup_defaults_file }} \
+          --no-tablespaces --databases {{ backend_db_database }} | head
+      1045 Access denied 代表 .env 的 DB_PASSWORD 與 MySQL 裡的授權不一致
+      （兩者都來自 vault_mysql_app_password，檢查是不是只改了一邊），
+      或是少了 '{{ backend_db_username }}'@'{{ backend_db_host }}' 這一筆授權（A3）。
+  when:
+    - backend_is_db_primary | bool
+    - backend_migrate | bool
+    - backend_backup_before_migrate | bool
+    - not ansible_check_mode
+
+# 舊備份清理。作用範圍被四件事夾住：固定目錄、-maxdepth 1、檔名樣式、-mtime +N，
+# 再加上 backend_backup_prune_enabled 這個開關。不會有無界的遞迴刪除。
+- name: DB | 清理超過 {{ backend_backup_retention_days }} 天的舊備份
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/find
+      - "{{ backend_backup_dir }}"
+      - -maxdepth
+      - "1"
+      - -type
+      - f
+      - -name
+      - "{{ app_slug }}-premigrate-*.sql*"
+      - -mtime
+      - "+{{ backend_backup_retention_days | int }}"
+      - -delete
+  register: backend_backup_prune
+  changed_when: backend_backup_prune.rc == 0
+  failed_when: backend_backup_prune.rc != 0
+  when:
+    - backend_is_db_primary | bool
+    - backend_backup_prune_enabled | bool
+    - (backend_backup_retention_days | int) >= 1
+    - backend_backup_dir is match('^/var/backups/..*')
+    - not ansible_check_mode
+
+# ── migration ───────────────────────────────────────────────────────────────
+- name: DB | artisan migrate --force
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ [php_cli_binary, 'artisan', 'migrate', '--force', '--no-interaction', '--no-ansi']
+         + (backend_migrate_extra_args | default([])) }}
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_migrate_result
+  changed_when: >-
+    backend_migrate_result.rc == 0
+    and ('Nothing to migrate' not in (backend_migrate_result.stdout | default('')))
+  failed_when: backend_migrate_result.rc != 0
+  when:
+    - backend_is_db_primary | bool
+    - backend_migrate | bool
+    - not ansible_check_mode
+
+- name: DB | migration 輸出
+  ansible.builtin.debug:
+    msg: "{{ backend_migrate_result.stdout_lines | default([]) }}"
+  when:
+    - backend_is_db_primary | bool
+    - backend_migrate | bool
+    - backend_migrate_result is defined
+    - backend_migrate_result.stdout_lines is defined
+
+# seeder 預設關閉：它會寫入資料，重跑通常不是冪等的。
+- name: DB | artisan db:seed（預設關閉）
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ [php_cli_binary, 'artisan', 'db:seed', '--force', '--no-interaction', '--no-ansi']
+         + (['--class=' ~ backend_seeder_class] if (backend_seeder_class | length) > 0 else []) }}
+    chdir: "{{ backend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  register: backend_seed_result
+  changed_when: backend_seed_result.rc == 0
+  failed_when: backend_seed_result.rc != 0
+  when:
+    - backend_is_db_primary | bool
+    - backend_seed | bool
+    - not ansible_check_mode

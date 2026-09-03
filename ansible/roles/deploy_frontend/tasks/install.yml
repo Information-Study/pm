@@ -1,0 +1,66 @@
+---
+# npm 的快取目錄必須是 deploy 寫得進去的地方。
+# 少了它，npm 會退回 root 的家目錄（EACCES）或直接停用快取，
+# 讓每次部署都重抓整個 node_modules。
+- name: Install | 建立 npm 快取目錄
+  ansible.builtin.file:
+    path: "{{ frontend_npm_cache_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "0750"
+
+# node_modules 刻意「不」在 release 之間共用。
+# 共用（symlink 到 shared）會省時間，但換版時新舊 release 的相依會互相污染，
+# 而且 rollback 之後 node_modules 仍是新版的內容 —— 那不是回滾。
+- name: Install | npm ci
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ [npm_bin, 'ci'] + (frontend_npm_ci_args | default([])) }}
+    chdir: "{{ frontend_release_path }}"
+  environment:
+    HOME: "{{ deploy_user_home }}"
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+    npm_config_cache: "{{ frontend_npm_cache_dir }}"
+    NUXT_TELEMETRY_DISABLED: "1"
+    # 這裡刻意不設 NODE_ENV=production：某些 npm 版本會把它解讀成 omit=dev，
+    # 而 Nuxt 的 build 需要建置期相依。--include=dev 是明寫的保險。
+    CI: "1"
+  register: frontend_npm_ci
+  changed_when: frontend_npm_ci.rc == 0
+  failed_when: frontend_npm_ci.rc != 0
+  timeout: "{{ frontend_npm_timeout | int }}"
+  when: not ansible_check_mode
+
+- name: Install | 確認 node_modules 與 nuxt 都在
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: frontend_modules_stat
+  loop:
+    - "{{ frontend_release_path }}/node_modules"
+    - "{{ frontend_release_path }}/node_modules/nuxt"
+  loop_control:
+    label: "{{ item }}"
+  when: not ansible_check_mode
+
+- name: Install | node_modules 不完整就 fail fast
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    quiet: true
+    fail_msg: >-
+      {{ item.item }} 不存在。npm ci 回報成功卻沒裝出東西。
+      檢查點：
+        1. {{ frontend_npm_cache_dir }} 是否可寫、是否被塞爆；
+        2. package.json 的 engines 是 ^22.19.0 || ^24.11.0 || >=26.0.0，
+           確認 `{{ nodejs_bin }} --version` 落在範圍內；
+        3. npm ci 需要 package-lock.json 與 package.json 同步，
+           不同步時它會直接拒絕安裝。
+      手動重現：
+        sudo -u {{ deploy_user }} bash -lc 'cd {{ frontend_release_path }} && {{ npm_bin }} ci'
+  loop: "{{ frontend_modules_stat.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when: not ansible_check_mode

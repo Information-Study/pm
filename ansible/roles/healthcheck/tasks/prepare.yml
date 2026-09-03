@@ -1,0 +1,82 @@
+---
+# A7：這裡把後面會用到的 fact 全部先定義出來，
+# 不會出現「某個分支沒跑到，後面卻對它的輸出做 assert」的情況。
+
+- name: Prepare | 初始化失敗清單
+  ansible.builtin.set_fact:
+    healthcheck_failures: []
+
+- name: Prepare | 基本變數檢查
+  ansible.builtin.assert:
+    that:
+      - app_domain | string | length > 0
+      - frontend_mode in ['ssr', 'spa', 'static']
+      - healthcheck_base_url is match('^https?://')
+    quiet: true
+    fail_msg: >-
+      healthcheck 的前提沒滿足：
+        app_domain           = {{ app_domain | default('<未定義>') }}
+        frontend_mode        = {{ frontend_mode | default('<未定義>') }}
+        healthcheck_base_url = {{ healthcheck_base_url | default('<未定義>') }}
+      app_domain 決定 Host 標頭與公開網址，沒有它沒辦法檢查任何東西。
+
+# 目標端的狀態檔是 deploy_frontend 寫的。以它為準而不是以變數為準 ——
+# 變數可能在這次執行之前就被改掉了，狀態檔記的才是「現場實際是哪個模式」。
+- name: Prepare | 讀取 frontend_mode 狀態檔
+  ansible.builtin.slurp:
+    src: "{{ frontend_mode_state_file }}"
+  register: healthcheck_mode_slurp
+  failed_when: false
+
+- name: Prepare | 決定實際模式
+  ansible.builtin.set_fact:
+    healthcheck_actual_mode: >-
+      {{ ((healthcheck_mode_slurp.content | default('') | b64decode) | trim)
+         if ((healthcheck_mode_slurp.content | default('') | b64decode) | trim) in ['ssr', 'spa', 'static']
+         else frontend_mode }}
+
+- name: Prepare | 模式不一致時提醒
+  ansible.builtin.debug:
+    msg: >-
+      注意：inventory 的 frontend_mode 是「{{ frontend_mode }}」，
+      但 {{ frontend_mode_state_file }} 記的是「{{ healthcheck_actual_mode }}」。
+      以狀態檔為準做檢查。兩者不一致代表 deploy_frontend 這次沒跑到，
+      或是變數改了但還沒重新部署。
+  when: healthcheck_actual_mode != frontend_mode
+
+# A5：憑證還是 snakeoil 的時候一定驗不過。自動偵測，並且明白說出為什麼放寬。
+- name: Prepare | 偵測 TLS 憑證
+  ansible.builtin.stat:
+    path: "{{ healthcheck_tls_cert_path }}"
+  register: healthcheck_cert_stat
+  when: healthcheck_tls_autodetect | bool
+
+- name: Prepare | 決定是否驗證憑證
+  ansible.builtin.set_fact:
+    healthcheck_validate_certs_effective: >-
+      {{ (healthcheck_validate_certs | bool)
+         and ((healthcheck_cert_stat.stat.exists | default(true)) | bool) }}
+
+- name: Prepare | 憑證尚未簽發時說明
+  ansible.builtin.debug:
+    msg: >-
+      {{ healthcheck_tls_cert_path }} 不存在，本次不驗證 TLS 憑證。
+      這在「憑證還沒簽發」的階段是預期的：A5 的處理是 nginx 先用 ssl-cert 套件的
+      snakeoil 憑證開機（否則 vhost 引用不存在的 fullchain.pem 會讓 nginx -t emerg，
+      certbot 永遠跑不到），憑證出現之後再切換。
+      certbot 跑完之後這個檔就會出現，屆時會自動恢復憑證驗證。
+  when:
+    - healthcheck_tls_autodetect | bool
+    - not (healthcheck_cert_stat.stat.exists | default(true))
+
+- name: Prepare | 本次檢查範圍
+  ansible.builtin.debug:
+    msg: >-
+      模式={{ healthcheck_actual_mode }}
+      | origin={{ '打 ' ~ frontend_host ~ ':' ~ frontend_port
+                  if (healthcheck_check_origin | bool) and healthcheck_actual_mode in ['ssr', 'spa']
+                  else '略過（static 沒有 PM2）' }}
+      | edge={{ healthcheck_edge_url_clean ~ '（Host: ' ~ app_domain ~ '）'
+                if healthcheck_check_edge | bool else '略過' }}
+      | app={{ healthcheck_base_url_clean if healthcheck_check_app | bool else '略過' }}
+      | 驗證憑證={{ healthcheck_validate_certs_effective }}

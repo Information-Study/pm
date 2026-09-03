@@ -1,0 +1,86 @@
+---
+# release 內的兩個 symlink：
+#   <release>/.env     → shared/.env
+#   <release>/storage  → shared/storage
+#
+# git clone 下來的 release 自帶一個 storage/ 目錄（裡面只有 .gitignore 佔位檔），
+# 必須先移掉才能換成 symlink。這是一個刪除動作，所以有三重 gate：
+#   (1) 只在「路徑確實位於本次 release 底下」時執行；
+#   (2) basename 必須剛好是 storage；
+#   (3) 只有在它「不是 symlink」時才刪（已經是 symlink 就代表這一步做過了）。
+# 目標永遠是剛剛 clone 出來的全新目錄，不會碰到任何有價值的資料。
+
+- name: Symlink | 檢查 release 內的 storage 目前是什麼
+  ansible.builtin.stat:
+    path: "{{ backend_release_path }}/storage"
+    follow: false
+  register: backend_release_storage_stat
+
+- name: Symlink | 移除 clone 帶進來的 storage 佔位目錄（三重 gate）
+  ansible.builtin.file:
+    path: "{{ backend_release_path }}/storage"
+    state: absent
+  when:
+    - backend_release_storage_stat.stat.exists | default(false)
+    - not (backend_release_storage_stat.stat.islnk | default(false))
+    - backend_release_path.startswith(backend_releases_dir ~ '/')
+    - (backend_release_path | dirname) == backend_releases_dir
+    - (backend_release_path | basename) is match(backend_release_id_regex)
+
+- name: Symlink | <release>/storage → shared/storage
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.file:
+    src: "{{ backend_shared_storage_path }}"
+    dest: "{{ backend_release_path }}/storage"
+    state: link
+    force: true
+    follow: false
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+
+# .env 用 force: true。clone 下來的 release 沒有 .env（.gitignore 排除了），
+# 但 composer 的 post-root-package-install 之類的腳本有可能生一個出來，
+# 直接覆蓋成 symlink 才是冪等的。
+- name: Symlink | <release>/.env → shared/.env
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.file:
+    src: "{{ backend_shared_env_path }}"
+    dest: "{{ backend_release_path }}/.env"
+    state: link
+    force: true
+    follow: false
+    owner: "{{ deploy_user }}"
+    group: "{{ web_group }}"
+
+- name: Symlink | 驗證兩個 symlink 都指到 shared
+  ansible.builtin.stat:
+    path: "{{ item.link }}"
+    follow: false
+  register: backend_symlink_check
+  loop:
+    - link: "{{ backend_release_path }}/.env"
+      target: "{{ backend_shared_env_path }}"
+    - link: "{{ backend_release_path }}/storage"
+      target: "{{ backend_shared_storage_path }}"
+  loop_control:
+    label: "{{ item.link }}"
+  when: not ansible_check_mode
+
+- name: Symlink | symlink 不對就 fail fast
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.islnk
+      - (item.stat.lnk_source | default('')) == item.item.target
+    quiet: true
+    fail_msg: >-
+      {{ item.item.link }} 不是指向 {{ item.item.target }} 的 symlink
+      （實際：{{ item.stat.lnk_source | default('不存在或不是 symlink') }}）。
+      少了這兩個 symlink，Laravel 會讀 release 內自己的 .env（不存在 → 500）
+      或往 release 內的 storage 寫檔（換版後 session / 上傳檔全部消失）。
+  loop: "{{ backend_symlink_check.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.link | default('') }}"
+  when: not ansible_check_mode

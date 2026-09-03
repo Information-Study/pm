@@ -1,0 +1,118 @@
+---
+# ============================================================================
+# A1 —— 安全的 release 清理
+#
+# 絕對不做這件事：
+#     ls -1dt {{ backend_releases_dir }}/*/ | tail -n +N | xargs 遞迴刪除
+# 它有兩個致命問題：
+#   (a) 按 mtime 排序又不排除 current。rollback 之後 current 指的是「比較舊」的
+#       那一個，下一次部署時它就掉到清單尾巴，直接被刪掉 —— 線上版本消失。
+#   (b) 變數渲染成空字串時，那條命令的作用範圍會塌成「/ 底下的每一個目錄」。
+#
+# 這裡的做法：
+#   1. stat（follow: false）解析 current 的實體路徑，連同本次 release 一起
+#      放進保護名單，reject 掉；
+#   2. ansible.builtin.find 只掃 releases 底下深度 1 的目錄，不用 shell glob；
+#   3. 按 ctime 由新到舊排序，保留 keep_releases - 1 個（current 佔掉一個）；
+#   4. 單次刪除數量有上界 backend_prune_max_delete；
+#   5. 每一項刪除都有 when 逐條把關：必須在 releases 底下、父目錄剛好是
+#      releases、basename 符合 release_id 的正則、且不在保護名單內；
+#   6. 用 ansible.builtin.file: state=absent，不是 shell 的 rm。
+#   7. releases 清單為空時，loop 是空的，什麼都不會發生。
+# ============================================================================
+
+- name: Prune | 解析 current 的實體路徑
+  ansible.builtin.stat:
+    path: "{{ backend_current_path }}"
+    follow: false
+  register: backend_prune_current
+
+- name: Prune | 列出 releases 底下深度 1 的目錄
+  ansible.builtin.find:
+    paths: "{{ backend_releases_dir }}"
+    file_type: directory
+    recurse: false
+    hidden: false
+    follow: false
+  register: backend_prune_found
+
+# A7：三個 fact 都無條件定義，不管上面找到幾個項目。
+- name: Prune | 組出保護名單
+  ansible.builtin.set_fact:
+    backend_prune_protected: >-
+      {{ ([backend_release_path]
+          + ([backend_prune_current.stat.lnk_source]
+             if (backend_prune_current.stat.islnk | default(false)) else []))
+         | map('regex_replace', '/+$', '') | select | unique | list }}
+
+- name: Prune | 依 ctime 由新到舊排序
+  ansible.builtin.set_fact:
+    backend_prune_sorted: >-
+      {{ (backend_prune_found.files | default([]))
+         | sort(attribute='ctime', reverse=true)
+         | map(attribute='path')
+         | map('regex_replace', '/+$', '')
+         | list }}
+
+- name: Prune | 扣掉保護名單後的候選
+  ansible.builtin.set_fact:
+    backend_prune_candidates: >-
+      {{ backend_prune_sorted | reject('in', backend_prune_protected) | list }}
+
+# current 佔掉一個保留額度，所以候選裡再留 keep_releases - 1 個。
+# assert.yml 已經確保 keep_releases >= 2，切片起點至少是 1，
+# 不可能出現 [0:]（那等於把所有非 current 的 release 全刪）。
+- name: Prune | 套用保留數與單次上界
+  ansible.builtin.set_fact:
+    backend_prune_targets: >-
+      {{ (backend_prune_candidates[((keep_releases | int) - 1):])[:(backend_prune_max_delete | int)] }}
+
+- name: Prune | 清理計畫
+  ansible.builtin.debug:
+    msg: >-
+      releases 共 {{ backend_prune_sorted | length }} 個
+      | 保護：{{ backend_prune_protected | join(', ') }}
+      | 保留 {{ keep_releases }} 個（含 current）
+      | 本次刪除 {{ backend_prune_targets | length }} 個：{{ backend_prune_targets | join(', ') | default('（無）', true) }}
+      {{ '｜ 還有 ' ~ ((backend_prune_candidates | length) - ((keep_releases | int) - 1) - (backend_prune_targets | length)) ~ ' 個超過單次上界，下次再清'
+         if ((backend_prune_candidates | length) - ((keep_releases | int) - 1)) > (backend_prune_targets | length) else '' }}
+
+- name: Prune | 未開啟清理時提醒
+  ansible.builtin.debug:
+    msg: >-
+      backend_prune_enabled 是 false，{{ backend_prune_targets | length }} 個舊 release
+      會繼續佔用磁碟（{{ backend_releases_dir }}）。
+      preflight 要求至少 5 GB 可用空間，長期不清會撐爆。
+  when:
+    - not (backend_prune_enabled | bool)
+    - backend_prune_targets | length > 0
+
+- name: Prune | 刪除舊 release（逐條 gate）
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ backend_prune_targets }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - backend_prune_enabled | bool
+    # 非空、且真的在 releases 底下（不是「開頭剛好像」而已）
+    - (item | length) > 0
+    - item.startswith(backend_releases_dir ~ '/')
+    # 父目錄必須「剛好」是 releases，擋掉 releases/x/y 這種深層路徑
+    - (item | dirname) == backend_releases_dir
+    # basename 必須是合法的 release_id，擋掉任何被塞進來的怪東西
+    - (item | basename) is match(backend_release_id_regex)
+    # 最後再確認一次不在保護名單內
+    - item not in backend_prune_protected
+    - item != backend_release_path
+  register: backend_prune_deleted
+
+- name: Prune | 清理結果
+  ansible.builtin.debug:
+    msg: >-
+      已刪除 {{ (backend_prune_deleted.results | default([]))
+                | selectattr('changed', 'defined')
+                | selectattr('changed') | list | length }} 個舊 release，
+      current（{{ backend_prune_current.stat.lnk_source | default('尚未建立') }}）
+      與本次 release（{{ backend_release_path }}）都在保護名單內，不會被碰到。

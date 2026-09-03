@@ -1,0 +1,166 @@
+---
+# ============================================================================
+# 建置產物驗證
+#
+# 為什麼要驗 NUXT_PUBLIC_API_BASE_URL：
+#   spa 與 static 模式的 runtimeConfig.public 是 **build 時** 就序列化進
+#   用戶端 chunk 的。啟動時再給環境變數對這兩種模式完全沒有作用 ——
+#   只有 ssr 的 Nitro server 會在啟動時重讀 NUXT_PUBLIC_* 覆寫。
+#   所以「build 時忘了帶環境變數」這個錯誤，在瀏覽器打開之前不會有任何徵兆：
+#   部署成功、pm2 online、nginx 200，然後前端對著錯的網址發 API。
+#   這裡在 .output/public/_nuxt/ 裡實際 grep 一次，把它變成部署期的錯誤。
+# ============================================================================
+
+- name: Verify | 預期產物是否存在
+  ansible.builtin.stat:
+    path: "{{ frontend_build_spec.expect_path }}"
+  register: frontend_artifact_stat
+  when: not ansible_check_mode
+
+- name: Verify | 產物不存在就 fail fast
+  ansible.builtin.assert:
+    that:
+      - frontend_artifact_stat.stat.exists | default(false)
+    quiet: true
+    fail_msg: >-
+      {{ frontend_mode }} 模式應該產出 {{ frontend_build_spec.expect_path }}，
+      但它不存在（{{ frontend_build_spec.expect_hint }}）。
+      對照表：
+        ssr    → npm run build     → .output/server/index.mjs
+        spa    → npm run build     → .output/server/index.mjs
+        static → npm run generate  → .output/public/index.html
+      static 模式最常見的失敗是 prerender 階段抓不到資料（nuxt generate 會實際
+      跑一次路由）。先看上一個任務的建置輸出，再手動重現：
+        sudo -u {{ deploy_user }} bash -lc 'cd {{ frontend_release_path }} && \
+          NUXT_SSR={{ frontend_build_spec.nuxt_ssr_env }} {{ npm_bin }} run {{ frontend_build_spec.npm_script }}'
+  when: not ansible_check_mode
+
+- name: Verify | 用戶端 chunk 目錄是否存在
+  ansible.builtin.stat:
+    path: "{{ frontend_release_client_dir }}"
+  register: frontend_client_dir_stat
+  when: not ansible_check_mode
+
+- name: Verify | 缺少用戶端 chunk 時提醒（不中止）
+  ansible.builtin.debug:
+    msg: >-
+      找不到 {{ frontend_release_client_dir }}，跳過 API base URL 的烘焙驗證。
+      三種模式正常都會產出這個目錄；沒有它通常代表建置只跑了一半。
+      請確認上面的建置輸出有沒有 warning。
+  when:
+    - not ansible_check_mode
+    - not (frontend_client_dir_stat.stat.exists | default(false))
+
+# ---- 情況一：值非空 → 一定要 grep 得到 -------------------------------------
+- name: Verify | 在用戶端 chunk 裡尋找烘進去的 API base URL
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/grep
+      - -rlF
+      - --
+      - "{{ frontend_public_api_base_url }}"
+      - "{{ frontend_release_client_dir }}"
+  register: frontend_baked_grep
+  changed_when: false
+  # grep 找不到 → rc=1（那是我們要判斷的結果，不是錯誤）；rc>=2 才是真的出錯。
+  failed_when: frontend_baked_grep.rc not in [0, 1]
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - frontend_verify_baked_api_base_url | bool
+    - (frontend_public_api_base_url | string | length) > 0
+    - frontend_client_dir_stat.stat.exists | default(false)
+
+- name: Verify | 沒烘進去就 fail fast
+  ansible.builtin.assert:
+    that:
+      - frontend_baked_grep.rc == 0
+    quiet: true
+    fail_msg: >-
+      NUXT_PUBLIC_API_BASE_URL =「{{ frontend_public_api_base_url }}」
+      沒有出現在 {{ frontend_release_client_dir }} 的任何一個 chunk 裡。
+      {{ 'spa / static 模式的 runtimeConfig.public 是 build 時烘進 bundle 的，
+          啟動時再給環境變數毫無作用 —— 這個 bundle 會對著錯的網址發 API。'
+         if frontend_mode in ['spa', 'static']
+         else 'ssr 模式雖然可以在啟動時覆寫，但用戶端 hydration 用的仍是烘進去的值。' }}
+      檢查點：
+        1. frontend_public_api_base_url 是不是在 build 之後才被改掉；
+        2. nuxt.config.ts 的 runtimeConfig.public.apiBaseUrl 有沒有被別的地方覆寫；
+        3. 值裡有沒有多餘的結尾斜線（Nitro 會原樣保留，grep 就對不上）。
+      同源部署請把它留空（預設），不要填 https://{{ app_domain | default('your-domain') }}。
+  when:
+    - not ansible_check_mode
+    - frontend_verify_baked_api_base_url | bool
+    - (frontend_public_api_base_url | string | length) > 0
+    - frontend_client_dir_stat.stat.exists | default(false)
+    - frontend_baked_grep.rc is defined
+
+- name: Verify | 烘焙驗證通過
+  ansible.builtin.debug:
+    msg: >-
+      「{{ frontend_public_api_base_url }}」已烘進
+      {{ (frontend_baked_grep.stdout_lines | default([])) | length }} 個 chunk，
+      例如 {{ (frontend_baked_grep.stdout_lines | default(['n/a']))[0] | basename }}。
+  when:
+    - not ansible_check_mode
+    - frontend_baked_grep is defined
+    - frontend_baked_grep.rc is defined
+    - frontend_baked_grep.rc == 0
+
+# ---- 情況二：值為空（同源）→ 沒有東西可以 grep ----------------------------
+# 改成確認「chunk 裡沒有出現一個非空的 apiBaseUrl」。
+# 這個檢查依賴 Nitro 目前把它壓成 apiBaseUrl:"" 的寫法，minifier 換了就可能誤判，
+# 所以預設只印出觀察到的內容，不讓它中止部署（frontend_assert_empty_api_base_url）。
+- name: Verify | 同源模式：看看 chunk 裡的 apiBaseUrl 長什麼樣
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      /usr/bin/grep -rhoE 'apiBaseUrl:[^,}]{0,80}'
+      {{ frontend_release_client_dir | quote }}
+      | /usr/bin/sort -u | /usr/bin/head -n 10
+    executable: /bin/bash
+  register: frontend_empty_probe
+  changed_when: false
+  failed_when: frontend_empty_probe.rc not in [0, 1]
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - frontend_verify_baked_api_base_url | bool
+    - (frontend_public_api_base_url | string | length) == 0
+    - frontend_client_dir_stat.stat.exists | default(false)
+
+- name: Verify | 同源模式的觀察結果
+  ansible.builtin.debug:
+    msg: >-
+      frontend_public_api_base_url 是空字串（同源），沒有字串可以 grep。
+      chunk 裡實際出現的 apiBaseUrl：
+      {{ (frontend_empty_probe.stdout_lines | default(['（找不到，可能被 minifier 改寫了）'])) | join(' ｜ ') }}
+      正常應該是 apiBaseUrl:"" —— 出現一個 http(s):// 開頭的值就代表
+      build 時有別的地方注入了 API 網址，那會讓前端跨來源發請求，
+      而 config/cors.php 的 allowed_origins 只有 FRONTEND_URL 一個值。
+  when:
+    - not ansible_check_mode
+    - frontend_empty_probe is defined
+    - frontend_empty_probe.stdout is defined
+
+- name: Verify | 同源模式的硬性斷言（預設關閉）
+  ansible.builtin.assert:
+    that:
+      - (frontend_empty_probe.stdout | default('')) is not search('apiBaseUrl:[\\s]*["\\x27]https?://')
+    quiet: true
+    fail_msg: >-
+      chunk 裡烘進了一個 http(s) 開頭的 apiBaseUrl，但本次部署要的是同源（空字串）：
+      {{ (frontend_empty_probe.stdout_lines | default([])) | join(' ｜ ') }}
+      這代表 build 環境有別的來源注入了 NUXT_PUBLIC_API_BASE_URL
+      （.env、CI 變數、或 frontend_extra_build_env）。
+      提醒：這個檢查是在比對 minify 之後的字串，minifier 換寫法時可能誤判；
+      確定是誤判就把 frontend_assert_empty_api_base_url 設回 false。
+  when:
+    - not ansible_check_mode
+    - frontend_assert_empty_api_base_url | bool
+    - frontend_empty_probe is defined
+    - frontend_empty_probe.stdout is defined

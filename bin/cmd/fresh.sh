@@ -10,6 +10,7 @@
 FRESH_PRESERVE=(
     bin cx .cxroot templates docs claude.md
     .vscode reports ansible .env .env.example .gitignore
+    docker sonar-project.properties
 )
 # ── 遷移：搬到 docker/ 之後才刪除原處（使用者要求保留 docker 自定義設定）──
 FRESH_MIGRATE=( php nuxt docker-compose.yml .dockerignore )
@@ -240,17 +241,37 @@ cmd_fresh_main() {
     local phase=all mode=carryover rollback=0 from=''
     while (( $# )); do
         case $1 in
-            --phase)    phase=${2:?}; shift 2 ;;
+            --phase)    [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--phase 需要一個值"
+                        phase=$2; shift 2 ;;
             --phase=*)  phase=${1#*=}; shift ;;
-            --mode)     mode=${2:?}; shift 2 ;;
+            --mode)     [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--mode 需要一個值"
+                        mode=$2; shift 2 ;;
             --mode=*)   mode=${1#*=}; shift ;;
             --rollback) rollback=1; shift ;;
-            --from)     from=$(cx_resolve "${2:?}"); shift 2 ;;
+            --from)     [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--from 需要一個路徑"
+                        from=$(cx_resolve "$2"); shift 2 ;;
             --from=*)   from=$(cx_resolve "${1#*=}"); shift ;;
             -h|--help)  _fresh_usage; return 0 ;;
             *)          cx_die "$EX_USAGE" "未知參數：$1" ;;
         esac
     done
+
+    # 白名單驗證 —— 少了這段，任何打錯的 phase 都會 fall through 到
+    # preflight → backup → migrate → gate → delete 的完整破壞流程。
+    case $phase in
+        preflight|backup|migrate|delete|all) : ;;
+        *) cx_die "$EX_USAGE" "未知的 phase：$phase（preflight|backup|migrate|delete|all）" ;;
+    esac
+    case $mode in
+        backup-only|carryover|scaffold) : ;;
+        *) cx_die "$EX_USAGE" "未知的 mode：$mode（backup-only|carryover|scaffold）" ;;
+    esac
+    # 已解析但尚未實作的旗標必須明講，不能讓使用者以為它有效
+    (( rollback )) && cx_die "$EX_USAGE" \
+        "--rollback 尚未實作（見 claude.md §12）。手動還原：$(cx_archive_root)/LATEST 下的 bundle 與 gitdir tar"
+    [[ -n $from ]] && cx_warn "--from 目前只有 --rollback 會用到，本次忽略"
+    [[ $mode == carryover || $mode == scaffold ]] && \
+        cx_warn "--mode $mode 的重建階段尚未實作，本次只會做到刪除為止"
 
     . "$CX_ROOT/bin/lib/archive.sh"
     cx_lock fresh
@@ -280,5 +301,5 @@ cmd_fresh_main() {
     _fresh_gate "$A" || return "$EX_ABORT"
     _fresh_delete
 
-    cx_ok "清理完成。下一步：cx fresh --phase rebuild（待 Phase 2 的 docker/ 就位後）"
+    cx_ok "清理完成。重建階段尚未實作（見 claude.md §12）"
 }

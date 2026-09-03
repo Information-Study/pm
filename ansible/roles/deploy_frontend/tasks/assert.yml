@@ -1,0 +1,165 @@
+---
+- name: Assert | release_id 必須存在且格式安全
+  ansible.builtin.assert:
+    that:
+      - release_id is defined
+      - release_id | string | length > 0
+      - release_id is match(frontend_release_id_regex)
+    quiet: true
+    fail_msg: >-
+      release_id =「{{ release_id | default('<未定義>') }}」不合法
+      （必須符合 {{ frontend_release_id_regex }}，不能含 / 或 ..）。
+      前後端應該共用同一個 release_id，請在 site.yml 開頭用一個 set_fact
+      統一產生（值取 ansible_date_time.iso8601_basic_short）。
+
+- name: Assert | 路徑安全（A1 在 role 內的第二道防線）
+  ansible.builtin.assert:
+    that:
+      - app_root is match('^/..*')
+      - not (app_root.endswith('/'))
+      - frontend_root.startswith(app_root ~ '/')
+      - frontend_releases_dir.startswith(frontend_root ~ '/')
+      - frontend_current_path.startswith(frontend_root ~ '/')
+      - frontend_release_path.startswith(frontend_releases_dir ~ '/')
+      - (frontend_release_path | dirname) == frontend_releases_dir
+      - "'..' not in frontend_release_path.split('/')"
+      - (frontend_releases_dir.strip('/').split('/') | reject('equalto', '') | list | length) >= 3
+    quiet: true
+    fail_msg: >-
+      路徑組合不安全：
+        app_root              = {{ app_root | default('<未定義>') }}
+        frontend_releases_dir = {{ frontend_releases_dir | default('<未定義>') }}
+        frontend_release_path = {{ frontend_release_path | default('<未定義>') }}
+      release prune 會對這些路徑做遞迴刪除，任何一項渲染成空字串、
+      跑到 app_root 之外、或深度不足三層都不允許。
+
+- name: Assert | 保留數量（A1）
+  ansible.builtin.assert:
+    that:
+      - (keep_releases | int) >= 2
+      - (keep_releases | int) <= 50
+      - (frontend_prune_max_delete | int) >= 1
+      - (frontend_prune_max_delete | int) <= 200
+    quiet: true
+    fail_msg: >-
+      keep_releases = {{ keep_releases | default('<未定義>') }} 不合理
+      （至少 2，最多 50）。設 0 或空字串會讓「保留 N-1 個」的切片變成 [0:]，
+      也就是把所有非 current 的 release 全刪。
+
+- name: Assert | frontend_mode 只能是 ssr / spa / static（A20）
+  ansible.builtin.assert:
+    that:
+      - frontend_mode is defined
+      - frontend_mode in ['ssr', 'spa', 'static']
+    quiet: true
+    fail_msg: >-
+      frontend_mode =「{{ frontend_mode | default('<未定義>') }}」不合法。
+        ssr    → nuxt build                    → .output/server/index.mjs（PM2 fork）
+        spa    → NUXT_SSR=false nuxt build     → .output/server/index.mjs（同上，無 SSR）
+        static → NUXT_SSR=false nuxt generate  → .output/public/（Nginx 直送，不需要 PM2）
+
+# A10：cluster 走 CJS require() 載不動 Nuxt 的 ESM .mjs。
+- name: Assert | PM2 只能 fork，instances 不能是 max（A10）
+  ansible.builtin.assert:
+    that:
+      - (frontend_instances | default(1)) is not string
+      - (frontend_instances | int) >= 1
+      - (frontend_instances | int) <= 32
+      - (pm2_exec_mode | default('fork')) == 'fork'
+    quiet: true
+    fail_msg: >-
+      frontend_instances = {{ frontend_instances | default('<未定義>') }}、
+      exec_mode = {{ pm2_exec_mode | default('fork') }}。
+      instances 必須是 1..32 的整數，'max' 不行 —— 它會去讀 os.cpus()，
+      在容器 / cgroup CPU 限額底下會誤讀成宿主機的核心數。
+      exec_mode 必須是 fork：cluster 走 CJS require() 載不動 Nuxt 的 ESM .mjs
+      （ERR_REQUIRE_ESM；pm2#5946、nuxt#13916）。
+      要水平擴充就開 N 個 fork 綁 N 個埠，nginx upstream 用 least_conn。
+
+- name: Assert | node / npm 必須就緒
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: frontend_node_stat
+  loop:
+    - "{{ nodejs_bin }}"
+    - "{{ npm_bin }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Assert | node / npm 不存在就 fail fast
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    quiet: true
+    fail_msg: >-
+      {{ item.item }} 不存在。請先跑 nodejs_pm2 role
+      （`ansible-playbook site.yml --tags nodejs`）。
+      NodeSource 的 apt 來源 suite 是 nodistro（不是 noble/bookworm），
+      裝不起來多半是那一行寫錯了。
+  loop: "{{ frontend_node_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode
+
+# ssr/spa 需要 PM2 與 ecosystem；static 不需要，但仍要有 pm2 才能把
+# 上一個模式殘留的 process 收掉。
+- name: Assert | PM2 與 ecosystem 是否就緒
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: frontend_pm2_stat
+  loop:
+    - "{{ pm2_bin }}"
+    - "{{ pm2_ecosystem_path }}"
+  loop_control:
+    label: "{{ item }}"
+  when: frontend_pm2_manage | bool
+
+- name: Assert | PM2 / ecosystem 缺件時 fail fast
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    quiet: true
+    fail_msg: >-
+      {{ item.item }} 不存在。
+      {{ pm2_ecosystem_path }} 由 nodejs_pm2 role 產生（ecosystem.config.cjs，
+      副檔名一定是 .cjs —— frontend/package.json 有 "type": "module"，
+      命名成 .js 會被當成 ESM 而爆 "module is not defined in ES module scope"）。
+      修正：`ansible-playbook site.yml --tags pm2`。
+      不想讓本 role 管 PM2 就設 frontend_pm2_manage: false，
+      但那樣切模式時舊 process 會繼續佔著 {{ frontend_port }} 埠。
+  loop: "{{ frontend_pm2_stat.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when:
+    - frontend_pm2_manage | bool
+    - not ansible_check_mode
+
+- name: Assert | 目錄骨架必須已由 common role 建好（A8）
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: frontend_skeleton_stat
+  loop:
+    - "{{ frontend_releases_dir }}"
+    - "{{ frontend_shared_dir }}"
+    - "{{ app_log_dir }}"
+    - "{{ frontend_mode_state_file | dirname }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Assert | 骨架不存在時給出可行動的訊息
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    quiet: true
+    fail_msg: >-
+      {{ item.item }} 不存在或不是目錄。
+      releases / shared / log / state 目錄必須由 common role 先建好（A8），
+      owner 是 {{ deploy_user }}，否則本 role 以 {{ deploy_user }} 身分 clone 時
+      父目錄還是 root:root 0755，git 會回
+      "could not create work tree dir: Permission denied"。
+      修正：先跑 `ansible-playbook site.yml --tags common`。
+  loop: "{{ frontend_skeleton_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode

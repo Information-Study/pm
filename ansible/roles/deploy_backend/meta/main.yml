@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: deploy_backend
+  author: pm
+  description: >-
+    Laravel 13 + Filament v5 的 releases/shared/current 佈署：git clone、
+    shared/.env 模板、composer install、migration（groups['db_primary'] gate）、
+    快取、queue/scheduler systemd unit、原子換版、安全的 release prune。
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+  galaxy_tags: [laravel, php, deploy]
+
+# 刻意不宣告 dependencies。common / php / composer / mysql 的執行順序由 site.yml
+# 的 roles 順序決定；寫成 dependencies 會讓它們在每個 play 被重複解析，
+# 也會讓 --tags 的行為變得難以預期。
+dependencies: []
