@@ -107,12 +107,33 @@ _git_require_repos() {
 _git_sync() {
     _git_require_repos || return $?
     cx_step "同步子模組到追蹤分支"
-    local c b
+    local c b head
     for c in backend frontend; do
         b=$(git config -f "$CX_ROOT/.gitmodules" --get "submodule.$c.branch" 2>/dev/null || echo main)
+
         if git -C "$CX_ROOT/$c" symbolic-ref -q HEAD >/dev/null 2>&1; then
             cx_ok "$c 已在分支 $(git -C "$CX_ROOT/$c" branch --show-current)"
-        elif cx_run git -C "$CX_ROOT/$c" checkout -q "$b"; then
+            continue
+        fi
+
+        # ── detached HEAD ────────────────────────────────────────────────
+        # 原本這裡直接 `git checkout -q "$b"`。那在「detached HEAD 就是
+        # 追蹤分支的內容」時沒問題，但只要 detached HEAD **領先**該分支
+        #（例如剛在 detached 狀態下 commit 過），checkout 就會把 HEAD 移回
+        # 舊的分支尖端，剛才那些 commit 立刻變成孤兒 —— 沒有任何警告，
+        # git status 之後看起來還很乾淨。
+        #
+        # 而主庫的 gitlink 已經指向那個 commit，於是 `git status` 會顯示
+        # 子模組「有未提交的變更」，實際上是內容被退回去了。
+        #
+        # 正確做法是 -B：把分支移到目前的 HEAD（等於 fast-forward），
+        # 這樣「切回分支」與「保住 commit」兩件事同時成立。
+        head=$(git -C "$CX_ROOT/$c" rev-parse HEAD)
+        if git -C "$CX_ROOT/$c" rev-parse --verify --quiet "$b" >/dev/null \
+           && ! git -C "$CX_ROOT/$c" merge-base --is-ancestor "$head" "$b" 2>/dev/null; then
+            cx_warn "$c 的 detached HEAD（${head:0:7}）領先 $b —— 用 -B 把分支帶過來，不丟 commit"
+        fi
+        if cx_run git -C "$CX_ROOT/$c" checkout -q -B "$b" "$head"; then
             cx_ok "$c → $b（原本是 detached HEAD）"
         else
             cx_error "$c 切換到 $b 失敗"
@@ -530,21 +551,76 @@ _git_push() {
 
 確定要推送嗎？" || return "$EX_ABORT"
 
+    local rc_all=0
     while read -r r; do
         slug=$(_git_repo_slug "$r")
-        local br; br=$(git -C "$r" branch --show-current)
+
+        # ── detached HEAD 的處理 ─────────────────────────────────────────
+        # clone --recurse-submodules 之後子模組一定是 detached HEAD，
+        # 而 `git branch --show-current` 在 detached 時回**空字串**。
+        # 原本直接把它丟給 `git push -u origin "$br"`，結果是
+        #   fatal: invalid refspec ''
+        # 而下面的驗證只檢查 refs/remotes/origin/<空>，當然也找不到，
+        # 於是印出「已推送，但 remote-tracking ref 仍缺失」——
+        # 聽起來像小問題，實際上那個 repo **根本沒推上去**。
+        #
+        # 這個組合特別危險：主庫最後推的時候會成功，於是遠端的 gitlink
+        # 指向一個遠端不存在的子模組 commit。別人 clone 下來會是
+        #   fatal: remote error: upload-pack: not our ref
+        # 而且看不出是誰造成的。
+        local br
+        br=$(git -C "$r" branch --show-current)
+        if [[ -z $br ]]; then
+            local tracked
+            tracked=$(git config -f "$CX_ROOT/.gitmodules" \
+                        --get "submodule.$(basename "$r").branch" 2>/dev/null || echo main)
+            cx_warn "$slug 是 detached HEAD —— 先 checkout 追蹤分支 $tracked"
+            cx_run git -C "$r" checkout -q -B "$tracked" HEAD \
+                || { cx_error "$slug 無法 checkout $tracked"; rc_all=1; continue; }
+            br=$tracked
+        fi
+
         cx_info "推送 $slug（$br）…"
-        CX_ALLOW_PUSH=1 cx_run git -C "$r" push -u origin "$br"
-        # 驗證 remote-tracking ref 真的建立了 —— 只看 push 成功是不夠的
+        if ! CX_ALLOW_PUSH=1 cx_run git -C "$r" push -u origin "$br"; then
+            # 推送失敗就要停下來，不能繼續推主庫 ——
+            # 否則 gitlink 會指向遠端不存在的 commit。
+            cx_error "$slug 推送失敗"
+            [[ $r == "$CX_ROOT" ]] || cx_die "$EX_FAIL" \
+                "子模組推送失敗，已中止 —— 主庫沒有推，gitlink 不會指向不存在的 commit"
+            rc_all=1
+            continue
+        fi
+
+        # 驗證 remote-tracking ref 真的建立了 —— 只看 push 的退出碼是不夠的
         if ! git -C "$r" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null; then
             cx_warn "$slug 沒有 refs/remotes/origin/$br，補一次 fetch"
             cx_run git -C "$r" fetch -q origin
         fi
-        git -C "$r" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null \
-            && cx_ok "$slug 已推送（upstream: origin/$br）" \
-            || cx_warn "$slug 已推送，但 remote-tracking ref 仍缺失"
-
+        if git -C "$r" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null; then
+            cx_ok "$slug 已推送（upstream: origin/$br）"
+        else
+            cx_error "$slug 的 remote-tracking ref 仍缺失 —— 推送可能沒有真的成功"
+            rc_all=1
+        fi
     done < <(_git_repos_order)
 
+    # 最後驗證：主庫 gitlink 指到的 commit 必須真的存在於子模組的遠端。
+    # 這是「推送順序」這條規則的實際檢查點，不是只靠順序正確就假設沒事。
+    local c gl
+    for c in backend frontend; do
+        [[ -d $CX_ROOT/$c/.git || -f $CX_ROOT/$c/.git ]] || continue
+        gl=$(git -C "$CX_ROOT" ls-tree HEAD "$c" | awk '{print $3}')
+        [[ -n $gl ]] || continue
+        if git -C "$CX_ROOT/$c" branch -r --contains "$gl" 2>/dev/null | grep -q origin/; then
+            cx_ok "gitlink $c → ${gl:0:7} 已存在於遠端"
+        else
+            cx_error "gitlink $c → ${gl:0:7} **不存在於遠端**"
+            cx_dim "  別人 clone 會得到 fatal: remote error: upload-pack: not our ref"
+            cx_dim "  修法：cd $c && git push origin HEAD:main"
+            rc_all=1
+        fi
+    done
+
+    (( rc_all )) && { cx_error "推送未完全成功，見上列訊息"; return "$EX_FAIL"; }
     cx_ok "全部完成"
 }
