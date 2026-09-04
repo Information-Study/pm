@@ -196,9 +196,11 @@ _deploy_hosts_preview() {
 _deploy_ping() {
     _deploy_need_ansible
     _deploy_real_inventory
-    local limit=${1:-}
+    local limit=${1:-}; shift || true
     cx_step "ansible -m ping${limit:+（--limit $limit）}"
-    ( cd "$CX_ROOT/ansible" && cx_run ansible pm_servers ${limit:+--limit "$limit"} -m ping )
+    (( $# )) && cx_dim "  額外參數：$*"
+    ( cd "$CX_ROOT/ansible" \
+      && cx_run ansible pm_servers ${limit:+--limit "$limit"} -m ping "$@" )
 }
 
 _deploy_facts() {
@@ -218,17 +220,25 @@ _deploy_vars() {
 _deploy_check() {
     _deploy_need_ansible
     _deploy_real_inventory
-    local limit=${1:-staging}
+    local limit=${1:-staging}; shift || true
     cx_step "site.yml --check --diff --limit $limit（乾跑，不改任何東西）"
-    cx_dim "  --check 不是萬能：command/shell 在 check 模式會被 skip，"
+    cx_dim "  --check 不是萬能：會寫入的 command/shell 在 check 模式會被 skip，"
     cx_dim "  所以「乾跑通過」不等於「實際跑一定會過」。"
-    ( cd "$CX_ROOT/ansible" && cx_run ansible-playbook site.yml --check --diff --limit "$limit" )
+    cx_dim "  （唯讀的探測已標 check_mode: false，會真的執行 —— 否則 register"
+    cx_dim "    出來的變數是空的，assert 會報出指向錯誤方向的訊息。）"
+    (( $# )) && cx_dim "  額外參數：$*"
+    ( cd "$CX_ROOT/ansible" \
+      && cx_run ansible-playbook site.yml --check --diff --limit "$limit" "$@" )
 }
 
 _deploy_apply() {
     _deploy_need_ansible
     _deploy_real_inventory
     local limit=${1:-} pb=${2:-site.yml} hosts
+    # 第 3 個之後的參數原樣轉給 ansible-playbook（-e / --tags / --skip-tags …）。
+    # 原本直接丟掉 —— `cx deploy check staging -e php_repo_source=distro` 會安靜地
+    # 用預設值跑完，看起來像「指定沒生效」，其實是參數根本沒被傳下去。
+    local -a extra=("${@:3}")
     hosts=$(_deploy_hosts_preview "$limit")
 
     if [[ -z $limit ]]; then
@@ -248,7 +258,7 @@ _deploy_apply() {
 確定要繼續？" || return "$EX_ABORT"
 
     cx_step "$pb${limit:+ --limit $limit}"
-    ( cd "$CX_ROOT/ansible" && cx_run ansible-playbook "$pb" ${limit:+--limit "$limit"} )
+    ( cd "$CX_ROOT/ansible" && cx_run ansible-playbook "$pb" ${limit:+--limit "$limit"} "${extra[@]}" )
 }
 
 _deploy_rollback() {
@@ -282,12 +292,18 @@ cmd_deploy_main() {
         syntax)   _deploy_syntax ;;
         lint)     _deploy_lint ;;
         galaxy)   _deploy_galaxy ;;
-        ping)     _deploy_reject_flag "${1:-}"; _deploy_ping "${1:-}" ;;
+        # 第一個參數是主機樣式（limit），**其餘原樣轉給 ansible**。
+        # 原本這裡只傳 "${1:-}"，第二個之後全部被丟掉 ——
+        # `cx deploy check staging -e php_repo_source=distro` 會安靜地用預設值跑完，
+        # 看起來像「-e 沒生效」，其實參數根本沒離開 cx。
+        # _deploy_reject_flag 仍然只檢查**第一個**位置：那裡放旗標一定是打錯了
+        #（想寫 --limit），而第二個之後放旗標才是正常用法。
+        ping)     _deploy_reject_flag "${1:-}"; _deploy_ping "$@" ;;
         facts)    _deploy_reject_flag "${1:-}"; _deploy_facts "${1:-}" ;;
         vars)     _deploy_reject_flag "${1:-}"; _deploy_vars "${1:-}" ;;
-        check)    _deploy_reject_flag "${1:-}"; _deploy_check "${1:-staging}" ;;
-        apply)    _deploy_reject_flag "${1:-}"; cx_lock deploy; _deploy_apply "${1:-}" site.yml ;;
-        app)      _deploy_reject_flag "${1:-}"; cx_lock deploy; _deploy_apply "${1:-}" playbooks/deploy-only.yml ;;
+        check)    _deploy_reject_flag "${1:-}"; _deploy_check "${1:-staging}" "${@:2}" ;;
+        apply)    _deploy_reject_flag "${1:-}"; cx_lock deploy; _deploy_apply "${1:-}" site.yml "${@:2}" ;;
+        app)      _deploy_reject_flag "${1:-}"; cx_lock deploy; _deploy_apply "${1:-}" playbooks/deploy-only.yml "${@:2}" ;;
         rollback) cx_lock deploy; _deploy_rollback "$@" ;;
         *) cx_error "未知的子指令：$sub"; _deploy_usage; return "$EX_USAGE" ;;
     esac

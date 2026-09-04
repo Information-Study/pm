@@ -436,7 +436,7 @@ cx verify [範圍...] [--report <檔案>] [--quiet]
 ## `cx deploy` — Ansible
 
 ```
-cx deploy <子指令> [限制]
+cx deploy <子指令> [限制] [額外參數轉給 ansible…]
 ```
 
 | 子指令 | 對應 | 危險度 |
@@ -448,6 +448,18 @@ cx deploy <子指令> [限制]
 | `check [限制]` | `--check --diff` 乾跑 | |
 | `apply [限制]` | ⚠ **真的部署** | 列出目標主機並要求確認 |
 | `app [限制]` | 只跑應用層（`playbooks/deploy-only.yml`） | 同上 |
+
+`check` / `apply` / `app` / `ping` 的**第二個之後**的參數會原樣轉給 ansible：
+
+```bash
+cx deploy check staging -e php_repo_source=distro
+cx deploy check staging --tags php
+```
+
+轉發前會印出 `額外參數：…`，所以看得出來有沒有真的傳下去。
+（2026-09-04 之前這些參數會被安靜丟掉 —— 指令跑完、用的卻是預設值。）
+
+第一個位置放旗標仍然會被擋（那通常是想寫 `--limit` 的筆誤）。
 | `rollback` | 互動式回滾 | 同上 |
 
 `[限制]` 會變成 `--limit`。

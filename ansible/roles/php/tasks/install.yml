@@ -47,8 +47,16 @@
     fail_msg: >-
       下列必要 PHP 套件在目前的 APT 來源中找不到：
       {{ php_pkgs_missing_required | join(', ') }}。
+      本次的套件來源是 {{ php_repo_effective | default('?') }}
+      （php_repo_source={{ php_repo_source | default('auto') }}）。
       檢查順序：
-      (1) /etc/apt/sources.list.d/ 底下是否有 ondrej-php.sources 或 sury-php.sources；
+      (1) 來源 ondrej / sury：/etc/apt/sources.list.d/ 底下要有
+          ondrej-php.sources 或 sury-php.sources。
+          來源 distro：**不會**有那些檔案，套件直接來自發行版倉庫 ——
+          要看的是 universe 有沒有啟用（apt-cache policy | grep universe）。
+          Ubuntu 26.04 的 php{{ php_version }}-fpm / -intl / -zip / -bcmath / -soap
+          都在 universe，只有 -common / -cli / -mbstring / -xml / -curl / -gd /
+          -mysql / -readline 在 main；
       (2) 該來源的 suite 是否等於本機 codename（{{ ansible_facts['distribution_release'] }}）；
       (3) apt-get update 是否成功（金鑰 / 網路 / proxy）；
       (4) php_version={{ php_version }} 這個版本上游是否真的有出。

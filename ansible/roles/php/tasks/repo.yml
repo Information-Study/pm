@@ -1,4 +1,46 @@
 ---
+# ============================================================================
+# 先決定套件來源，後面每一段都只在自己那一種來源時執行
+# ============================================================================
+- name: 決定 PHP 套件來源
+  ansible.builtin.set_fact:
+    php_repo_effective: >-
+      {{
+        php_repo_source if php_repo_source != 'auto'
+        else (
+          'sury' if ansible_facts['distribution'] == 'Debian'
+          else (
+            'ondrej'
+            if ansible_facts['distribution_release'] in php_ondrej_supported_suites
+            else 'distro'
+          )
+        )
+      }}
+
+- name: 回報 PHP 套件來源的判斷結果
+  ansible.builtin.debug:
+    msg: >-
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+      ({{ ansible_facts['distribution_release'] }}) → 來源 {{ php_repo_effective }}
+      {{ '（php_repo_source=' ~ php_repo_source ~ ' 指定）'
+         if php_repo_source != 'auto' else '（auto）' }}
+      {{ '　※ ondrej PPA 沒有發佈 ' ~ ansible_facts['distribution_release'] ~
+         '，改用發行版官方倉庫的 php' ~ php_version
+         if (php_repo_effective == 'distro'
+             and php_repo_source == 'auto'
+             and ansible_facts['distribution'] == 'Ubuntu'
+             and ansible_facts['distribution_release'] not in php_ondrej_supported_suites)
+         else '' }}
+
+- name: 來源必須是已知的其中一種
+  ansible.builtin.assert:
+    that:
+      - php_repo_effective in ['ondrej', 'sury', 'distro']
+    fail_msg: >-
+      php_repo_source={{ php_repo_source }} 解析出 "{{ php_repo_effective }}"，
+      不是 ondrej / sury / distro 其中之一。
+    quiet: true
+
 # ---- A6：deb822_repository 需要目標機上有 python3-debian ---------------------
 - name: 檢查 python3-debian 是否可匯入
   ansible.builtin.command:
@@ -63,7 +105,7 @@
   register: php_ondrej_keyring_stat
   changed_when: false
   check_mode: false
-  when: ansible_facts['distribution'] == 'Ubuntu'
+  when: php_repo_effective == 'ondrej'
 
 - name: 下載 ondrej/php PPA 簽章金鑰（Ubuntu）
   ansible.builtin.get_url:
@@ -75,7 +117,7 @@
     force: false          # 已存在就不重抓，避免 keyserver 的 Comment header 造成假 changed
     timeout: 30
   when:
-    - ansible_facts['distribution'] == 'Ubuntu'
+    - php_repo_effective == 'ondrej'
     - not (php_ondrej_keyring_stat.stat.exists | default(false))
 
 - name: 讀出 ondrej 金鑰指紋（Ubuntu）
@@ -100,7 +142,7 @@
   failed_when: false
   check_mode: false
   changed_when: false
-  when: ansible_facts['distribution'] == 'Ubuntu'
+  when: php_repo_effective == 'ondrej'
 
 - name: 驗證 ondrej 金鑰指紋（Ubuntu）
   ansible.builtin.assert:
@@ -113,7 +155,7 @@
       https://api.launchpad.net/devel/~ondrej/+archive/ubuntu/php
       在確認上游真的換鑰之前，不要放行。
     quiet: true
-  when: ansible_facts['distribution'] == 'Ubuntu'
+  when: php_repo_effective == 'ondrej'
 
 - name: 探測 PPA 是否有本機 codename 的 dist（Ubuntu）
   ansible.builtin.uri:
@@ -132,7 +174,7 @@
   # HEAD 一個 Release 檔不改變任何狀態，在 check 模式執行它是安全的。
   check_mode: false
   when:
-    - ansible_facts['distribution'] == 'Ubuntu'
+    - php_repo_effective == 'ondrej'
     - php_repo_probe | bool
 
 - name: PPA 沒有這個 codename 時 fail fast（Ubuntu）
@@ -151,7 +193,7 @@
           （不保證可用，glibc / ABI 可能不相容，務必先在 staging 驗證）。
     quiet: true
   when:
-    - ansible_facts['distribution'] == 'Ubuntu'
+    - php_repo_effective == 'ondrej'
     - php_repo_probe | bool
 
 - name: 設定 ondrej/php APT 來源（Ubuntu）
@@ -166,7 +208,7 @@
     enabled: true
     state: present
   register: php_repo_ubuntu
-  when: ansible_facts['distribution'] == 'Ubuntu'
+  when: php_repo_effective == 'ondrej'
 
 # ============================================================================
 # Debian → packages.sury.org
@@ -180,7 +222,7 @@
     mode: "0644"
     force: false
     timeout: 30
-  when: ansible_facts['distribution'] == 'Debian'
+  when: php_repo_effective == 'sury'
 
 - name: 讀出 sury 金鑰指紋（Debian）
   ansible.builtin.shell:
@@ -204,7 +246,7 @@
   failed_when: false
   check_mode: false
   changed_when: false
-  when: ansible_facts['distribution'] == 'Debian'
+  when: php_repo_effective == 'sury'
 
 - name: 驗證 sury 金鑰指紋（Debian）
   ansible.builtin.assert:
@@ -215,7 +257,7 @@
       （實際讀到：{{ php_sury_fpr.stdout_lines | join(', ') | default('（空）', true) }}）。
       預期值為 DEB.SURY.ORG Automatic Signing Key <deb@sury.org>，2026-09-03 實測。
     quiet: true
-  when: ansible_facts['distribution'] == 'Debian'
+  when: php_repo_effective == 'sury'
 
 - name: 探測 sury 是否有本機 codename 的 dist（Debian）
   ansible.builtin.uri:
@@ -232,7 +274,7 @@
   check_mode: false
   failed_when: false
   when:
-    - ansible_facts['distribution'] == 'Debian'
+    - php_repo_effective == 'sury'
     - php_repo_probe | bool
 
 - name: sury 沒有這個 codename 時 fail fast（Debian）
@@ -248,7 +290,7 @@
       （需自行承擔 ABI 風險）。
     quiet: true
   when:
-    - ansible_facts['distribution'] == 'Debian'
+    - php_repo_effective == 'sury'
     - php_repo_probe | bool
 
 - name: 設定 sury.org APT 來源（Debian）
@@ -263,11 +305,39 @@
     enabled: true
     state: present
   register: php_repo_debian
-  when: ansible_facts['distribution'] == 'Debian'
+  when: php_repo_effective == 'sury'
+
+# ============================================================================
+# distro → 發行版自己的官方倉庫（Ubuntu 26.04+ 走這一條）
+# ============================================================================
+# 不加任何第三方來源、不下載任何金鑰。只需要確認 universe 有啟用 ——
+# Ubuntu 26.04 的 php8.5-fpm / -intl / -zip / -bcmath / -soap 都在 universe，
+# main 只有 -common / -cli / -mbstring / -xml / -curl / -gd / -mysql / -readline。
+# Ubuntu Server 預設有開 universe，但雲端／最小化映像不一定，
+# 少了它的症狀是「php8.5-fpm 找不到」而 php8.5-cli 卻裝得起來 —— 很難聯想到來源。
+- name: 讀出目前啟用的 APT 元件（distro）
+  ansible.builtin.command:
+    argv: [apt-cache, policy]
+  register: php_apt_policy
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: php_repo_effective == 'distro'
+
+- name: universe 沒啟用時開啟（distro，僅 Ubuntu）
+  ansible.builtin.command:
+    argv: [add-apt-repository, -y, --no-update, universe]
+  register: php_universe_enable
+  when:
+    - php_repo_effective == 'distro'
+    - ansible_facts['distribution'] == 'Ubuntu'
+    - "'universe' not in (php_apt_policy.stdout | default(''))"
+  changed_when: php_universe_enable.rc | default(1) == 0
 
 - name: 來源有變動時更新 APT 快取
   ansible.builtin.apt:
     update_cache: true
   when: >-
     (php_repo_ubuntu.changed | default(false)) or
-    (php_repo_debian.changed | default(false))
+    (php_repo_debian.changed | default(false)) or
+    (php_universe_enable.changed | default(false))

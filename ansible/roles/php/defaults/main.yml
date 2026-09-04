@@ -95,6 +95,32 @@ php_packages_optional:
   - "php{{ php_version }}-opcache"
 
 # ---- APT repository ---------------------------------------------------------
+# 套件來源。auto（預設）會依發行版與 codename 自己決定：
+#
+#   Debian                      → sury（packages.sury.org）
+#   Ubuntu，codename 在下面清單 → ondrej（ppa.launchpadcontent.net/ondrej/php）
+#   Ubuntu，其餘                → distro（發行版自己的官方倉庫，不加第三方來源）
+#
+# 為什麼需要 distro 這一條：2026-09-04 實測 ondrej PPA 的 dists/<codename>/Release
+#   jammy    200
+#   noble    200
+#   resolute 404   ← Ubuntu 26.04
+# 而 Ubuntu 26.04 官方倉庫**自己就有 php8.5**（php8.5-fpm 8.5.4-0ubuntu1.2，
+# universe + security），與本專案的 php_version 8.5 同一個 major.minor。
+# 也就是說在 26.04 上根本不需要 PPA —— 硬套一個沒有該 codename 的 PPA
+# 只會讓部署停在「找不到套件」。
+#
+# 之後主機以 26.04 為主，所以 auto 在 26.04 上會走 distro。
+# 要強制某一種就直接指定（ondrej / sury / distro）。
+php_repo_source: auto
+
+# ondrej PPA 確定有發佈套件的 Ubuntu codename。
+# 這是**白名單**不是黑名單：新的 Ubuntu 版本出來時預設走 distro，
+# 等確認 PPA 真的支援了再加進來 —— 反過來寫會讓每個新版本都先炸一次。
+php_ondrej_supported_suites:
+  - jammy      # 22.04 LTS
+  - noble      # 24.04 LTS
+
 php_repo_manage: true
 # 上線前先 HEAD 一下 dists/<suite>/Release，避免在 apt update 才發現 codename 沒被支援。
 php_repo_probe: true

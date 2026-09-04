@@ -163,7 +163,7 @@ ansible-playbook site.yml -e deploy_any_errors_fatal=false
 |---|---|---|---|
 | 1 | `preflight` | 全部主機 | 只斷言，不改狀態 |
 | 2 | `common` | 全部 | 套件、目錄骨架、使用者、locale、日誌、swap、自動更新 |
-| 3 | `php` | web | Sury repo → PHP + 擴充 → FPM pool → 驗證 |
+| 3 | `php` | web | 決定來源（distro／ondrej／sury）→ PHP + 擴充 → FPM pool → 驗證 |
 | 4 | `composer` | web | 裝 composer，先驗 CLI 有沒有 `proc_open` |
 | 5 | `mysql` | db_primary | Oracle APT repo → MySQL 8.4 → 設定 → 帳號 → 備份 → 驗證 |
 | 6 | `nodejs_pm2` | web | NodeSource → Node → PM2 → ecosystem |
@@ -232,6 +232,76 @@ ansible-playbook playbooks/rollback.yml -e rollback_to=<id>
 ```
 
 或 `cx deploy rollback`（互動式）。
+
+---
+
+## 6.5 PHP 的套件來源：`php_repo_source`
+
+`php` role 用哪裡的套件是**依 codename 決定**的，不是寫死。
+
+| 目標 | `auto` 解析成 | 理由 |
+|---|---|---|
+| Debian | `sury` | packages.sury.org |
+| Ubuntu 22.04 (jammy) | `ondrej` | PPA 有發佈 |
+| Ubuntu 24.04 (noble) | `ondrej` | PPA 有發佈 |
+| **Ubuntu 26.04 (resolute)** | **`distro`** | **PPA 沒有發佈**，但官方倉庫自帶 php8.5 |
+| 其他 Ubuntu | `distro` | 白名單之外一律走發行版 |
+
+### 為什麼 26.04 不能套 ondrej
+
+2026-09-04 實測 `HEAD https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/<codename>/Release`：
+
+```
+jammy     200
+noble     200
+resolute  404      ← Ubuntu 26.04
+```
+
+而 Ubuntu 26.04 官方倉庫**自己就有** `php8.5-fpm 8.5.4-0ubuntu1.2`，
+與 `php_version: "8.5"` 同一個 major.minor。硬套一個沒有該 codename 的 PPA
+只會讓部署停在「找不到套件」，而錯誤訊息會指向 APT 來源、不會指向 codename。
+
+`php_ondrej_supported_suites` 是**白名單**：新的 Ubuntu 版本出來時預設走 `distro`，
+確認 PPA 真的支援之後再加進去。寫成黑名單的話每個新版本都會先炸一次。
+
+### `distro` 來源要注意 universe
+
+Ubuntu 26.04 的這些在 **universe**：
+
+```
+php8.5-fpm  php8.5-intl  php8.5-zip  php8.5-bcmath  php8.5-soap
+```
+
+其餘（`-common -cli -mbstring -xml -curl -gd -mysql -readline`）在 main。
+Ubuntu Server 預設有開 universe，但雲端／最小化映像不一定 ——
+role 會先 `apt-cache policy` 檢查，沒有就 `add-apt-repository universe`。
+
+少了 universe 的症狀很難聯想：`php8.5-cli` 裝得起來，`php8.5-fpm` 卻說找不到。
+
+### 只有 PHP 有這個問題
+
+同一天把每個外部來源都探測過 resolute：
+
+| 來源 | resolute |
+|---|---|
+| ondrej/php | **404** |
+| MySQL apt (`repo.mysql.com/apt/ubuntu`) | 200 |
+| MyGuard (`deb.myguard.nl`) | 200 |
+| NodeSource | 用 `nodistro`，不分 codename |
+
+所以升到 26.04 只需要處理 php role，其餘不動。
+
+### 強制指定
+
+```bash
+cx deploy apply staging -e php_repo_source=distro    # 或 ondrej / sury
+```
+
+`php` role 開頭會印出實際採用的來源，不必用猜的：
+
+```
+Ubuntu 24.04 (noble) → 來源 ondrej （auto）
+```
 
 ---
 

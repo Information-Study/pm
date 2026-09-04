@@ -213,7 +213,7 @@ Docker daemon 不可用，因此改以原生工具鏈建立。**遠端已上線*
 | Nginx | **1.30-alpine** | **stable 分支**（nginx 沒有 LTS，stable 是其對應物）。1.29 已 EOL，1.31 是 mainline |
 | SonarQube | **2026-lta-community** | **LTA**（Long-Term Active）2026.1，每個 LTA 活躍 18 個月 |
 | PostgreSQL | **17** | 支援中（每個 major 5 年） |
-| Ubuntu（Ansible 目標） | **24.04 LTS (noble)** | 26.04 LTS (Resolute Raccoon) 已於 2026-04-23 釋出，為選項但需先確認 MyGuard 支援該 codename |
+| Ubuntu（Ansible 目標） | **26.04 LTS (resolute)**，24.04 / 22.04 仍支援 | 2026-09-04 實測外部來源對 resolute 的支援：MySQL apt 200、MyGuard 200、NodeSource 用 `nodistro` 不分 codename —— 只有 **ondrej/php PPA 回 404**。但 26.04 官方倉庫自帶 `php8.5`（8.5.4-0ubuntu1.2），所以 php role 在 26.04 走 `distro` 來源，不套 PPA。見 `php_repo_source` |
 
 **沒有 LTS 可選的三個**，不要浪費時間找：
 
