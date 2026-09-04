@@ -53,9 +53,49 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `git` | ✅ | status / **fetch** / **pull** / sync / commit / branch / guard / remote-init / scan-secrets / push |
 | `art` `composer` `npm` | ✅ | 容器與原生兩條路都可用，`--runner` 可強制；`npm --backend` 是新增的（舊 `npm-php` service 從來不存在） |
 | `lint` `tui` `install` `uninstall` `help` | ✅ | |
+| `code` | ✅ | 用 VS Code 開專案根（不是所在的子目錄） |
+| `pma` | ✅ | 開 phpMyAdmin；只有 dev 有，埠從合併後的 compose 設定讀 |
+| `php` | ✅ | 直接跑 php（`cx art` 只涵蓋 artisan），兩條 runner 都支援 |
+| `setup system` | ✅ | 需要 root 的系統套件；有確認閘門，sudo 不可用時只印指令 |
 | `fresh` | ⚠ 部分 | 備份／驗證／確認閘門／刪除都可用；**重建階段與 `--rollback` 仍未實作** |
 
 ---
+
+## 兩條 runner（容器／原生）
+
+`--runner docker|native|auto` 是全域旗標。被指定的那一邊不可用時**硬失敗**，
+不會偷偷退回另一邊 —— 允許靜默 fallback 的話，「原生路徑可以獨立運作」
+就永遠無法被驗證。
+
+| 指令 | docker | native |
+|---|---|---|
+| `cx art` / `cx php` | ✅ | ✅ |
+| `cx composer` | ✅ | ✅ |
+| `cx npm` / `cx npm --backend` | ✅ | ✅ |
+| `cx test front` | ✅ | ✅ |
+| `cx db migrate/seed/admin/fresh` | ✅ | ✅ |
+| `cx test back` | ✅ | ⚠ 需要 `php8.5-sqlite3` |
+| `cx db status/shell/wait/dump` | ✅ | ⚠ 需要 `mysql-client` |
+| `cx test coverage` | ✅ | 設計上只有容器（需要 test 映像的 xdebug） |
+| `cx db restore` | ✅ | 設計上只有容器 |
+
+兩個 ⚠ 都是**系統套件、需要 root**，`cx setup system` 會列出指令。
+詳見 [`runners.md`](runners.md)。
+
+## 刪除與重建（2026-09-04 實測）
+
+把 `backend/vendor`、`frontend/node_modules`、`backend/node_modules`、
+`reports/`、`.cx/`、`ansible/collections/` 全部 `rm -rf` 之後：
+
+| 步驟 | 結果 |
+|---|---|
+| `cx help` / `cx doctor` / `cx git status` | 仍然 rc=0（cx 本身不依賴任何產出物） |
+| `cx setup` | 重建 reports/ .cx/ collections/，**不覆蓋 `.env`** |
+| `cx setup deps` | 28 秒重建三棵相依樹（54 / 464 / 77 項） |
+| `cx dev restart nuxt` | 容器當時在跑，node_modules 被抽掉會讓 dev server 壞掉，要重啟 |
+| 之後 | `cx doctor` 0 失敗、`cx verify` 39 通過 0 失敗、17 個容器仍在跑、端點全 200 |
+
+詳見 [`template.md`](template.md)。
 
 ## 四道防線
 

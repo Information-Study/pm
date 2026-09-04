@@ -26,6 +26,28 @@ cd pm
 
 建立後台管理員：`./cx db admin`
 
+常用的三個捷徑：
+
+```bash
+./cx code            # 用 VS Code 開整個專案（從任何子目錄都是開專案根）
+./cx pma             # 開 phpMyAdmin（只有 dev 有）
+./cx php -v          # 直接跑 php
+```
+
+### 不想用 Docker？
+
+每一個功能都有**原生工具鏈**的路徑，用 `--runner` 強制：
+
+```bash
+./cx --runner native composer install
+./cx --runner native npm ci
+./cx --runner native test front
+./cx setup system                 # 需要 root 的系統套件（會先列指令再問你）
+```
+
+被指定的那一邊不可用時會**硬失敗**，不會偷偷換另一邊跑。
+兩條路各自需要什麼、產出為何不可互換，見 [`docs/runners.md`](docs/runners.md)。
+
 ---
 
 ## 三個階段
