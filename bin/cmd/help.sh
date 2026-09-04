@@ -36,6 +36,7 @@ cx — pm 專案統一入口
                             整棵樹 web 可讀、storage 與 bootstrap/cache 可寫、
                             .env 只給 web 讀
     acl user add <帳號>     讓另一個開發者可以改原始碼（--ro 只讀）
+    acl fix-owner           把不屬於你的檔案要回來（setfacl 需要擁有者）
     acl status|drop         檢視 / 移除
 
   dev up -d --build 起開發環境（bind mount + HMR + xdebug + phpMyAdmin）

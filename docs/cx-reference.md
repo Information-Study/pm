@@ -272,6 +272,7 @@ cx acl <子指令> [參數...]
 | `user add <帳號> [--ro]` | 讓另一個開發者能改原始碼 |
 | `user rm <帳號>` | 收回 |
 | `status [路徑...]` | 看目前的 ACL |
+| `fix-owner` | 把不屬於你的檔案要回來（列出並確認；需要 sudo） |
 | `drop [路徑...]` | 清空 ACL，回到純 chmod（有確認閘門） |
 
 旗標：`--web-user`、`--dev-user`（名稱或 uid）、`-n/--dry-run`。
@@ -313,6 +314,35 @@ web 改 backend/artisan          ✘ 擋住（web 只該讀原始碼）
 
 權限用大寫 `X`：只有已經是目錄或已有執行位元的檔案才給 `x`。
 小寫 `x` 會讓每一個 `.php` 都變成可執行 —— 沒必要的攻擊面。
+
+### `Operation not permitted` 的意思
+
+`setfacl` 需要**檔案的擁有者或 root** —— 同群組、甚至有寫入權都不夠。
+樹裡只要有一個別人的檔案，`setfacl -R` 就會停在那裡，前面設好的留著、
+後面的沒設到 —— 半套狀態最難查。
+
+所以 `apply` / `user` 之前會先掃一遍擁有權，把「哪些檔、屬於誰、怎麼修」
+一次講完，而不是讓 setfacl 吐一句 `Operation not permitted` 就停。
+
+實際來源（2026-09-04 踩到）：容器的 entrypoint 以 root 執行，
+`artisan package:discover` 與 `storage:link` 在 bind mount 裡留下 `root:root`：
+
+```
+root:root  backend/bootstrap/cache/packages.php
+root:root  backend/public/storage
+```
+
+entrypoint 已經修好（生成後立刻 `chown` 回 `www-data`；symlink 那個要用 `-h`，
+不然會改到它指向的目標）。既有的殘骸用 `cx acl fix-owner` 清掉。
+
+以 root 執行時（`sudo cx acl apply`）不做這個檢查 —— root 本來就設得動任何檔案。
+
+### 本機 web 與 dev 常常是同一個 uid
+
+容器裡的 `www-data` 在 build 時已被對齊成 `APP_UID`（`docker/php/Dockerfile`
+的 `groupmod`/`usermod`），而 `APP_UID` 預設就是你的 uid。
+所以本機開發其實不需要 ACL —— `cx acl check` 會直接把這件事講出來，
+免得你以為自己漏設了什麼。規則仍然寫上去，之後 `APP_UID` 改了才不會突然壞掉。
 
 ### 部署主機
 

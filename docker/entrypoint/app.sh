@@ -103,6 +103,13 @@ log "MySQL 就緒"
 # 所以 bootstrap/cache/packages.php 要在這裡生成，否則 Laravel 開不了機。
 php artisan package:discover --ansi --no-interaction >/dev/null 2>&1 \
     || log "package:discover 有警告（繼續）"
+# 這支腳本以 root 執行（supervisord 需要），所以剛剛生出來的
+# bootstrap/cache/packages.php 是 root:root —— 而 bootstrap/cache 是 bind mount。
+# 後果有兩個，都實際發生過：
+#   * host 上的你 chmod / setfacl 它會得到 Operation not permitted
+#     （setfacl 需要擁有者或 root，同群組不算）
+#   * 上面第 62 行的 chown -R 跑在**這一行之前**，蓋不到新生成的檔
+chown www-data:www-data bootstrap/cache/packages.php 2>/dev/null || true
 
 # ── 7. migration ───────────────────────────────────────────────────────────
 # DB_FRESH 只有 test 模式會設 true，而且**必須一次性化**。
@@ -140,7 +147,12 @@ else
 fi
 
 # storage:link 在 public/storage 已存在時會失敗，所以要判斷。
-[ -e public/storage ] || php artisan storage:link --no-interaction >/dev/null 2>&1 || true
+# 同樣以 root 建立，同樣要把 owner 交回去 —— 這是一個 symlink，
+# 用 -h 才會改到 symlink 本身而不是它指向的目標。
+if [ ! -e public/storage ]; then
+    php artisan storage:link --no-interaction >/dev/null 2>&1 || true
+    chown -h www-data:www-data public/storage 2>/dev/null || true
+fi
 
 log "啟動 supervisord（php-fpm + nginx + queue ×2 + schedule）"
 exec supervisord -c /etc/supervisord.conf
