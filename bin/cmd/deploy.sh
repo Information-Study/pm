@@ -79,10 +79,77 @@ _deploy_stub_inventory() {
 }
 
 _deploy_real_inventory() {
-    [[ -f $CX_ROOT/ansible/inventory/hosts.yml ]] && return 0
-    cx_error "缺少 ansible/inventory/hosts.yml"
-    cx_dim "  cp ansible/inventory/hosts.yml.example ansible/inventory/hosts.yml"
-    cx_dim "  然後填入真實主機。這個檔刻意不進版控（含主機位址與帳號）。"
+    if [[ ! -f $CX_ROOT/ansible/inventory/hosts.yml ]]; then
+        cx_error "缺少 ansible/inventory/hosts.yml"
+        cx_dim "  cp ansible/inventory/hosts.yml.example ansible/inventory/hosts.yml"
+        cx_dim "  然後填入真實主機。這個檔刻意不進版控（含主機位址與帳號）。"
+        exit "$EX_PRECOND"
+    fi
+    _deploy_check_hostkeys
+}
+
+# host key 變了的話，ansible 只會把 ssh 的那一大段 MITM 警告原樣丟出來：
+#
+#   @@@@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@@@@
+#   IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+#   … Host key verification failed.
+#
+# 而且是包在 ansible 的 UNREACHABLE! => {"msg": "…"} JSON 裡、帶著 \r\n，
+# 幾乎不可能一眼看懂 —— 但真正的原因通常很平凡：目標主機被重建了。
+# 換本機驗證容器的 Ubuntu 版本（docker/ansible-target/README.md 的流程）
+# 每一次都會踩到。
+#
+# ansible.cfg 的 host_key_checking = True 是刻意保留的
+#（見 docs/ansible-reference.md §2），所以正確做法不是關掉檢查，
+# 而是在跑之前就講清楚並給出那一行修法。
+_deploy_check_hostkeys() {
+    cx_have ssh-keygen && cx_have ssh-keyscan || return 0   # 沒工具就跳過，不是錯誤
+    [[ -f $HOME/.ssh/known_hosts ]] || return 0             # 沒記錄過就沒得比
+
+    local inv="$CX_ROOT/ansible/inventory/hosts.yml"
+    local -a bad=()
+    local host='' port='' line stored scanned
+
+    # 只處理 inventory 裡明寫 ansible_host + ansible_port 的項目。
+    # 靠 DNS 名稱連的主機沒有固定 port 可掃，換 key 的機率也低，交給 ssh 自己報。
+    while IFS= read -r line; do
+        case $line in
+            *ansible_host:*) host=${line#*ansible_host:}; host=${host//[[:space:]]/}; port='' ;;
+            *ansible_port:*) port=${line#*ansible_port:}; port=${port//[[:space:]]/} ;;
+        esac
+        [[ -n $host && -n $port ]] || continue
+
+        stored=$(ssh-keygen -F "[$host]:$port" -f "$HOME/.ssh/known_hosts" 2>/dev/null \
+                 | grep -v '^#' | awk '{print $3}' | head -1)
+        if [[ -n $stored ]]; then
+            scanned=$(ssh-keyscan -T 5 -p "$port" "$host" 2>/dev/null \
+                      | grep -v '^#' | awk '{print $3}')
+            # 掃不到（主機沒起來）就不要誤報 —— 讓 ansible 去說「連不上」，
+            # 那個訊息本來就清楚。只有「掃得到、但沒有一把對得上」才是真的換了 key。
+            if [[ -n $scanned ]] && ! grep -Fxq "$stored" <<< "$scanned"; then
+                bad+=("$host $port")
+            fi
+        fi
+        host=''; port=''
+    done < "$inv"
+
+    (( ${#bad[@]} == 0 )) && return 0
+
+    cx_error "known_hosts 裡的主機金鑰與目標現在的不符"
+    local b h p
+    for b in "${bad[@]}"; do
+        read -r h p <<< "$b"; cx_dim "  [$h]:$p"
+    done
+    cx_dim ""
+    cx_dim "  最常見的原因不是攻擊，而是**目標主機被重建了** ——"
+    cx_dim "  例如換了本機驗證容器的 Ubuntu 版本（見 docker/ansible-target/README.md）。"
+    cx_dim "  ansible.cfg 的 host_key_checking = True 是刻意保留的，所以要你手動確認："
+    cx_dim ""
+    for b in "${bad[@]}"; do
+        read -r h p <<< "$b"; cx_dim "      ssh-keygen -R '[$h]:$p'"
+    done
+    cx_dim ""
+    cx_dim "  確定那台真的是你自己的機器再執行。不是預期中的變更就先查清楚。"
     exit "$EX_PRECOND"
 }
 

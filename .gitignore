@@ -46,3 +46,6 @@ Thumbs.db
 # Python 編譯產物（bin/lib/*.py 被當成腳本執行時會產生）
 __pycache__/
 *.py[cod]
+
+# 本機 Ansible 目標容器的公鑰（每台機器不同，不進版控）
+/docker/ansible-target/authorized_keys

@@ -432,11 +432,49 @@ object of type 'dict' has no attribute 'query_result'
 ## 9. 本機驗證用的目標
 
 `ansible/inventory/hosts.yml`（不進版控）指向一個
-`pm/ansible-target:24.04` 容器：Ubuntu 24.04 + systemd + sshd + sudo NOPASSWD，
+`pm/ansible-target:<版本>` 容器：Ubuntu + systemd + sshd + sudo NOPASSWD，
 SSH 在 `127.0.0.1:2222`。
 
 這不是玩具 —— 它跑 systemd，`systemd_service` 模組、handler、
 服務啟動順序全部是真的。
+
+建置與啟動見 [`docker/ansible-target/README.md`](../docker/ansible-target/README.md)。
+Dockerfile 用 `UBUNTU_VERSION` 參數化，所以同一份可以建 22.04 / 24.04 / 26.04。
+
+> 這個 Dockerfile 2026-09-05 才進版控 —— 在那之前映像是用一次性腳本建的，
+> 誰也重建不出來，而「驗證環境無法重建」等於驗證結果無法複現。
+
+### 兩個版本各跑一次（2026-09-05 實測）
+
+`php_repo_source=auto` 會依 codename 選來源，所以同一份 playbook
+在兩個版本上跑出來的結果不同 —— 這正是需要兩個容器的理由。
+
+| 目標 | 來源 | 裝到的 PHP | `ondrej-php.sources` | PLAY RECAP |
+|---|---|---|---|---|
+| 24.04 (noble) | `ondrej` | 8.5.10 `+deb.sury.org+1` | 有 | ok=498 changed=119 **failed=0** |
+| 26.04 (resolute) | `distro` | 8.5.4 `0ubuntu1.2` | **無** | ok=491 changed=116 **failed=0** |
+
+兩邊都驗到：`php8.5-fpm`／`nginx`／`mysql` 全部 active、
+`/up` 與 `/admin/login` 回 200、PM2 的前端 online、
+ACL 雙向交叉寫入可行且無關帳號讀不到。
+
+這是 `cx deploy apply` 的**完整實跑**，不是 `--check`。
+
+### 換版本時會撞到 host key
+
+容器重建會換一把 SSH host key，而 `host_key_checking = True` 是刻意保留的。
+`cx deploy` 現在會在跑之前先比對 `known_hosts`，並直接給出那一行修法 ——
+原本會得到 ansible 把 ssh 的 MITM 警告塞在 `UNREACHABLE! => {"msg": "…\r\n…"}`
+裡面丟出來，幾乎看不懂。
+
+```
+✘ known_hosts 裡的主機金鑰與目標現在的不符
+    [127.0.0.1]:2222
+    …
+        ssh-keygen -R '[127.0.0.1]:2222'
+```
+
+掃不到主機（沒起來）時不會誤報 —— 那種情況讓 ansible 去說「連不上」比較清楚。
 
 ---
 

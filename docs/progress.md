@@ -297,7 +297,7 @@ cx deploy apply staging         # 真的跑（會列出目標主機並要求確�
 | Docker daemon | ✅ 29.7.2 | — |
 | host 的 `pdo_sqlite` | ✅ 已安裝 | `cx --runner native test back` 可用（2026-09-04 實測 rc=0） |
 | SonarQube | 未啟動 | `cx scan code` 會略過 scanner 並警告 |
-| 目標主機 | ✅ pm-staging-1 可連線 | `cx deploy ping` 回 pong、`cx deploy check` 390 個 task 全過（2026-09-04 實測） |
+| 目標主機 | ✅ 本機容器，24.04 與 26.04 各一 | `cx deploy apply` **完整實跑**（不是 --check）：24.04 ok=498、26.04 ok=491，兩邊 failed=0。Dockerfile 在 `docker/ansible-target/`（2026-09-05） |
 
 > `sudo usermod -aG docker $USER` 之後**必須** `wsl --shutdown`（Windows 端）再重開。
 > `usermod` 只影響之後才建立的登入 session，既有的 shell 不會生效 —— 這是本專案
