@@ -40,7 +40,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 
 | 動詞 | 狀態 | 備註 |
 |---|---|---|
-| `setup` | ✅ | env / dirs / guard / **native** / system / tools / deps |
+| `setup` | ✅ | env / dirs / **native** / system / tools / deps（`guard` 仍在，但**不含**在無參數的 `setup` 裡） |
 | `doctor` | ✅ | 含 Phase 2 產出物與動詞完整性檢查（33 項，含 dispatcher 對照表） |
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
@@ -165,7 +165,7 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 | 缺陷 | 症狀 | 為什麼危險 |
 |---|---|---|
 | `cx test coverage` 吞掉退出碼 | 1 failed 1 passed，rc 仍是 `0` | 函式最後一個指令是 `docker cp` / `cx_ok`。CI 上是一個永遠綠的步驟 |
-| Larastan 摘要取錯欄位 | 印 `errors=[]` | 頂層 `errors` 是「通用錯誤」陣列，不是計數。**100 個檔案錯誤時它仍然是 `[]`**。計數在 `totals.file_errors` |
+| Larastan 摘要取錯欄位 | 印 `errors=[]` | 標準格式裡頂層 `errors` 是「通用錯誤」陣列不是計數，**100 個檔案錯誤時它仍然是 `[]`**；計數在 `totals.file_errors`。但**還有一種扁平格式** `{"result":"failed","errors":N}`，那裡它才是整數 —— 解析器與文件都必須兩種都吃（2026-09-05 補上後者） |
 | `npm audit` 網路失敗 | 報成「有 finding」，CI 收到 22 | `exit 1` 一碼兩義。一次網路抖動就變成一份假的資安報告 |
 | 覆蓋率報告用固定的 `/tmp` 路徑 | phpunit exit 255，但 `docker cp` 仍成功並印 ✔ | 複製出來的是**上一次的舊報告** |
 

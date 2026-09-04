@@ -13,6 +13,7 @@
 | [`template.md`](template.md) | 拿這個 repo 當**新專案範本**：哪些能刪、哪些不可重建、改 `.cxroot` 會連帶換掉什麼 | 開新專案 |
 | [`progress.md`](progress.md) | 進度追蹤與「還沒驗證什麼」 | 交接、規劃 |
 | [`docker-verification.md`](docker-verification.md) | Phase 2 的驗收需求與實測結果 | 稽核 |
+| [`../docker/ansible-target/README.md`](../docker/ansible-target/README.md) | **本機驗證用的 Ansible 目標容器**：怎麼建 22.04 / 24.04 / 26.04、systemd 需要什麼 | 在 WSL 內驗證部署 |
 
 ## 該讀哪一份
 

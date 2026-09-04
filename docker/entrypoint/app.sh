@@ -72,13 +72,24 @@ if php -m 2>/dev/null | grep -qi '^xdebug$'; then
         log "xdebug 已安裝但 XDEBUG_MODE=off → 不載入設定"
     else
         log "xdebug 設定：mode=$XDEBUG_MODE start=${XDEBUG_START:-trigger}"
+        # ⚠ 這裡不能寫 ${XDEBUG_LOG_LEVEL:+xdebug.log = …}。
+        # ${var:+…} 判斷的是「字串非空」，而預設值 "0" 是非空字串 ——
+        # 於是 log_level=0（不記錄）的時候仍然會寫出 xdebug.log 這一行。
+        # 功能上無害（level 0 什麼都不寫），但設定檔會說謊：
+        # php -i 顯示 xdebug.log => /var/log/xdebug.log，看起來像 log 開著。
+        # 要判斷「數值大於 0」就得自己算。
+        _XDEBUG_LOG_LINE=''
+        if [ "${XDEBUG_LOG_LEVEL:-0}" -gt 0 ] 2>/dev/null; then
+            _XDEBUG_LOG_LINE='xdebug.log = /var/log/xdebug.log'
+            log "xdebug log_level=$XDEBUG_LOG_LEVEL → 寫 /var/log/xdebug.log"
+        fi
         cat > /usr/local/etc/php/conf.d/zz-xdebug.ini <<XDEBUG
 xdebug.mode = ${XDEBUG_MODE}
 xdebug.start_with_request = ${XDEBUG_START:-trigger}
 xdebug.client_host = ${XDEBUG_CLIENT_HOST:-host.docker.internal}
 xdebug.client_port = ${XDEBUG_CLIENT_PORT:-9003}
 xdebug.log_level = ${XDEBUG_LOG_LEVEL:-0}
-${XDEBUG_LOG_LEVEL:+xdebug.log = /var/log/xdebug.log}
+${_XDEBUG_LOG_LINE}
 xdebug.connect_timeout_ms = 200
 XDEBUG
     fi

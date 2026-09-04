@@ -235,6 +235,61 @@ ansible-playbook playbooks/rollback.yml -e rollback_to=<id>
 
 ---
 
+## 6.4 寫新 task 時：唯讀探測一定要加 `check_mode: false`
+
+這是 `cx deploy check` 最容易被打回原形的一條規則，而它的症狀**完全指向錯誤的方向**。
+
+`--check` 之下 ansible 預設會**跳過** `command` / `shell` / `uri`，
+於是 `register` 出來的變數沒有 `stdout` / `status` 欄位，
+下游的 `assert` 或 `set_fact` 拿到 `default()` 值，然後報出一個看起來很嚴重的錯誤：
+
+| 實際狀況 | dry-run 報出來的訊息 |
+|---|---|
+| `apt-cache policy` 被跳過 | 「下列必要 PHP 套件在目前的 APT 來源中找不到：php8.5-fpm…」（但機器上明明裝好了） |
+| `uri` 探測被跳過 | 「PPA 沒有為 codename noble 發佈套件（回 無回應）」（但 PPA 有） |
+| `gpg --show-keys` 被跳過 | 「金鑰指紋不是預期的…（實際讀到：）」 |
+
+**規則**：只要一個 task 標了 `changed_when: false`（也就是你宣告它是唯讀查詢），
+就必須同時標 `check_mode: false`，否則 `--check` 之下它會被跳過。
+
+```yaml
+- name: 探測某個東西
+  ansible.builtin.command: { argv: [apt-cache, policy, foo] }
+  register: probe
+  changed_when: false
+  check_mode: false      # ← 缺了這一行，--check 會讓下游 assert 亂報
+  failed_when: false
+```
+
+2026-09-04 的一次全面清查：32 個 task 宣告了 `changed_when: false` 卻沒有
+`check_mode: false`。補上 30 個之後 `cx deploy check` 從
+**ok=70 failed=1** 變成 **ok=390 failed=0**。
+
+### 反過來的錯誤也存在
+
+會**寫入**的 task 不可以標 `check_mode: false`。那對真實執行毫無影響
+（那時本來就不是 check 模式），唯一的效果是讓 `--check` 也真的去寫 ——
+而它依賴的前置條件在 dry-run 下往往不存在。實際踩過兩個：
+
+* `nginx_myguard` 的金鑰正規化：依賴前一步 `get_url` 下載的暫存檔，
+  而 `get_url` 在 `--check` 只回報「會下載」，於是
+  `grep: /tmp/.pm-myguard-key.download: No such file or directory`
+* `deploy_backend` 的 `composer install`：在還沒 clone 出來的 release 目錄裡執行，
+  模組在跑之前就失敗、回一個沒有 `rc` 的 dict，
+  `failed_when: ...rc != 0` 接著噴 `object of type 'dict' has no attribute 'rc'`
+
+在尚不存在的目錄裡做事本來就無法乾跑。那種 task 要用
+`when: not ansible_check_mode`，而且**印一行說明為什麼跳過** ——
+靜默跳過會讓人以為那一步驗過了。
+既有慣例見 `appkey.yml`、`symlinks.yml`、`deploy_frontend/install.yml`。
+
+### 兩個例外
+
+`pm2_ping`（會喚醒 PM2 daemon）與 `certbot_dry_run`（會打 ACME 伺服器）
+雖然標了 `changed_when: false`，但實際有副作用，所以**刻意不加** `check_mode: false`。
+
+---
+
 ## 6.5 PHP 的套件來源：`php_repo_source`
 
 `php` role 用哪裡的套件是**依 codename 決定**的，不是寫死。

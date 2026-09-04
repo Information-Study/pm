@@ -175,13 +175,42 @@ rm -rf reports && cx setup dirs     # 重建空的目錄骨架
 
 ```bash
 # ① Larastan：有幾個錯、分別在哪
-#    ⚠ 兩個坑。第一，這個檔可能是 JSONL（phpstan 有 note 要說的時候會多吐一行），
-#      json.load(整個檔) 會炸。第二，**不要看頂層的 "errors"** ——
-#      那是「通用錯誤」的陣列（設定檔問題之類），不是計數；
-#      100 個檔案錯誤時它仍然是 []，看起來永遠乾淨。
-#      要看的是 totals.file_errors。
-python3 -c 'import json;[print("file_errors=%s generic=%s"%(d["totals"]["file_errors"],d["totals"]["errors"])) for l in open("reports/quality/larastan.json") if l.strip() for d in [json.loads(l)] if isinstance(d.get("totals"),dict)]'
-python3 -c 'import json;[print(f,m["line"],m["message"]) for l in open("reports/quality/larastan.json") if l.strip() for d in [json.loads(l)] if isinstance(d.get("files"),dict) for f,v in d["files"].items() for m in v["messages"]]'
+#    ⚠ 三個坑。
+#    (1) 檔案是 JSONL（phpstan 有 note 要說的時候會多吐一行），
+#        json.load(整個檔) 會炸 —— 要逐行讀。
+#    (2) **有兩種格式**，實測都會遇到：
+#          標準  {"totals":{"errors":N,"file_errors":M},"files":{…},"errors":[…]}
+#          扁平  {"tool":"phpstan","result":"failed","errors":N,"error_details":{…}}
+#        標準格式裡頂層的 "errors" 是「通用錯誤」的**陣列**不是計數
+#        （100 個檔案錯誤時它仍然是 []）；扁平格式裡它就是整數計數。
+#        只認一種的話，另一種環境會靜靜印出空白 —— 跟「乾淨」長得一模一樣。
+#        bin/cmd/scan.sh 的解析器兩種都吃，下面這兩行也是。
+#    (3) 明細的位置也不同：標準在 files[].messages[]，扁平在 error_details[]。
+
+python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if not l: continue
+    try: d=json.loads(l)
+    except Exception: continue
+    if not isinstance(d,dict): continue
+    t=d.get("totals")
+    if isinstance(t,dict):
+        print("errors=%d（檔案 %s ・通用 %s）"%(int(t.get("file_errors",0))+int(t.get("errors",0)),t.get("file_errors",0),t.get("errors",0)))
+    elif isinstance(d.get("errors"),int):
+        print("errors=%d"%d["errors"])' reports/quality/larastan.json
+
+python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if not l: continue
+    try: d=json.loads(l)
+    except Exception: continue
+    if not isinstance(d,dict): continue
+    for f,v in (d.get("files") or {}).items():
+        for m in v.get("messages",[]): print(f,m["line"],m["message"])
+    for f,ms in (d.get("error_details") or {}).items():
+        for m in ms: print(f,m["line"],m["message"])' reports/quality/larastan.json
 
 # ② Semgrep：只列 ERROR 等級（那才是會擋 CI 的）
 #    ⚠ 等級**不在** result 上。SARIF 的 result 沒有 level 欄位（實測 18 個 result

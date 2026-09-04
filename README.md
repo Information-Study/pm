@@ -86,9 +86,41 @@ node_modules）。**cx 絕不偷偷跑 sudo** —— sudo 不可用時它只把 
 ./cx db admin                 # 建立 Filament 管理員
 ```
 
-**dev 模式的特性**：原始碼 bind mount（改了立刻生效）、Nuxt HMR、xdebug（`start_with_request=trigger`）、
-phpMyAdmin。`vendor/` 與 `node_modules/` 用具名 volume 蓋回去，所以容器內用的是 Alpine 上編譯的版本，
+**dev 模式的特性**：原始碼 bind mount（改了立刻生效）、Nuxt HMR、xdebug、phpMyAdmin。
+`vendor/` 與 `node_modules/` 用具名 volume 蓋回去，所以容器內用的是 Alpine 上編譯的版本，
 不會跟 host 的混在一起。
+
+**Xdebug 的五個旋鈕**。⚠ 改的地方是 **`docker/env/<模式>.env`**，不是根目錄的 `.env` ——
+`cx` 給 compose 的 `--env-file` 順序是「根 `.env` → `docker/env/<模式>.env`」，
+**後面的會覆蓋前面的**。所以在 `.env` 設 `XDEBUG_MODE=off` 對 dev 沒有效果，
+`docker/env/dev.env` 的 `debug` 會贏：
+
+| 變數 | 預設 | 說明 |
+|---|---|---|
+| `XDEBUG_MODE` | `off` | `off` 時完全不寫設定檔，關掉是真的關掉 |
+| `XDEBUG_START` | `trigger` | 只有帶 `XDEBUG_TRIGGER` 才啟動（VS Code 的外掛會自動帶）。舊專案是 `yes`（每個請求都連 IDE），要復刻就改回去 |
+| `XDEBUG_CLIENT_HOST` | `host.docker.internal` | dev 的 compose 有配 `extra_hosts` |
+| `XDEBUG_CLIENT_PORT` | `9003` | 與 `.vscode/launch.json` 一致 |
+| `XDEBUG_LOG_LEVEL` | `0` | 大於 0（1~7）才寫 `/var/log/xdebug.log`。連不上 IDE 是 xdebug 最常見的問題，沒有 log 就只能猜；但常開會拖慢每個請求，查完記得調回 0 |
+
+dev 預設 `XDEBUG_MODE=debug`，test 與 prod 是 `off`
+（常開會讓 ZAP 的時間量測失真，而 prod 映像有 build 斷言直接擋掉 xdebug）。
+
+改完 `cx dev restart app` 生效。想臨時試一次不改檔的話，環境變數也吃：
+
+```bash
+XDEBUG_LOG_LEVEL=7 ./cx dev up -d app
+```
+
+```bash
+./cx acl check                # 檔案權限：唯讀驗證
+./cx acl apply                # 套用前後端的 ACL 模型
+./cx acl user add <帳號>      # 讓另一個開發者能改原始碼
+```
+
+`cx acl` 用 POSIX ACL 讓 web 身分與你**同時**寫得動 `storage/`，而 others 仍然是 `0`。
+setgid 只繼承群組、不繼承權限位元，所以純靠 `chown` 兩邊會互相踩 ——
+完整說明見 [`docs/cx-reference.md`](docs/cx-reference.md) 的 `cx acl` 一節。
 
 ### 第二階段：測試與掃描
 
@@ -296,7 +328,7 @@ rsync -a --exclude .git --exclude node_modules --exclude vendor \
 
 cd newproj
 $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
-./cx setup                 # .env（新密碼 + 新的 PROJECT_SLUG）、目錄、guard
+./cx setup                 # .env（新密碼 + 新的 PROJECT_SLUG）、目錄、collections
 ./cx setup native          # 整套原生工具鏈 + 專案相依
 ./cx doctor && ./cx dev up -d --build && ./cx verify
 ```

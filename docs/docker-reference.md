@@ -194,6 +194,39 @@ supervisord 的設定要有 `nodaemon=true`，否則它會 fork 到背景、PID 
 `stopsignal` 對 php-fpm 是 `QUIT`（優雅收工），對 queue worker 是 `TERM`
 （Laravel 的 worker 收到 TERM 會做完當前 job 再退出）。
 
+### 要多加一個 worker：`/etc/supervisor/conf.d/`
+
+`docker/php/supervisord.conf` 有一段 `[include]`：
+
+```ini
+[include]
+files = /etc/supervisor/conf.d/*.conf
+```
+
+所以額外的 program 不必改那個烤進映像的主設定檔 —— 丟一個 `.conf` 進
+`/etc/supervisor/conf.d/`（bind mount 或衍生映像）就會被載入。目錄由
+`docker/php/Dockerfile` 建立，空的也不影響（glob 不匹配不會出錯）。
+
+> 這個 drop-in 目錄一度消失過：舊映像本來就是靠它把 `laravel-queue.conf`
+> 掛進來的，新映像把 program 直接寫進主設定檔之後就沒人補回目錄，
+> 於是「加一個 worker」變成必須改映像再重建。2026-09-04 補回。
+
+### entrypoint 以 root 執行，但不留 root 檔案
+
+`docker/entrypoint/app.sh` 的 PID 1 需要 root（supervisord 的要求），
+所以它跑的 `artisan` 也是 root。`backend/` 在 dev 是 bind mount，
+因此凡是 entrypoint **新建**的檔案都要立刻 `chown` 回 `www-data`
+（uid 已在 build 時對齊成 `APP_UID`）：
+
+| 檔案 | 由誰產生 |
+|---|---|
+| `bootstrap/cache/packages.php` | `artisan package:discover` |
+| `public/storage` | `artisan storage:link` —— 是 symlink，要用 `chown -h` |
+
+少了這一步，host 端會出現 `root:root` 的檔案，而你 `chmod` / `setfacl` 它們
+會得到 `Operation not permitted`（那兩個動作需要**擁有者或 root**，同群組不算）。
+清掉既有殘骸用 `cx acl fix-owner`。
+
 ---
 
 ## 6. edge 的路由

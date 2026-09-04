@@ -95,6 +95,9 @@ services:
       XDEBUG_START: ${XDEBUG_START:-trigger}
       XDEBUG_CLIENT_HOST: ${XDEBUG_CLIENT_HOST:-host.docker.internal}
       XDEBUG_CLIENT_PORT: ${XDEBUG_CLIENT_PORT:-9003}
+      # 大於 0 才寫 /var/log/xdebug.log。連不上 IDE 是 xdebug 最常見的問題，
+      # 而沒有 log 就只能猜 —— 但常開會拖慢每一個請求，所以預設 0。
+      XDEBUG_LOG_LEVEL: ${XDEBUG_LOG_LEVEL:-0}
     depends_on:
       mysql:
         condition: service_healthy

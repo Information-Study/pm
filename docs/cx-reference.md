@@ -33,7 +33,7 @@
 | 0 | `EX_OK` | 成功 |
 | 1 | `EX_FAIL` | 一般失敗 |
 | 2 | `EX_USAGE` | 用法錯誤（未知動詞、未知參數） |
-| 3 | `EX_PRECOND` | 前置條件不足（沒有 Docker、缺檔、工具沒裝） |
+| 3 | `EX_PRECOND` | 前置條件不足（沒有 Docker、缺檔、工具沒裝、**沒有 TTY 卻執行 `cx tui`**） |
 | 4 | `EX_ABORT` | 使用者取消 |
 | 20 | `EX_SCAN_QUALITY` | ① Quality 有 finding |
 | 21 | `EX_SCAN_SAST` | ② SAST 有 ERROR 等級 finding |
@@ -778,7 +778,22 @@ cx lint [目錄]
 ## `cx tui`
 
 不給動詞時的預設。whiptail 選單，把上面所有動詞包成互動式。
-沒有 tty 時自動退回 `plain`。
+**沒有 tty 時不會退回 plain，而是硬失敗**（`EX_PRECOND` = 3）：
+
+```
+$ ./cx < /dev/null
+✘ cx 的選單需要終端機（TTY）
+    目前偵測到：CX_UI=plain、fd8 否 TTY
+    非互動環境請直接給動詞，例如： cx doctor / cx scan all / cx git status
+; echo $?
+3
+```
+
+這是刻意的：選單是互動介面，在腳本／CI／pipe 裡「安靜地做一半」比直接停下更糟。
+非互動環境一律明確給動詞。
+
+同理，`--ui plain` 也會讓選單不可用 —— `cx_interactive()` 要求
+「fd 8 是 tty」**且**「`CX_UI != plain`」兩個條件同時成立。
 
 選單執行動詞時會**開真正的子行程**（`cx --ui plain --mode … --runner … <動詞>`），
 不是在同一個 shell 裡呼叫函式 —— 理由見 `bin/cmd/tui.sh` 開頭的說明。

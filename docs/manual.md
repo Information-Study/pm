@@ -112,6 +112,53 @@ cd pm
 ./cx db admin                 # 建立 Filament 管理員
 ```
 
+### 2.5 互動選單：`cx tui`
+
+不給動詞時的預設。除了把所有動詞包起來，還有三件命令列做不到的事：
+
+| 主選單 | 作用 |
+|---|---|
+| `切換模式` | 之後每一個指令都帶 `--mode dev\|test\|prod`。標題會顯示目前狀態 |
+| `環境 → 切換 runner` | 之後每一個指令都帶 `--runner auto\|docker\|native` |
+| `環境 → 整備環境` | 對應 `cx setup` 的每一段：`native` / `system` / `tools` / `deps` / `env` / `dirs` / `guard` / `galaxy` |
+| `自訂選單` | 讀 `.cx/menu.conf`，第一次進入自動產生範本 |
+
+自訂選單的格式是每行 `標籤|要傳給 cx 的參數`：
+
+```
+重建 dev 並驗收|dev up -d --build
+只掃祕密|scan secrets
+後端測試（原生）|test back
+```
+
+`#` 是註解，空行忽略；參數會自動帶上目前的 `--mode` 與 `--runner`。
+子選單最後一項直接開編輯器，存檔即生效。
+`.cx/` 已被 `.gitignore` 排除，所以自訂選單是每台機器各自的。
+路徑可用 `CX_MENU_FILE` 覆寫。
+
+### 2.6 檔案權限：`cx acl`
+
+```bash
+./cx acl check                # 唯讀驗證（cx doctor 也會看這一項）
+./cx acl apply                # 套用前後端的權限模型
+./cx acl user add <帳號>      # 讓另一個開發者能改原始碼（--ro 只讀）
+./cx acl fix-owner            # 把不屬於你的檔案要回來
+```
+
+需要 `setfacl`：`cx setup system acl`。
+
+**為什麼需要**：setgid 只讓新建的目錄繼承群組，**不繼承權限位元** ——
+位元仍由建立者的 umask 決定。所以 php-fpm 建的檔 deploy 寫不動、
+deploy 建的檔 php-fpm 寫不動，兩邊互相踩。這就是 Laravel
+「明明 chown 過了還是 permission denied」的成因。
+default ACL 讓新建的檔案自動帶上兩邊的權限，而 others 仍然是 `0`。
+
+本機開發常常用不到 —— 容器裡的 `www-data` 已被對齊成你的 uid，
+`cx acl check` 會直接把這件事講出來。部署主機由 Ansible 的 common role
+處理同一套模型。完整說明見
+[`cx-reference.md`](cx-reference.md) 的 `cx acl` 與
+[`ansible-reference.md`](ansible-reference.md) §6.6。
+
 ---
 
 ## 3. 三個階段

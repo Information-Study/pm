@@ -224,7 +224,9 @@ _tui_docker() {
 
 _tui_db() {
     local c
-    while c=$(_tui_menu "資料庫（模式：${CX_MODE}）" "返回" \
+    # 標題要用 _TUI_MODE 而不是 CX_MODE —— 後者是 cx 啟動當下的值，
+    # 在選單裡切過模式之後它不會變，於是標題顯示 dev、實際卻對 prod 下 db fresh。
+    while c=$(_tui_menu "資料庫（模式：$_TUI_MODE）" "返回" \
         status  "連線資訊與資料表" \
         migrate "php artisan migrate --force" \
         dump    "備份到 reports/db/" \

@@ -200,7 +200,8 @@ cd newproj
 $EDITOR .cxroot          # 改專案名、GitHub 組織、repo 名
 
 # 2. 重建
-./cx setup               # .env（新密碼 + 新的 PROJECT_SLUG）、目錄、guard、collections
+./cx setup               # .env（新密碼 + 新的 PROJECT_SLUG）、目錄、collections
+                         # push guard 是選用的，要的話另外跑 cx git guard install
 ./cx setup native        # = system + tools + deps（一行裝完整套原生工具鏈）
                          #   sudo 不可用時會把 apt 指令印出來讓你自己貼，
                          #   免 root 的那一半照樣裝完

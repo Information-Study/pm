@@ -176,6 +176,20 @@ wsl.exe -d Ubuntu-26.04 -- python3 - < script.py
 
 ---
 
+### `✘ cx 的選單需要終端機（TTY）`
+
+裸執行 `cx`（不給動詞）預設會開互動選單，而選單需要 tty。
+在腳本、pipe、CI、或 `cx < /dev/null` 之下會**硬失敗**回傳 3，不會退回文字模式 ——
+那是刻意的：互動介面在非互動環境「安靜地做一半」比直接停下更糟。
+
+```bash
+cx doctor          # 非互動環境一律明確給動詞
+cx help            # 看有哪些動詞
+```
+
+`--ui plain` 也會讓選單不可用，即使你在真的終端機上 ——
+判斷條件是「fd 8 是 tty」**且**「`CX_UI != plain`」兩者同時成立。
+
 ## Docker
 
 ### `Bind for 0.0.0.0:8080 failed: port is already allocated`
@@ -755,6 +769,63 @@ docker exec -u 0 $(cx dc ps -q app) rm -f /tmp/coverage-backend.xml /tmp/junit-b
 ```bash
 docker exec -u 0 $(cx dc ps -q app) sh -c 'rm -f /var/www/html/.phpunit.result.cache /var/www/html/storage/*-backend.xml'
 ```
+
+## 權限（ACL）
+
+### `cx acl apply` 噴 `Operation not permitted`
+
+```
+setfacl: backend/bootstrap/cache/packages.php: Operation not permitted
+```
+
+`setfacl` 需要**檔案的擁有者或 root** —— 同群組、甚至有寫入權都不夠。
+樹裡只要有一個別人的檔案，`setfacl -R` 就會停在那裡，
+前面設好的留著、後面的沒設到（半套狀態最難查）。
+
+來源幾乎都是同一個：容器的 entrypoint 以 root 執行，
+`artisan package:discover` 與 `storage:link` 在 bind mount 裡留下 `root:root`。
+
+```bash
+find backend frontend -not -user "$(id -u)" -printf '%u:%g %p\n'
+cx acl fix-owner          # 列出、確認、才 sudo chown
+```
+
+entrypoint 已經修好（生成後立刻 chown 回 `www-data`，symlink 用 `-h`），
+所以新環境不會再產生。上面那個指令是清既有殘骸用的。
+
+以 root 執行（`sudo cx acl apply`）時不做這個檢查 —— root 本來就設得動任何檔案。
+
+### `cx acl apply` 成功，但 `cx acl check` 說沒生效
+
+2026-09-05 修掉。`getfacl` 預設印**名稱**（`user:sixtou:rwx`），
+而 web 身分來自 `.env` 的 `APP_UID` 是**數字** ——
+拿 `1000` 去 grep 名稱永遠不會中。現在比對一律正規化成 uid（`getfacl -n`）。
+
+如果你還看到這個症狀，先確認 `cx` 是最新的。
+
+### `getfacl /srv/pm/backend` 回 `Permission denied`
+
+**這不是故障，是設計要的效果。** `others` 被設成 `0`，
+而你用的帳號既不是 `deploy` 也不是 `www-data`。用 `sudo` 或 `-b` 再看：
+
+```bash
+ansible <host> -b -m shell -a 'getfacl -p /srv/pm/backend/shared/storage'
+```
+
+`/srv/pm` 的 `drwxr-s---+` 結尾那個 `+` 就是「有 ACL」的標記。
+
+### 設了 ACL 但 web 還是寫不進去
+
+兩個可能，`ansible` 的 `ACL | 驗證 www-data 真的能寫 storage` 那個 task
+的失敗訊息就會指出來：
+
+```bash
+findmnt -no SOURCE,FSTYPE,OPTIONS -T /srv/pm     # 掛載選項有 noacl？
+namei -l /srv/pm/backend/shared/storage          # 哪一層少了 x？
+```
+
+`cx acl` 在本機也會先探測檔案系統支不支援 ACL —— 少了那個檢查，
+`setfacl` 只會回 `Operation not supported`，看不出是掛載問題。
 
 ## 掃描
 

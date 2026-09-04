@@ -65,7 +65,10 @@ esac
 沒有就改判 `EX_PRECOND`(3) 並印出真正的原因。
 
 同樣的邏輯也適用於 ZAP（見 §5 的退出碼映射）與 Larastan
-（報告是 JSONL，而且計數在 `totals.file_errors`，不是頂層的 `errors`）。
+（報告是 JSONL，而且**有兩種格式**：標準的 `{"totals":{"file_errors":N}}` 與
+扁平的 `{"result":"failed","errors":N}`。標準格式裡頂層的 `errors` 是通用錯誤
+**陣列**不是計數，扁平格式裡它才是整數 —— 只認一種的話另一種會靜靜印出空白，
+跟「乾淨」長得一模一樣。讀法見 `docs/reports.md` §7 ①）。
 
 ---
 
