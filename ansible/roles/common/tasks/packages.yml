@@ -2,6 +2,20 @@
 # apt 模組本身需要 python3-apt。缺的時候 apt 模組會自己先用 apt-get 補裝
 # （"Updating cache and auto-installing missing dependency: python3-apt"），
 # 但我們仍然把它明確列進 common_base_packages，因為後面的 role 依賴它「一定在」。
+# ⚠ check_mode: false 是必要的，不是偷懶。
+#
+# ansible.builtin.apt 的 update_cache 在 --check 之下不會真的更新索引，
+# 只回報 changed。於是在「apt 快取是空的或過期」的機器上（全新機、
+# 剛 debootstrap 的容器、Dockerfile 裡 rm -rf /var/lib/apt/lists/* 過的映像），
+# 下一個 task 會找不到任何套件，錯誤訊息是
+#   No package matching 'python3-pymysql' is available
+# —— 那個套件明明存在於 noble/main，只是索引還沒抓下來。
+#
+# 結果是 `cx deploy check` 在最該用它的時機（第一次部署到一台全新機器）
+# 必然失敗，而失敗訊息完全指向錯誤的方向。
+#
+# 更新 apt 索引不改變系統狀態（只寫 /var/lib/apt/lists），
+# 在 check 模式下真的執行它是安全且必要的。
 - name: 套件 | 更新 apt 索引
   ansible.builtin.apt:
     update_cache: true
@@ -10,16 +24,26 @@
   until: common_apt_cache is succeeded
   retries: "{{ common_apt_retries | int }}"
   delay: "{{ common_apt_delay | int }}"
+  check_mode: false
+  changed_when: false
 
+# retries 是為了 apt/dpkg 的 lock 競爭與暫時性的網路問題，
+# 不是為了「套件不存在」這種永遠不會成功的錯誤。
+# until 加上訊息判斷，讓永久性失敗第一次就停下來 ——
+# 否則 30 次 × 10 秒 = 5 分鐘之後才看到一個第一秒就能判定的錯誤。
 - name: 套件 | 安裝基礎套件（含 python3-debian / python3-apt，A6）
   ansible.builtin.apt:
     name: "{{ common_base_packages + common_extra_packages }}"
     state: present
     install_recommends: "{{ common_apt_install_recommends | bool }}"
   register: common_apt_base
-  until: common_apt_base is succeeded
+  until: >-
+    common_apt_base is succeeded
+    or ('No package matching' in (common_apt_base.msg | default('')))
+    or ('Unable to locate package' in (common_apt_base.msg | default('')))
   retries: "{{ common_apt_retries | int }}"
   delay: "{{ common_apt_delay | int }}"
+  failed_when: common_apt_base is failed
 
 # A6 的實際驗收：python3-debian 沒有真的裝起來的話，之後每一個
 # ansible.builtin.deb822_repository 任務都會失敗，而且錯誤訊息只會說

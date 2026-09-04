@@ -525,6 +525,14 @@ _git_remote_init() {
 # 推送：子模組先，主庫最後
 # ---------------------------------------------------------------------------
 _git_push() {
+    local force=0
+    while (( $# )); do
+        case $1 in
+            --force) force=1; shift ;;
+            *) cx_die "$EX_USAGE" "push: 未知參數 $1（只支援 --force）" ;;
+        esac
+    done
+
     _git_scan_secrets
 
     cx_step "推送前檢查"
@@ -550,6 +558,26 @@ _git_push() {
 三個 repo 都是 PUBLIC。祕密掃描已通過。
 
 確定要推送嗎？" || return "$EX_ABORT"
+
+    # ── --force 的額外閘門 ────────────────────────────────────────────────
+    # 強制推送會**改寫遠端的歷史**。任何已經 clone 或 fork 的人，
+    # 下一次 pull 會得到 non-fast-forward，必須自己 reset --hard 才能繼續；
+    # 已經基於舊 commit 開的 PR 也會斷掉。
+    # 唯一合理的使用時機是「歷史裡有東西必須消失」（祕密外洩、命名清理）。
+    if (( force )); then
+        cx_ask_typed "強制推送會改寫遠端歷史" \
+"你正要對三個 **PUBLIC** repo 執行強制推送。
+
+這會改寫遠端的 commit 歷史：
+  • 已經 clone 的人下次 pull 會 non-fast-forward，必須 reset --hard
+  • 基於舊 commit 的 PR / 分支會斷開
+  • 舊的 commit SHA 永久失效（連結、issue 引用都會壞）
+
+做這件事之前應該已經有完整備份（git bundle --all）。
+
+確定的話，請輸入 REWRITE HISTORY。" "REWRITE HISTORY" || return "$EX_ABORT"
+        cx_warn "強制推送模式：會用 --force-with-lease"
+    fi
 
     local rc_all=0
     while read -r r; do
@@ -580,8 +608,13 @@ _git_push() {
             br=$tracked
         fi
 
-        cx_info "推送 $slug（$br）…"
-        if ! CX_ALLOW_PUSH=1 cx_run git -C "$r" push -u origin "$br"; then
+        local -a pushargs=(push -u origin "$br")
+        # --force-with-lease 而不是 --force：遠端在我們 fetch 之後又被別人推過的話
+        # 會被擋下來，而不是把別人的 commit 直接蓋掉。
+        (( force )) && pushargs=(push -u --force-with-lease origin "$br")
+
+        cx_info "推送 $slug（$br${force:+，強制}）…"
+        if ! CX_ALLOW_PUSH=1 cx_run git -C "$r" "${pushargs[@]}"; then
             # 推送失敗就要停下來，不能繼續推主庫 ——
             # 否則 gitlink 會指向遠端不存在的 commit。
             cx_error "$slug 推送失敗"

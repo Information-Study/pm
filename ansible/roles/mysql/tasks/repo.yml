@@ -69,7 +69,20 @@
     owner: root
     group: root
     mode: "0644"
-    force: false
+    # ⚠ force: true 是必要的。
+    #
+    # get_url 的 force: false 語意是「dest 已存在就完全不下載」。
+    # 這對「金鑰輪替 / 續期」是致命的：改了 mysql_repo_key_url 之後，
+    # 一台已經裝過的機器會永遠留著舊的 keyring，而且 changed=0，
+    # 看起來像是「設定已套用、沒有變更」。
+    #
+    # 2026-09-04 實測踩到：把 URL 從 -2023 改成 -2025 之後重跑，
+    # 目標機上仍然是那把 2025-10-22 過期的金鑰，apt 繼續 EXPKEYSIG。
+    #
+    # 金鑰檔只有幾 KB，重抓成本可忽略；下面緊接著就有指紋白名單與
+    # 效期斷言，抓到不對的東西會立刻擋下來。
+    # checksum 不能用（Oracle 續期時檔案內容本來就會變）。
+    force: true
   register: mysql_repo_key_download
   retries: 3
   delay: 5
@@ -123,6 +136,47 @@
     quiet: true
   when: mysql_repo_keyring_stat.stat.exists
 
+
+# ── 金鑰效期 ────────────────────────────────────────────────────────────────
+# 指紋對得上不代表金鑰還有效。Oracle 續期的做法是「同一把金鑰換新檔名重發」，
+# 舊檔名會留在原地帶著過期的自簽章 —— 指紋一模一樣，白名單照樣通過。
+#
+# 不在這裡擋的話，失敗會延後到 40 個 task 之後的 apt update，訊息是
+#   EXPKEYSIG B7B3B788A8D3785C ... The repository ... is not signed.
+# 完全不會告訴你「換一個檔名就好」。2026-09-04 實測踩過這個坑
+#（-2023 的檔案在 2025-10-22 過期，現行是 -2025）。
+#
+# gpg --with-colons 的 pub 行第 7 欄是到期時間（unix epoch），
+# 永不過期的金鑰那一欄是空字串。
+- name: 解析金鑰到期時間
+  ansible.builtin.set_fact:
+    mysql_repo_key_expiry: >-
+      {{ (mysql_repo_key_info.stdout_lines
+          | select('match', '^pub:')
+          | map('regex_replace', '^(?:[^:]*:){6}([^:]*):.*$', '\1')
+          | select('match', '^[0-9]+$')
+          | map('int')
+          | list) }}
+  when: mysql_repo_keyring_stat.stat.exists
+
+- name: 金鑰不可過期
+  ansible.builtin.assert:
+    that:
+      - (mysql_repo_key_expiry | length) == 0
+        or (mysql_repo_key_expiry | max) > (ansible_facts['date_time']['epoch'] | int)
+    fail_msg: >-
+      {{ mysql_repo_key_url }} 的金鑰已於
+      {{ '%Y-%m-%d' | strftime(mysql_repo_key_expiry | max) }} 過期
+      （現在是 {{ '%Y-%m-%d' | strftime(ansible_facts['date_time']['epoch'] | int) }}）。
+      指紋沒有變 —— Oracle 續期時是「同一把金鑰換一個新檔名重新發布」，
+      所以要改的是 mysql_repo_key_url，不是白名單。
+      到 https://repo.mysql.com/ 找年份最新的 RPM-GPG-KEY-mysql-YYYY，
+      用 gpg --show-keys 確認指紋仍是
+      {{ mysql_repo_key_fingerprints_allowed | join(', ') }} 之後再改。
+      繼續下去的話會在 apt update 階段得到看不出原因的 EXPKEYSIG 錯誤。
+    quiet: true
+  when: mysql_repo_keyring_stat.stat.exists
+
 - name: 設定 Oracle MySQL APT repository（deb822）
   ansible.builtin.deb822_repository:
     name: mysql
@@ -145,10 +199,24 @@
     mode: "0644"
   register: mysql_repo_pin
 
+# ⚠ 金鑰變更也必須觸發，不能只看 repo 檔與 pin。
+#
+# 2026-09-04 實測踩到：Oracle 的簽章金鑰過期之後，第一次 apt update 會被
+# EXPKEYSIG 拒絕，所以這個 repo 的索引「從來沒有被成功抓下來過」。
+# 換上新金鑰之後，repo 檔與 pin 都沒有變（它們本來就是對的），
+# 於是這個 update 被跳過 —— 索引依然是空的，下一步的
+#   apt-cache policy mysql-community-server
+# 什麼都查不到，錯誤訊息卻是「候選版本不是 8.4.x」，
+# 指向完全錯誤的方向（會讓人去改 components 與 pin，而那兩個都沒問題）。
+#
+# 只要「信任來源」變了就必須重抓索引，這比省一次 apt update 重要得多。
 - name: 更新 APT 快取
   ansible.builtin.apt:
     update_cache: true
-  when: mysql_repo_file is changed or mysql_repo_pin is changed
+  when: >-
+    mysql_repo_file is changed
+    or mysql_repo_pin is changed
+    or (mysql_repo_key_download is defined and mysql_repo_key_download is changed)
 
 # 探測：套件名必須真的存在於新來源，否則後面 apt install 的錯誤訊息很難懂
 - name: 確認 mysql-community-server 可從新來源取得且是 {{ mysql_version_series }} 系列

@@ -19,8 +19,23 @@ errors, warns = [], []
 def err(code, f, msg):  errors.append((code, f, msg))
 def warn(code, f, msg): warns.append((code, f, msg))
 
-yml_files = sorted(ROOT.rglob('*.yml')) + sorted(ROOT.rglob('*.yaml'))
-j2_files  = sorted(ROOT.rglob('*.j2'))
+# ── 排除不屬於這個專案的路徑 ──────────────────────────────────────────
+# ansible/collections/ 是 ansible-galaxy 下載的上游 collection，
+# 裡面有幾萬個檔案（包含別人的測試夾具）。不排除的話這支檢查器會吐出
+# 八百多筆「別人的 command 沒有 changed_when」，訊號被雜訊完全淹沒，
+# 而那些違規我們既不該修也修不了。
+#
+# 與 ansible/.ansible-lint 的 exclude_paths 保持一致。
+EXCLUDE_PARTS = {'collections', '.cache', '.ansible', '.git', '__pycache__'}
+
+
+def _included(path):
+    return not (EXCLUDE_PARTS & set(path.relative_to(ROOT).parts))
+
+
+yml_files = sorted(f for f in list(ROOT.rglob('*.yml')) + list(ROOT.rglob('*.yaml'))
+                   if _included(f))
+j2_files = sorted(f for f in ROOT.rglob('*.j2') if _included(f))
 
 # ── 收集已定義的變數 ──────────────────────────────────────────────
 # 一個只看 defaults/vars 的檢查器會對 register / set_fact / loop 變數大量誤報，

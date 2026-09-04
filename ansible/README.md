@@ -43,7 +43,7 @@ cp inventory/group_vars/staging.yml.example inventory/group_vars/staging.yml
 $EDITOR inventory/group_vars/staging.yml     # 至少要填 app_domain
 
 # ── 祕密（絕不進版控，.gitignore 已擋）──
-ansible-vault create inventory/group_vars/vault.yml
+ansible-vault create inventory/group_vars/all/vault.yml
 #   vault_mysql_root_password: <強密碼>
 #   vault_mysql_app_password:  <強密碼>
 #   vault_app_key:             <留空，第一次部署會自動產生>

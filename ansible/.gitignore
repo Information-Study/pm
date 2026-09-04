@@ -19,13 +19,26 @@
 /inventory/host_vars/
 
 # ── group_vars ───────────────────────────────────────────────────────────────
-# all.yml 是共用預設值，要進版控（不含任何祕密）。
-# 環境別的檔案含網域、email、通常還整檔被 ansible-vault 加密過，不進版控。
+# all/ 是共用預設值（不含祕密），要進版控。
+# 環境別的檔案含網域、email，通常還整檔被 ansible-vault 加密過，不進版控。
 /inventory/group_vars/staging.yml
 /inventory/group_vars/production.yml
-/inventory/group_vars/*/
 /inventory/group_vars/vault*.yml
 /inventory/group_vars/*vault.yml
+
+# ⚠ 順序很重要，而且是 gitignore(5) 的已知陷阱：
+#   父目錄被排除之後，git 連進去讀都不會，底下的 !re-include 一律無效。
+#   所以必須「先排除所有子目錄 → 再單獨 re-include all/ → 最後排除 all/ 裡的祕密」。
+#   把 !/inventory/group_vars/all/ 寫在 /inventory/group_vars/*/ 之前是無效的。
+/inventory/group_vars/*/
+!/inventory/group_vars/all/
+/inventory/group_vars/all/vault.yml
+/inventory/group_vars/all/*vault*.yml
+
+# 為什麼 vault 一定要放在 all/ 底下而不是 group_vars/vault.yml：
+# Ansible 把 group_vars/<名字>.yml 對應到「名為 <名字> 的群組」，
+# 沒有叫 vault 的群組，那個檔永遠不會被載入，而且不會有任何警告。
+# 詳見 inventory/group_vars/all/main.yml 的檔頭。
 
 # ── vault 密碼檔（絕對不能進版控）────────────────────────────────────────────
 .vault_pass

@@ -22,7 +22,24 @@ mysql_repo_suite: "{{ ansible_facts['distribution_release'] }}"
 mysql_repo_components:
   - "mysql-{{ mysql_version_series }}-lts"
   - mysql-tools
-mysql_repo_key_url: https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+# ⚠ 檔名裡的年份是「這個檔案的發布年」，不是金鑰的建立年。
+# Oracle 續期的做法是：同一把金鑰（指紋不變）換一個新檔名重新發布，
+# 舊檔名留在原地但帶著已過期的自簽章。
+#
+# 2026-09-04 對真實 Ubuntu 24.04 目標主機實測：
+#   RPM-GPG-KEY-mysql-2023  指紋 BCA43417…A8D3785C，[expired: 2025-10-22]
+#   RPM-GPG-KEY-mysql-2025  指紋 BCA43417…A8D3785C，[expires: 2027-10-23] ← 現行
+#   RPM-GPG-KEY-mysql-2022  指紋 859BE8D7…3A79BD29，[expired: 2023-12-14]
+#   RPM-GPG-KEY-mysql       指紋 A4A94068…5072E1F5，[expired: 2022-02-16]
+# 而 dists/noble/InRelease 的簽章正是 BCA43417…A8D3785C。
+#
+# 用 -2023 的後果：apt 拒絕整個 repo 並回
+#   EXPKEYSIG B7B3B788A8D3785C ... The repository ... is not signed.
+# 那個訊息不會告訴你「換一個檔名就好」。
+#
+# 指紋白名單刻意不變 —— 這正是「釘指紋而不是釘 URL」的價值：
+# 續期不需要改信任邊界，只要改下載位置。
+mysql_repo_key_url: https://repo.mysql.com/RPM-GPG-KEY-mysql-2025
 mysql_repo_keyring_path: /etc/apt/keyrings/mysql-repo.asc
 # 下載後會用 gpg --show-keys 取指紋並比對這個白名單；不符就 fail fast。
 # Oracle 若輪替金鑰，這裡要更新（更新前請自行從官方管道確認指紋）。

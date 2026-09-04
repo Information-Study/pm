@@ -266,6 +266,14 @@ cmd_fresh_main() {
         backup-only|carryover|scaffold) : ;;
         *) cx_die "$EX_USAGE" "未知的 mode：$mode（backup-only|carryover|scaffold）" ;;
     esac
+    # archive.sh 要在這裡就載入，不能等到下面 —— 底下 --rollback 的錯誤訊息
+    # 會呼叫 cx_archive_root()，那個函式定義在 archive.sh 裡。
+    # 原本 source 寫在旗標處理之後，於是 `cx fresh --rollback` 會得到
+    #   fresh.sh: line 270: cx_archive_root: command not found
+    # 而不是它該給的「尚未實作，請看這個目錄」訊息。
+    # shellcheck source=/dev/null
+    . "$CX_ROOT/bin/lib/archive.sh"
+
     # 已解析但尚未實作的旗標必須明講，不能讓使用者以為它有效
     (( rollback )) && cx_die "$EX_USAGE" \
         "--rollback 尚未實作（見 claude.md §12）。手動還原：$(cx_archive_root)/LATEST 下的 bundle 與 gitdir tar"
@@ -273,7 +281,6 @@ cmd_fresh_main() {
     [[ $mode == carryover || $mode == scaffold ]] && \
         cx_warn "--mode $mode 的重建階段尚未實作，本次只會做到刪除為止"
 
-    . "$CX_ROOT/bin/lib/archive.sh"
     cx_lock fresh
 
     case $phase in

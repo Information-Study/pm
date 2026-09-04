@@ -1,4 +1,36 @@
 ---
+# ── vault 的位置：必須是 all/vault.yml，不能是 vault.yml ────────────────────
+#
+# Ansible 把 group_vars/<名字>.yml 對應到「名為 <名字> 的群組」。
+# 沒有叫 vault 的群組，所以 group_vars/vault.yml 永遠不會被載入 ——
+# 而且不會有任何警告。症狀是密碼像是沒設過：
+#   mysql_root_password 未設定或長度不足 12 字元
+# 你會去檢查 vault 檔的內容、檢查 ansible-vault 的密碼，全部都是對的。
+#
+# 2026-09-04 對真實主機實測三種放法：
+#
+#   group_vars/vault.yml                     ✘ vault 從未載入
+#   group_vars/all.yml + all/vault.yml       ✘ 更糟：目錄會遮蔽同名的 .yml，
+#                                               vault 讀得到，但 all.yml 這
+#                                               180 個變數整份消失
+#   group_vars/all/main.yml + all/vault.yml  ✔ 兩邊都正確載入
+#
+# 所以本專案採用純目錄形式。這個檔就是原本的 all.yml。
+# 祕密放隔壁的 all/vault.yml（已被 .gitignore 排除）：
+#
+#   ansible-vault create inventory/group_vars/all/vault.yml
+#
+# ── 由 Ansible 產生的檔案標頭 ────────────────────────────────────────────────
+# 原本設在 ansible.cfg 的 ansible_managed（DEFAULT_MANAGED_STR）。
+# 那個選項在 ansible-core 2.21 已 deprecated、2.23 移除，而且只對 template
+# 模組生效 —— `copy: content: |` 裡的 {{ ansible_managed }} 是從一般變數空間
+# 解析的，那裡沒有這個名字，實跑會直接 fatal：
+#   Error while resolving value for 'content': 'ansible_managed' is undefined
+# 這個失敗只有在真的對主機跑才會出現（--syntax-check 與 ansible-lint 都看不到）。
+#
+# 定義成一般變數之後 template 與 copy 兩邊都拿得到。
+# 刻意不放日期：每次跑都會造成無意義的檔案異動，diff 會被雜訊淹沒。
+ansible_managed: "此檔由 Ansible 產生，請勿手動編輯 —— 下次部署會覆蓋掉手動修改。來源：pm 專案的 ansible/"
 # ══════════════════════════════════════════════════════════════════════════════
 # inventory/group_vars/all.yml —— 全域變數「正本」
 #
