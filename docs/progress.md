@@ -50,7 +50,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |
 | `verify` | ✅ | static / runtime / app / ansible / all |
 | `deploy` | ✅ | syntax / lint / check / ping / facts / vars / apply / app / rollback / galaxy |
-| `git` | ✅ | status / sync / commit / branch / guard / remote-init / scan-secrets / push |
+| `git` | ✅ | status / **fetch** / **pull** / sync / commit / branch / guard / remote-init / scan-secrets / push |
 | `art` `composer` `npm` | ✅ | `npm --backend` 是新增的（舊 `npm-php` service 從來不存在） |
 | `lint` `tui` `install` `uninstall` `help` | ✅ | |
 | `fresh` | ⚠ 部分 | 備份／驗證／確認閘門／刪除都可用；**重建階段與 `--rollback` 仍未實作** |

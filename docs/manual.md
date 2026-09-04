@@ -455,3 +455,71 @@ cx --root ~/pm doctor        # 從專案外執行
 ```
 
 `--root` 指到的目錄沒有 `.cxroot` 會直接 `EX_PRECOND`。
+
+---
+
+## 10. 三個 repo 一起操作
+
+`cx git` 把「主庫 + 兩個 submodule」當成一個單位。手動對三個 repo 各下一次
+git 指令**幾乎一定會弄錯順序**，而弄錯的後果通常不會當場報錯。
+
+```bash
+cx git status                 # 三個 repo 的分支 / 變更 / 上游 / 領先落後
+cx git fetch                  # 三個一起 fetch --prune（唯讀）
+cx git pull                   # 三個一起更新（主庫先、子模組後）
+cx git commit -m "feat: ..."  # 子模組先、主庫 gitlink 後
+cx git push                   # 子模組先、主庫後
+cx git branch new feat/x      # 三個 repo 一起開分支
+```
+
+### 順序：commit / push 與 pull 是**相反**的
+
+```
+commit / push        pull
+─────────────        ─────────────
+backend   ┐          pm        ┐
+frontend  ├─→ pm     ├─→ backend / frontend
+```
+
+**commit / push 是子模組先**：主庫的 gitlink 指向子模組的某個 commit，
+那個 commit 必須先存在，否則主庫記錄的是一個「還不存在的東西」。
+推錯順序的話別人 clone 下來會是
+
+```
+fatal: remote error: upload-pack: not our ref
+```
+
+而且看不出是誰造成的。`cx git push` 推完還會用 `git ls-remote` 驗證每個
+gitlink 真的存在於對應的遠端。
+
+**pull 是主庫先**：主庫的 gitlink 才是「這一版該用哪個子模組 commit」的
+唯一真相。先拉子模組的話，它會被拉到**自己分支的尖端**，而那不一定是
+主庫這一版記錄的 commit —— pull 完 `git status` 立刻顯示子模組
+「有未提交的變更」，但你其實只是把子模組拉到了別的版本。
+
+### `status` 的數字不連線
+
+`vs origin` 那一行讀的是 remote-tracking ref，不問遠端，所以每一行都附上
+**上次 fetch 的時間**。要拿到最新的數字先跑 `cx git fetch`。
+
+### pull 不會自動處理分岔
+
+本地與遠端都各有新 commit 時，`cx git pull` 直接停下來並告訴你三條路
+（看差異 / `--allow-merge` / `reset --hard`）。
+
+不自動合併的理由：主庫的**每一個 commit 都帶著子模組的 gitlink**，
+自動合併很可能產生一個「backend 用 A 版、frontend 用 B 版」的組合。
+那個組合從來沒有人測過，而且 `git status` 看起來完全正常。
+
+### clone 之後第一件事
+
+```bash
+git clone --recurse-submodules https://github.com/Information-Study/pm.git
+cd pm
+./cx git sync          # 子模組從 detached HEAD 接回追蹤分支
+```
+
+`--recurse-submodules` 之後子模組一定是 detached HEAD。在那個狀態下提交的
+commit 不屬於任何分支，下一次 `submodule update` 就變成孤兒。
+`cx git sync` 用 `checkout -B` 把分支帶到目前的 HEAD ——
+「回到分支上」與「不丟 commit」兩件事同時成立。
