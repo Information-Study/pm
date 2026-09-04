@@ -333,13 +333,72 @@ cx git <子指令> [參數...]
 
 | 子指令 | 說明 |
 |---|---|
-| `status` | 三個 repo 的分支 / 變更 / 上游 |
+| `status` | 三個 repo 的分支 / 變更 / 上游 / 領先落後 |
+| `fetch` | 三個 repo 一起 `fetch --prune`（唯讀，不動工作區） |
+| `pull [--allow-merge]` | 三個 repo 一起更新（主庫先、子模組後，預設只允許快轉） |
 | `sync` | 子模組 checkout 到追蹤分支 |
 | `commit [-m 訊息]` | 子模組先、主庫 gitlink 後 |
 | `branch list\|new\|switch\|delete <名稱>` | 三個 repo 同步操作 |
 | `remote-init` | 用 `gh` 建立 Information-Study 的三個 public repo |
 | `push [--force]` | 推送 |
+| `scan-secrets` | 祕密掃描（commit / push 前會自動跑） |
 | `guard install\|status\|remove` | pre-push hook |
+
+### `status` 的數字不連線
+
+`status` 讀的是 **remote-tracking ref**（`refs/remotes/origin/<分支>`），不問遠端。
+所以「領先 0 ・ 落後 0」的意思是「跟你上次 fetch 到的內容一致」，
+不是「跟 GitHub 上現在的內容一致」。
+
+因此每一行都會附上**上次 fetch 的時間**（讀 `FETCH_HEAD` 的 mtime）：
+
+```
+pm
+  branch : main
+  head   : 0fd7188
+  dirty  : 0 項
+  origin : git@github.com:Information-Study/pm.git
+  vs origin: 同步（上次 fetch：09-04 11:46）
+```
+
+沒有 remote-tracking ref 時會明講「先跑 cx git fetch」，而不是印 0/0。
+
+### `fetch` 與 `pull` 的順序**相反**
+
+| | 順序 | 為什麼 |
+|---|---|---|
+| `push` | 子模組 → 主庫 | 主庫的 gitlink 指向子模組的 commit，那個 commit 必須先存在於子模組的遠端 |
+| `pull` | 主庫 → 子模組 | 主庫的 gitlink 才是「這一版該用哪個子模組 commit」的唯一真相 |
+
+反過來做 `pull` 的話，子模組會被拉到**它自己分支的尖端**，而那不一定是主庫這一版
+記錄的 commit —— 於是 pull 完 `git status` 立刻顯示子模組「有未提交的變更」，
+但你其實只是把子模組拉到了別的版本。
+
+`cx git pull` 的完整流程：
+
+1. **三個 repo 任一髒就中止**（`EX_PRECOND`）。
+   失敗會發生在「一半」的位置：主庫已快轉、子模組還沒動，而 merge 又被
+   local changes 擋下。那個狀態很難描述、更難復原。
+2. `fetch --prune`（黑名單遠端硬擋）
+3. 主庫 `merge --ff-only origin/<分支>`
+4. `git submodule update --init --recursive` —— 子模組移到 gitlink
+5. `cx git sync` —— 把子模組從 detached HEAD 接回追蹤分支（用 `checkout -B`，不丟 commit）
+6. 若子模組的 `origin/<分支>` 比 gitlink 新，**警告但不自動採用**
+
+### 分岔時不自動合併
+
+本地與遠端都各有新 commit 時，`pull` 直接停下來：
+
+```
+✘ 主庫已分岔：本地領先 2、落後 3
+  想看差異： git -C /home/user/pm log --oneline --left-right main...origin/main
+  確定要合併： cx git pull --allow-merge
+  想丟掉本地： git -C /home/user/pm reset --hard origin/main（不可逆）
+```
+
+理由是主庫的**每一個 commit 都帶著子模組的 gitlink**。自動合併很可能產生一個
+「backend 用 A 版、frontend 用 B 版」的組合 —— 那個組合從來沒有人測過，
+而且 `git status` 看起來完全正常。
 
 ### `cx git push` 的閘門順序
 

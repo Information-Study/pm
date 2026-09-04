@@ -57,7 +57,9 @@ cx — pm 專案統一入口
   deploy galaxy     安裝 requirements.yml 的 collections
 
 ── Git ──────────────────────────────────────────────────────────────────────
-  git status                  三個 repo 的分支 / 變更 / 上游
+  git status                  三個 repo 的分支 / 變更 / 上游 / 領先落後
+  git fetch                   三個 repo 一起 fetch --prune（唯讀）
+  git pull                    三個 repo 一起更新（主庫先、子模組後，只快轉）
   git sync                    子模組 checkout 追蹤分支
   git commit [-m <訊息>]      提交（子模組先、主庫 gitlink 後）
   git branch list|new|switch|delete <名稱>

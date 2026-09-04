@@ -89,7 +89,7 @@ _cx_completion() {
             ;;
         git)
             if [[ -z $sub ]]; then
-                COMPREPLY=($(compgen -W 'status sync commit save branch guard remote-init scan-secrets push' -- "$cur"))
+                COMPREPLY=($(compgen -W 'status fetch pull sync commit save branch guard remote-init scan-secrets push' -- "$cur"))
                 return
             fi
             case $sub in
@@ -106,6 +106,10 @@ _cx_completion() {
                 guard)  (( argn == 1 )) && COMPREPLY=($(compgen -W 'install status remove' -- "$cur")) ;;
                 commit|save)
                     COMPREPLY=($(compgen -W '-m --message --amend --skip-scan' -- "$cur")) ;;
+                pull)
+                    COMPREPLY=($(compgen -W '--ff-only --allow-merge' -- "$cur")) ;;
+                push)
+                    COMPREPLY=($(compgen -W '--force' -- "$cur")) ;;
             esac
             ;;
         fresh)

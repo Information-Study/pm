@@ -5,7 +5,9 @@ _git_usage() {
     cat >&2 <<'TXT'
 用法：cx git <子指令>
 
-  status                各 repo 的分支 / 變更 / 領先落後
+  status                各 repo 的分支 / 變更 / 領先落後（不連線，數字看上次 fetch）
+  fetch                 三個 repo 一起 fetch --prune（唯讀，不動工作區）
+  pull [--allow-merge]  三個 repo 一起更新（主庫先、子模組後；預設只允許快轉）
   sync                  子模組 checkout 追蹤分支（解決 clone 後 detached HEAD）
   commit [-m <訊息>]    提交（子模組先、主庫 gitlink 後）；未給 -m 會引導產生
   save [-m <訊息>]      commit 的別名
@@ -46,6 +48,8 @@ cmd_git_main() {
     local sub=${1:-status}; shift || true
     case $sub in
         status)        _git_status ;;
+        fetch)         _git_fetch "$@" ;;
+        pull)          _git_pull "$@" ;;
         sync)          _git_sync ;;
         commit|save)   _git_commit "$@" ;;
         branch)        _git_branch "$@" ;;
@@ -76,7 +80,48 @@ _git_status() {
         printf '  head   : %s\n' "$(git -C "$r" rev-parse --short HEAD 2>/dev/null || echo '<unborn>')"
         printf '  dirty  : %s 項\n' "$(git -C "$r" status --porcelain 2>/dev/null | wc -l)"
         printf '  origin : %s\n' "$(git -C "$r" remote get-url origin 2>/dev/null || echo '(未設定)')"
+        _git_print_ahead_behind "$r"
     done < <(_git_repos_order)
+}
+
+# usage 一直宣稱 status 會顯示「領先落後」，但實作從來沒印過 ——
+# 而那正是決定「該 pull 還是該 push」的唯一資訊。
+#
+# 讀的是 remote-tracking ref（refs/remotes/origin/<br>），不是遠端本身：
+# 這個函式**不連線**，所以數字的新鮮度取決於上一次 fetch。
+# 沒有 remote-tracking ref 時要說清楚，不要印 0/0 讓人以為已經同步。
+_git_print_ahead_behind() {
+    local r=$1 br ab a b
+    br=$(git -C "$r" branch --show-current 2>/dev/null || true)
+    if [[ -z $br ]]; then
+        printf '  vs origin: （detached HEAD，無分支可比對）\n'
+        return 0
+    fi
+    if ! git -C "$r" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null; then
+        printf '  vs origin: （沒有 refs/remotes/origin/%s —— 先跑 cx git fetch）\n' "$br"
+        return 0
+    fi
+    ab=$(git -C "$r" rev-list --left-right --count \
+            "refs/heads/$br...refs/remotes/origin/$br" 2>/dev/null || printf '0\t0')
+    a=${ab%%[[:space:]]*}; b=${ab##*[[:space:]]}
+    if [[ $a == 0 && $b == 0 ]]; then
+        printf '  vs origin: 同步（上次 fetch：%s）\n' "$(_git_last_fetch "$r")"
+    else
+        printf '  vs origin: 領先 %s ・ 落後 %s（上次 fetch：%s）\n' \
+            "$a" "$b" "$(_git_last_fetch "$r")"
+    fi
+}
+
+# FETCH_HEAD 的 mtime 就是上一次 fetch 的時間。
+# 沒有它代表從來沒 fetch 過 —— 這時 ahead/behind 的數字完全不能信，
+# 所以一定要把時間印出來，不要讓「領先 0 落後 0」被當成「已經同步」。
+_git_last_fetch() {
+    local gd f
+    # 子模組的 .git 是檔案不是目錄，不能直接拼 "$1/.git/FETCH_HEAD"
+    gd=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || { printf '未知'; return; }
+    f="$gd/FETCH_HEAD"
+    [[ -f $f ]] || { printf '從未'; return; }
+    date -r "$f" '+%m-%d %H:%M' 2>/dev/null || printf '未知'
 }
 
 # 這個路徑本身是不是一個 git repo 的根？
@@ -489,6 +534,186 @@ _git_scan_secrets() {
     done < <(_git_repos_order)
 
     (( bad == 0 )) || cx_die "$EX_FAIL" "祕密掃描未通過，已中止"
+}
+
+# ---------------------------------------------------------------------------
+# fetch / pull
+# ---------------------------------------------------------------------------
+#
+# 為什麼 pull 的順序與 push **相反**：
+#
+#   push：子模組先、主庫後 —— 主庫的 gitlink 指向子模組的 commit，
+#         那個 commit 必須先存在於子模組的遠端。
+#
+#   pull：主庫先、子模組後 —— 主庫的 gitlink 才是「這一版該用哪個子模組 commit」
+#         的唯一真相。先把主庫拉到最新，才知道子模組要移到哪裡。
+#         反過來做的話，子模組會被拉到它自己分支的尖端，
+#         而那個 commit 不一定是主庫這一版記錄的那個 —— 於是 pull 完
+#         `git status` 立刻顯示子模組「有未提交的變更」，
+#         而實際上你只是把子模組拉到了別的版本。
+
+# 遠端安全性：黑名單一律硬擋（拉下來就等於把舊專案的內容帶進工作區），
+# 不在白名單的則警告但放行（可能是刻意加的 upstream / fork）。
+_git_assert_remote_safe() {
+    local slug=$1 url=$2
+    printf '%s' "$url" | grep -qE "$CX_DENIED_REMOTE_RE" \
+        && cx_die "$EX_PRECOND" "$slug 的 origin 在永久黑名單，拒絕連線：$url"
+    printf '%s' "$url" | grep -qE "$CX_ALLOWED_REMOTE_RE" \
+        || cx_warn "$slug 的 origin 不在白名單（唯讀操作，仍繼續）：$url"
+    return 0
+}
+
+_git_fetch() {
+    (( $# == 0 )) || cx_die "$EX_USAGE" "fetch 不接受參數（收到 $1）"
+    _git_require_repos || return $?
+
+    cx_step "fetch（三個 repo，唯讀）"
+    local r slug url rc=0
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        url=$(git -C "$r" remote get-url origin 2>/dev/null || true)
+        if [[ -z $url ]]; then
+            cx_warn "$slug 沒有 origin，略過（先跑 cx git remote-init）"
+            continue
+        fi
+        _git_assert_remote_safe "$slug" "$url"
+
+        # --prune：遠端刪掉的分支，本地的 remote-tracking ref 也要跟著消失，
+        # 否則 cx git branch list 會一直列出早就不存在的上游。
+        if cx_run git -C "$r" fetch --prune origin; then
+            cx_ok "$slug 已 fetch"
+        else
+            cx_error "$slug fetch 失敗"
+            rc=1
+        fi
+    done < <(_git_repos_order)
+
+    cx_step "fetch 之後的狀態"
+    while read -r r; do
+        printf '\n%s%s%s\n' "$C_BLU" "$(_git_repo_slug "$r")" "$C_RST"
+        _git_print_ahead_behind "$r"
+    done < <(_git_repos_order)
+    printf '\n'
+
+    (( rc == 0 )) || return "$EX_FAIL"
+    cx_dim "要真的更新工作區： cx git pull"
+}
+
+_git_pull() {
+    local allow_merge=0
+    while (( $# )); do
+        case $1 in
+            --ff-only) shift ;;                 # 預設就是，保留以示明確
+            --allow-merge) allow_merge=1; shift ;;
+            *) cx_die "$EX_USAGE" "pull: 未知參數 $1（只支援 --ff-only / --allow-merge）" ;;
+        esac
+    done
+    _git_require_repos || return $?
+
+    # ── 1) 髒工作區一律先擋 ────────────────────────────────────────────
+    # 不是保守，是因為失敗會發生在「一半」的位置：主庫已經快轉、
+    # 子模組還沒動，而 merge 又因為 local changes 被拒絕。
+    # 那個狀態很難描述、更難復原，不如一開始就不要進去。
+    local r slug dirty=0
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        if [[ -n $(git -C "$r" status --porcelain) ]]; then
+            cx_error "$slug 有未提交變更"
+            git -C "$r" status --short | sed 's/^/      /' >&2
+            dirty=1
+        fi
+    done < <(_git_repos_order)
+    if (( dirty )); then
+        cx_dim "  先提交（cx git commit）或自行 git stash，再跑 cx git pull"
+        return "$EX_PRECOND"
+    fi
+
+    # ── 2) fetch ───────────────────────────────────────────────────────
+    cx_step "fetch"
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        local url; url=$(git -C "$r" remote get-url origin 2>/dev/null || true)
+        [[ -n $url ]] || { cx_warn "$slug 沒有 origin，略過"; continue; }
+        _git_assert_remote_safe "$slug" "$url"
+        cx_run git -C "$r" fetch --prune origin || cx_die "$EX_FAIL" "$slug fetch 失敗"
+    done < <(_git_repos_order)
+
+    # ── 3) 主庫先快轉 ──────────────────────────────────────────────────
+    cx_step "更新主庫（$CX_REPO_MAIN）"
+    local br ab a b
+    br=$(git -C "$CX_ROOT" branch --show-current)
+    [[ -n $br ]] || cx_die "$EX_PRECOND" "主庫是 detached HEAD，請先 git switch <分支>"
+    if ! git -C "$CX_ROOT" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null; then
+        cx_die "$EX_PRECOND" "遠端沒有分支 $br（refs/remotes/origin/$br 不存在）"
+    fi
+    ab=$(git -C "$CX_ROOT" rev-list --left-right --count \
+            "refs/heads/$br...refs/remotes/origin/$br")
+    a=${ab%%[[:space:]]*}; b=${ab##*[[:space:]]}
+
+    if [[ $b == 0 ]]; then
+        cx_ok "主庫已是最新（領先 $a）"
+    elif [[ $a != 0 ]] && (( ! allow_merge )); then
+        # 分岔：預設不自動處理。合併或 rebase 都會產生一個「誰也沒審過」的結果，
+        # 而主庫的每個 commit 都帶著子模組 gitlink —— 自動合併很可能把
+        # gitlink 合成一個從來不存在的組合。
+        cx_error "主庫已分岔：本地領先 $a、落後 $b"
+        cx_dim "  想看差異： git -C $CX_ROOT log --oneline --left-right $br...origin/$br"
+        cx_dim "  確定要合併： cx git pull --allow-merge"
+        cx_dim "  想丟掉本地： git -C $CX_ROOT reset --hard origin/$br（不可逆）"
+        return "$EX_PRECOND"
+    else
+        local -a margs=(merge --ff-only "origin/$br")
+        (( allow_merge )) && margs=(merge --no-edit "origin/$br")
+        if cx_run git -C "$CX_ROOT" "${margs[@]}"; then
+            cx_ok "主庫已更新（+$b）"
+        else
+            cx_die "$EX_FAIL" "主庫更新失敗"
+        fi
+    fi
+
+    # ── 4) 子模組移到主庫記錄的 gitlink ────────────────────────────────
+    # 這一步是 pull 的重點：gitlink 是「這一版該用哪個子模組 commit」的唯一真相。
+    cx_step "把子模組移到主庫記錄的 gitlink"
+    if cx_run git -C "$CX_ROOT" submodule update --init --recursive; then
+        cx_ok "子模組已對齊 gitlink"
+    else
+        cx_die "$EX_FAIL" "submodule update 失敗"
+    fi
+
+    # ── 5) 子模組接回追蹤分支 ──────────────────────────────────────────
+    # submodule update 之後子模組一定是 detached HEAD。
+    # _git_sync 用 checkout -B 把分支帶到目前的 HEAD，兩件事同時成立：
+    # 回到分支上，而且不丟任何 commit。
+    _git_sync || return $?
+
+    # ── 6) 子模組遠端比 gitlink 新的話要講出來 ─────────────────────────
+    # 這不是錯誤，是資訊：有人推了子模組但還沒更新主庫的 gitlink。
+    # 不講的話，使用者會以為自己拿到的是最新的前端／後端。
+    local c cb cab ca cbh
+    for c in backend frontend; do
+        [[ -d $CX_ROOT/$c ]] || continue
+        cb=$(git -C "$CX_ROOT/$c" branch --show-current 2>/dev/null || true)
+        [[ -n $cb ]] || continue
+        git -C "$CX_ROOT/$c" rev-parse --verify --quiet "refs/remotes/origin/$cb" >/dev/null || continue
+        cab=$(git -C "$CX_ROOT/$c" rev-list --left-right --count \
+                "refs/heads/$cb...refs/remotes/origin/$cb")
+        ca=${cab%%[[:space:]]*}; cbh=${cab##*[[:space:]]}
+        if [[ $cbh != 0 ]]; then
+            cx_warn "$(_git_repo_slug "$CX_ROOT/$c") 的 origin/$cb 比主庫的 gitlink 新 $cbh 個 commit"
+            cx_dim "  主庫的 gitlink 才是這一版的定義 —— 要採用新的請在子模組內"
+            cx_dim "  git -C $CX_ROOT/$c merge --ff-only origin/$cb 之後 cx git commit"
+        fi
+    done
+
+    cx_step "結果"
+    local rr
+    while read -r rr; do
+        printf '\n%s%s%s\n' "$C_BLU" "$(_git_repo_slug "$rr")" "$C_RST"
+        printf '  head   : %s\n' "$(git -C "$rr" rev-parse --short HEAD)"
+        _git_print_ahead_behind "$rr"
+    done < <(_git_repos_order)
+    printf '\n'
+    cx_ok "pull 完成"
 }
 
 # ---------------------------------------------------------------------------
