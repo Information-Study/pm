@@ -305,6 +305,46 @@ Ubuntu 24.04 (noble) → 來源 ondrej （auto）
 
 ---
 
+## 6.6 檔案 ACL：為什麼 setgid 不夠
+
+`common` role 的 `tasks/acl.yml`（開關 `common_manage_acl`，預設 `true`）。
+
+目錄骨架是 `02750`／`02770`（setgid + 群組 `www-data`），看起來 `deploy` 與
+`www-data` 同群組就夠了。**不夠** —— setgid 只讓新建的**目錄**繼承群組，
+**不繼承權限位元**，位元仍由建立者的 umask 決定：
+
+```
+php-fpm（umask 022）建 storage/logs/laravel.log
+    → rw-r--r-- www-data:www-data
+    → deploy 雖在群組內，追加寫入 Permission denied
+
+deploy（umask 022）建 storage/framework/views/xxx.php
+    → rw-r--r-- deploy:www-data
+    → www-data 清快取時 Permission denied
+```
+
+兩邊互相踩。這是 Laravel 部署最常見的權限問題，
+而 `chmod -R 777` 等於把 session、快取與上傳檔對同機所有帳號開放。
+
+### 做了三件事
+
+| task | 內容 |
+|---|---|
+| app_root 頂層與繼承規則 | `web_user:rx`、`deploy_user:rwx`，各配一條 default。**不遞迴** —— 底下有 releases 與 node_modules，每次部署遞迴一次太慢，default 會讓新建的自動繼承 |
+| shared/storage | 兩邊 `rwx` + default，**遞迴** —— 上一次部署留下的 log / cache 也要套上 |
+| others 一律 `0` | default `other::---`。少了它，umask 022 建出的檔會是 `other::r--`，同機任何帳號讀得到日誌與 session |
+
+最後用 `become_user: www-data` 實際 `test -w` 驗一次。ACL 設了卻沒生效的兩個成因
+（檔案系統 `noacl`、上層目錄少 `x`）都寫在 fail_msg 裡，並附上 `findmnt` 與
+`namei -l` 的診斷指令。
+
+### 與 `cx acl` 的關係
+
+同一套模型，兩個套用者：目標機由這個 role 處理，開發機用 `cx acl apply`。
+兩邊都用大寫 `X`（只有目錄與既有可執行檔才給 `x`）。
+
+---
+
 ## 7. MySQL role 的五個坑
 
 全部是 2026-09-04 在真實 Ubuntu 24.04 目標上實測踩到的。

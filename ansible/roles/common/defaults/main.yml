@@ -131,6 +131,11 @@ deploy_user_sudo_commands:
 
 # ── 目錄骨架 ────────────────────────────────────────────────────────────────
 # 02750：setgid，讓 deploy 建出來的東西自動掛 www-data 群組；others 完全沒有權限。
+# ACL：setgid 只繼承群組不繼承權限位元，所以 deploy 與 www-data 建的檔會互相
+# 不能寫（Laravel storage 的典型症狀）。default ACL 是治本的做法。
+# 關掉的話就回到純 setgid + 群組，storage 仍會偶發 permission denied。
+common_manage_acl: true
+
 common_dir_mode: "02750"
 # 02770：Laravel storage 需要 www-data 可寫（session / cache / log / 上傳）。
 common_shared_writable_mode: "02770"

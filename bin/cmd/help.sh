@@ -28,6 +28,15 @@ cx — pm 專案統一入口
     setup env|dirs|guard    只做其中一項
                             （artisan 不必安裝 —— 它是 backend/artisan）
   doctor            檢查工具鏈、Docker daemon、埠、子模組、執行位元
+  acl               用 POSIX ACL 設定檔案權限。setgid 只繼承群組、不繼承權限
+                    位元，所以 php-fpm 與 deploy 建的檔會互相不能寫 ——
+                    default ACL 才治本（而且 others 仍然是 0）
+    acl check               唯讀驗證
+    acl apply [backend|frontend]
+                            整棵樹 web 可讀、storage 與 bootstrap/cache 可寫、
+                            .env 只給 web 讀
+    acl user add <帳號>     讓另一個開發者可以改原始碼（--ro 只讀）
+    acl status|drop         檢視 / 移除
 
   dev up -d --build 起開發環境（bind mount + HMR + xdebug + phpMyAdmin）
   dev down [-v]     關閉（-v 連資料庫一起刪，會要求確認）

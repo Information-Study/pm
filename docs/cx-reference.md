@@ -259,6 +259,68 @@ cx test <back|front|all|coverage|larastan>
 
 ---
 
+## `cx acl` — 檔案權限（POSIX ACL）
+
+```
+cx acl <子指令> [參數...]
+```
+
+| 子指令 | 說明 |
+|---|---|
+| `check` | 唯讀驗證，`cx doctor` 也會看這一項 |
+| `apply [backend\|frontend]` | 套用權限模型；不給就兩邊都套 |
+| `user add <帳號> [--ro]` | 讓另一個開發者能改原始碼 |
+| `user rm <帳號>` | 收回 |
+| `status [路徑...]` | 看目前的 ACL |
+| `drop [路徑...]` | 清空 ACL，回到純 chmod（有確認閘門） |
+
+旗標：`--web-user`、`--dev-user`（名稱或 uid）、`-n/--dry-run`。
+
+需要 `setfacl`：`cx setup system acl`。
+
+### 為什麼是 ACL，不是 chmod / chown
+
+現行模型是 setgid + 群組（`deploy:www-data`，目錄 `02750`／`02770`）。
+**setgid 只讓新建的目錄繼承群組，不繼承權限位元** —— 位元仍由建立者的 umask 決定。
+
+實測（Debian trixie，umask 022，兩個帳號同群組）：
+
+```
+php-fpm 建 storage/logs/laravel.log  →  rw-r--r-- www-data:www-data
+deploy 追加寫入                       →  Permission denied
+```
+
+這就是 Laravel「明明 chown 過了還是 permission denied」的成因。
+`chmod -R 777` 能繞過，但 `storage/` 裡有 session、快取與上傳檔。
+
+default ACL（`setfacl -d`）讓**每一個新建的檔案與目錄**自動帶上兩邊的權限，
+完全不受 umask 影響，而 others 仍然是 `0`。同一組實測套上之後：
+
+```
+web 建檔 → dev 可寫   ✔
+dev 建檔 → web 可寫   ✔
+無關帳號讀 laravel.log / .env   ✘ 讀不到
+web 改 backend/artisan          ✘ 擋住（web 只該讀原始碼）
+```
+
+### 三種權限分開處理
+
+| 對象 | 規則 |
+|---|---|
+| **backend** | 整棵樹 web `rX`、dev `rwX`；`storage/` 與 `bootstrap/cache/` 兩邊 `rwX`；`.env` web 只讀；others 一律 `0` |
+| **frontend** | 整棵樹 web `rX`、dev `rwX`。前端沒有「應用程式寫回原始碼」的情境，static 直送與 PM2 反代都只需要讀 |
+| **user** | `cx acl user add <帳號>` 給 `rwX`（`--ro` 給 `rX`），含 default 規則，所以他新建的檔案 dev 也寫得動 |
+
+權限用大寫 `X`：只有已經是目錄或已有執行位元的檔案才給 `x`。
+小寫 `x` 會讓每一個 `.php` 都變成可執行 —— 沒必要的攻擊面。
+
+### 部署主機
+
+目標機由 Ansible 的 `common` role 處理（`tasks/acl.yml`，同一套模型），
+不需要在目標機上跑 `cx`。開關是 `common_manage_acl`（預設 `true`）。
+
+---
+
 ## `cx db` — 資料庫
 
 ```

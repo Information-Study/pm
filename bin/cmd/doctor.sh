@@ -112,6 +112,22 @@ cmd_doctor_main() {
         _wr "push guard" "只有 $n/$tot —— 狀態不一致，三個 repo 的推送行為不同。裝滿： cx git guard install／全移除： cx git guard remove"
     fi
 
+    # ── 檔案 ACL（選用）────────────────────────────────────────────────
+    # 跟 push guard 同樣是選用功能：沒設不算故障。
+    # 但「設了一半」要講出來 —— 那種狀態下 storage 的新檔仍然踩 umask，
+    # 症狀是偶發的 permission denied，而現有檔案看起來都正常。
+    if ! cx_have setfacl; then
+        _ok "檔案 ACL" "未安裝 acl（選用）—— 要用 cx acl 先跑 cx setup system acl"
+    else
+        local acl_rc=0
+        ( . "$CX_ROOT/bin/cmd/acl.sh"; _acl_check ) >/dev/null 2>&1 || acl_rc=$?
+        if (( acl_rc == 0 )); then
+            _ok "檔案 ACL" "前後端權限模型完整"
+        else
+            _ok "檔案 ACL" "未設定或不完整（選用）—— 細節： cx acl check／套用： cx acl apply"
+        fi
+    fi
+
     # ── 兩條路各自能不能獨立跑完 ────────────────────────────────────────
     # 專案的要求是「完全用 Docker」或「完全用原生工具鏈」都要能走完，
     # 兩條路互不依賴。doctor 必須把兩邊分開報，否則

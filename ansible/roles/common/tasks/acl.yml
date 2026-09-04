@@ -1,0 +1,113 @@
+---
+# 檔案 ACL：讓 deploy 與 www-data 能同時寫 Laravel 的 storage，而 others 仍為 0。
+#
+# 為什麼 setgid + 群組不夠：
+#   目錄是 02770（setgid + rwxrwx---），deploy 與 www-data 同群組，看起來夠了。
+#   但 setgid 只讓新建的**目錄**繼承群組，**不繼承權限位元** ——
+#   位元仍由建立者的 umask 決定。實測（Debian trixie，umask 022）：
+#
+#     php-fpm 建 storage/logs/laravel.log → rw-r--r-- www-data:www-data
+#         deploy 雖然在群組裡，仍然 Permission denied
+#
+#   這就是 Laravel「chown 過了還是寫不進去」的成因。
+#   chmod -R 777 能繞過，但 storage 裡有 session 與上傳檔，不能對同機開放。
+#
+#   default ACL 是唯一乾淨的解法：新建的檔案與目錄自動帶上兩邊的權限，
+#   完全不受 umask 影響，而 others 仍然是 0。
+#
+# 這一份與 `cx acl`（開發機那一側）是同一套模型，只是套用者不同。
+
+- name: ACL | 確認 setfacl 可用
+  ansible.builtin.command:
+    argv: [/usr/bin/test, -x, /usr/bin/setfacl]
+  register: common_acl_bin
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: ACL | setfacl 缺失時給可行動訊息
+  ansible.builtin.assert:
+    that:
+      - common_acl_bin.rc == 0
+    fail_msg: >-
+      目標機沒有 /usr/bin/setfacl。common role 的套件清單裡有 acl，
+      正常情況下這一步之前就裝好了 —— 出現這個訊息代表套件安裝那一段被跳過。
+      臨時解法：ansible -m apt -a 'name=acl state=present' -b <host>
+    quiet: true
+
+# ① 整棵 app_root：web_user 可讀可 traverse，deploy 可寫，others 0。
+#    這裡不用 -R —— app_root 底下有 releases（幾百 MB）與 node_modules，
+#    每次部署都遞迴一次會很慢，而且 release 目錄本來就是 deploy clone 出來的。
+#    只設頂層 + default，新建的自然繼承。
+- name: ACL | app_root 頂層與繼承規則
+  ansible.posix.acl:
+    path: "{{ item.path }}"
+    entity: "{{ item.entity }}"
+    etype: "{{ item.etype | default('user') }}"
+    permissions: "{{ item.perms }}"
+    default: "{{ item.default | default(false) }}"
+    state: present
+    recursive: false
+  loop: "{{ common_acl_root_entries }}"
+  loop_control:
+    label: "{{ item.path }} {{ item.entity }} {{ item.perms }}{{ ' (default)' if item.default | default(false) else '' }}"
+  when: common_manage_acl | bool
+
+# ② Laravel 的 shared/storage：兩邊都要能寫，而且**新建的檔案也要**。
+#    這裡才需要 -R：storage 已經存在的檔案（上一次部署留下的 log / cache）
+#    也必須套上，否則只有之後新建的才對。
+- name: ACL | shared/storage 與 bootstrap/cache（含既有檔案與繼承規則）
+  ansible.posix.acl:
+    path: "{{ item.0 }}"
+    entity: "{{ item.1.entity }}"
+    etype: user
+    permissions: "{{ item.1.perms }}"
+    default: "{{ item.1.default }}"
+    state: present
+    recursive: true
+  loop: "{{ common_acl_writable_paths | product(common_acl_writable_entries) | list }}"
+  loop_control:
+    label: "{{ item.0 }} {{ item.1.entity }}{{ ' (default)' if item.1.default else '' }}"
+  when: common_manage_acl | bool
+
+# ③ others 一律 0。storage 裡有 session、快取與上傳檔 ——
+#    少了這一條，umask 022 建出來的檔會是 other::r--，同機任何帳號讀得到。
+- name: ACL | 可寫路徑的 others 一律 0
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: ''
+    etype: other
+    permissions: '---'
+    default: true
+    state: present
+    recursive: true
+  loop: "{{ common_acl_writable_paths }}"
+  when: common_manage_acl | bool
+
+- name: ACL | 驗證 {{ web_user }} 真的能寫 storage
+  ansible.builtin.command:
+    argv: [/usr/bin/test, -w, "{{ backend_shared_dir }}/storage"]
+  become: true
+  become_user: "{{ web_user }}"
+  register: common_acl_verify
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when:
+    - common_manage_acl | bool
+    - not ansible_check_mode
+
+- name: ACL | 寫入驗證失敗時中止
+  ansible.builtin.assert:
+    that:
+      - common_acl_verify.rc == 0
+    fail_msg: >-
+      {{ web_user }} 仍然不能寫 {{ backend_shared_dir }}/storage。
+      ACL 設了但沒生效，最常見的兩個原因：
+      (1) 檔案系統以 noacl 掛載 —— findmnt -no FSTYPE,OPTIONS -T {{ app_root }}；
+      (2) 上層目錄少了 x（{{ web_user }} 走不到）——
+          namei -l {{ backend_shared_dir }}/storage 會指出是哪一層。
+    quiet: true
+  when:
+    - common_manage_acl | bool
+    - not ansible_check_mode

@@ -45,3 +45,23 @@ common_log_directories:
 
 common_sudoers_file: "/etc/sudoers.d/60-{{ app_slug }}-deploy"
 common_logrotate_file: "/etc/logrotate.d/{{ app_slug }}"
+
+# ---- ACL（tasks/acl.yml）----------------------------------------------------
+# 頂層只設一次，不遞迴：app_root 底下有 releases 與 node_modules，
+# 每次部署都遞迴會很慢，而 default 規則會讓新建的自動繼承。
+common_acl_root_entries:
+  - {path: "{{ app_root }}", entity: "{{ web_user }}", perms: "rx", default: false}
+  - {path: "{{ app_root }}", entity: "{{ web_user }}", perms: "rx", default: true}
+  - {path: "{{ app_root }}", entity: "{{ deploy_user }}", perms: "rwx", default: false}
+  - {path: "{{ app_root }}", entity: "{{ deploy_user }}", perms: "rwx", default: true}
+
+# 兩邊都要能寫的路徑。bootstrap/cache 在 release 裡，由 deploy_backend 處理；
+# 這裡只管 shared/ 底下持久存在的那些。
+common_acl_writable_paths:
+  - "{{ backend_shared_dir }}/storage"
+
+common_acl_writable_entries:
+  - {entity: "{{ web_user }}", perms: "rwx", default: false}
+  - {entity: "{{ web_user }}", perms: "rwx", default: true}
+  - {entity: "{{ deploy_user }}", perms: "rwx", default: false}
+  - {entity: "{{ deploy_user }}", perms: "rwx", default: true}

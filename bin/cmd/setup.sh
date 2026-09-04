@@ -19,7 +19,7 @@ cx setup [子指令]
                    順序固定 system → tools → deps（composer 的安裝器需要 php）
 
   system [名稱...] 需要 root 的系統套件（apt）
-                   可選：php nginx git docker mysql-client php-sqlite
+                   可選：php nginx git docker mysql-client php-sqlite acl
                    sudo 不可用時**只印指令**並回傳 3，不會替你輸入密碼
   tools [名稱...]  免 root 的工具鏈到 ~/.local（每個下載都核對 SHA256）
                    可選：composer node ansible trivy gitleaks semgrep
@@ -356,7 +356,7 @@ CX_SETUP_TOOLS='composer node ansible trivy gitleaks semgrep'
 #   2. sudo 不可用（沒密碼、非互動）時，把「你該自己貼哪一行」印出來，
 #      而不是丟一個 permission denied 就結束。
 # 這是紅線 2 的延伸：會改變系統狀態的動作都要看得見、可預期。
-CX_SETUP_SYSTEM_TOOLS='php nginx git docker mysql-client php-sqlite'
+CX_SETUP_SYSTEM_TOOLS='php nginx git docker mysql-client php-sqlite acl'
 
 # 工具 → apt 套件名。php 相關的要帶版本號，所以用函式而不是靜態表。
 _setup_pkgs_for() {
@@ -369,6 +369,9 @@ _setup_pkgs_for() {
         nginx)        printf 'nginx\n' ;;
         git)          printf 'git\n' ;;
         mysql-client) printf 'mysql-client\n' ;;
+        # cx acl 需要 setfacl/getfacl。Ansible 的 become_user 交接也要它，
+        # 所以目標機的 common role 早就會裝 —— 開發機這邊本來沒有。
+        acl)          printf 'acl\n' ;;
         docker)       printf 'docker.io docker-compose-v2\n' ;;
         *) return 1 ;;
     esac
