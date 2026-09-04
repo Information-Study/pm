@@ -29,7 +29,8 @@
    * `github.com/team-of-P/PSYOP_DutyManager` 這把 SSH key **推得進去**
      （實測 `git push` 得到的是 `! [rejected] (fetch first)` 而不是
      `Permission denied`，也就是通過了授權只是被 non-fast-forward 擋下）。
-     那個遠端來自 `/example/` 底下的舊專案，原本由黑名單封鎖，現在沒有了。
+     那個遠端來自舊專案 PSYOP_DutyManager（其參考副本 `/example/` 已於
+     2026-09-04 移除），原本由黑名單封鎖，現在沒有了。
 
 2. **任何刪除必須有互動確認。**
    刪檔、`DROP DATABASE`、`rm -rf`、`docker volume rm`、release prune —— 全部要先 Y/n；
@@ -771,7 +772,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 ├── .env.example             三模式共用的值
 ├── .dockerignore            build context 排除清單（含祕密）
 ├── .semgrepignore           ⚠ 必須放在專案根目錄，Semgrep 只在掃描目標的根目錄找它
-├── .gitignore               主庫（PUBLIC repo）；另有 /example/ 的排除
+├── .gitignore               主庫（PUBLIC repo）
 ├── docker-compose.yml       base：無 ports、無 container_name、無原始碼 mount
 ├── README.md                使用者導向的入口
 ├── claude.md                本文件（原理與坑）
@@ -796,7 +797,6 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 ├── docs/        progress.md、docker-verification.md
 ├── reports/     掃描與驗收輸出（目錄進版控，內容不進）
 │   ├── quality/ sast/ sca/ dast/ waf/ db/ verify/
-├── example/     ⚠ **不進版控**。舊專案的參考副本，其 .git 指向黑名單遠端
 ├── backend/     submodule → Information-Study/pm-backend
 └── frontend/    submodule → Information-Study/pm-frontend
 ```

@@ -281,8 +281,9 @@ build context 送進 daemon 的東西越少越好，但真正的理由是**祕�
 只要進了 context，就算 Dockerfile 沒有 `COPY` 它，它也已經傳給 daemon 了；
 而任何一個 `COPY . .` 都會把它烘進映像層，之後 `docker history` 挖得出來。
 
-`example/` 也在裡面 —— 它是舊專案的副本，不屬於這個專案，
-既不進版控也不進 build context。
+（`example/` 曾經也在這份清單裡 —— 那是舊專案 PSYOP_DutyManager 的參考副本。
+2026-09-04 確認所有 docker-compose 元件都已移植到本專案之後移除，
+`.dockerignore` 與 `.gitignore` 的對應規則也一併拿掉。）
 
 ---
 

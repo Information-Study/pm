@@ -289,7 +289,6 @@ project 前綴、SonarQube 的 project 與網路、push guard 的白名單、
 ```bash
 rsync -a --exclude .git --exclude node_modules --exclude vendor \
         --exclude .cx --exclude reports --exclude .env \
-        --exclude '/example/' \
         --exclude ansible/collections \
         --exclude 'ansible/inventory/hosts.yml' \
         --exclude 'ansible/inventory/group_vars/all/vault.yml' \
@@ -302,12 +301,10 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 ./cx doctor && ./cx dev up -d --build && ./cx verify
 ```
 
-幾個 exclude 的理由：`--exclude .git` 不帶斜線，比對的是**任何層級**的
-`.git`，所以 `example/.git`（origin 指向永久黑名單的 `team-of-P/*`）不會被帶走；
-`--exclude '/example/'` 帶斜線只排除頂層那一個目錄，它是舊專案的參考副本，
-新專案不需要。`--exclude .env` 只比對這個確切檔名 —— `.env.example` 會被複製過去
-（那是要的，`cx setup env` 拿它當範本），但如果你另外有 `.env.local`、
-`.env.production` 之類放了真值的檔案，要自己加上去。
+幾個 exclude 的理由：`--exclude .git` 不帶斜線，比對的是**任何層級**的 `.git`，
+所以連子模組的 `.git` 也不會被帶走。`--exclude .env` 只比對這個確切檔名 ——
+`.env.example` 會被複製過去（那是要的，`cx setup env` 拿它當範本），
+但如果你另外有 `.env.local`、`.env.production` 之類放了真值的檔案，要自己加上去。
 
 不改 `docker/env/*.env` 的埠段的話，新專案沒辦法跟本專案**同時**跑
 （`-p` 隔離容器與網路，但不隔離 host 埠）。

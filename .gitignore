@@ -38,13 +38,6 @@ Thumbs.db
 *.swp
 *~
 
-# 舊版專案的參考副本（使用者放進來對照用）。
-# ⚠ 它自己帶一個 .git，origin 指向 team-of-P/PSYOP_DutyManager.git ——
-# 那是 claude.md §0 紅線 1 的**永久黑名單**遠端。
-# 絕對不可以進版控，也不可以讓它的 remote 混進本專案的 git 設定。
-# 內容已經另外保存在 docker/legacy/*.orig。
-/example/
-
 # 本機驗證用的暫存腳本（開發過程產生，不進版控）
 /.cx-*.sh
 /.cx-*.py
