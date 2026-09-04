@@ -85,7 +85,7 @@ cx --root /path/to/pm doctor
 
 ```
 $ bash -lc 'command -v composer'      # login shell
-/home/sixtou/.local/bin/composer
+/home/user/.local/bin/composer
 $ bash -c  'command -v composer'      # 非 login shell
 （沒有輸出）
 ```
@@ -104,7 +104,7 @@ echo $PATH | tr : '\n' | grep '\.local/bin'
 `cx doctor` 現在會直接點名這種情況：
 
 ```
-✘ PATH    composer npm 已裝在 /home/sixtou/.local/bin，但不在 PATH 上
+✘ PATH    composer npm 已裝在 /home/user/.local/bin，但不在 PATH 上
 ```
 
 它跟「真的沒裝」是不同的處置 —— 照著「請跑 cx setup tools」重裝一百次也不會好，

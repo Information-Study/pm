@@ -127,7 +127,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 ```
 ✘ PATH 上有 Windows 的工具    npm=/mnt/c/Program Files/nodejs/npm
-✘ PATH                        composer npm 已裝在 /home/sixtou/.local/bin，但不在 PATH 上
+✘ PATH                        composer npm 已裝在 /home/user/.local/bin，但不在 PATH 上
 ```
 
 「裝了但看不到」跟「真的沒裝」的處置完全不同 —— 前者照著「請跑 cx setup tools」
