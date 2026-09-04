@@ -44,3 +44,8 @@ Thumbs.db
 # 絕對不可以進版控，也不可以讓它的 remote 混進本專案的 git 設定。
 # 內容已經另外保存在 docker/legacy/*.orig。
 /example/
+
+# 本機驗證用的暫存腳本（開發過程產生，不進版控）
+/.cx-*.sh
+/.cx-*.py
+/.cx-*.txt
