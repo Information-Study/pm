@@ -75,6 +75,12 @@ common_base_packages:
   - python3-debian          # A6：ansible.builtin.deb822_repository 的必要條件
   - python3-apt             # A6：ansible.builtin.apt 的必要條件
   - python3-pymysql         # ansible.mysql 的必要條件（mysql role 會用）
+  # ansible.builtin.debconf 需要 debconf-get-selections 這支執行檔，它在
+  # debconf-utils 裡，而 Ubuntu 的 minimal 映像預設不裝。
+  # 缺了它，mysql role 在寫 root 密碼的 debconf 答案時會直接失敗：
+  #   Failed to find required executable "debconf-get-selections" in paths: ...
+  # 而那個訊息完全不會提到套件名。2026-09-04 對真實 Ubuntu 24.04 目標實測踩到。
+  - debconf-utils
   - ca-certificates
   - curl
   - gnupg

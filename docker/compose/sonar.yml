@@ -7,7 +7,9 @@
 services:
 
   sonarqube:
-    image: ${SONARQUBE_IMAGE:-sonarqube:2026-lta-community}
+    # 預設值見 .env.example 的說明：Community 版沒有 LTA 線，
+    # 2026-lta-community 這個 tag 在 Docker Hub 上不存在。
+    image: ${SONARQUBE_IMAGE:-sonarqube:26.9.0.129388-community}
     restart: unless-stopped
     depends_on:
       sonardb:

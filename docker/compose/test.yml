@@ -77,6 +77,20 @@ services:
       # 所以 exclusions-before 一定要在 CRS 規則之前載入，載在之後等於沒寫。
       - ./docker/waf/exclusions-before/pm-exclusions-before.conf:/opt/owasp-crs/plugins/pm-exclusions-before.conf:ro
       - ./docker/waf/exclusions-after/pm-exclusions-after.conf:/opt/owasp-crs/plugins/pm-exclusions-after.conf:ro
+      # CRS 映像的 includes/proxy_backend.conf 寫死 X-Forwarded-Port $server_port，
+      # 那是 WAF 自己的 8080，不是使用者連進來的 18081。覆蓋它。
+      #
+      # ⚠ 必須掛成 **template**，不能直接掛到 /etc/nginx/includes/。
+      # 映像的 20-envsubst-on-templates.sh 會把 templates/ 底下每一個檔案
+      # 展開寫進對應位置；把目標檔掛成 :ro 會讓那個腳本整個失敗
+      #（實測錯誤是 "can't create /etc/nginx/includes/cors.conf: Permission denied"，
+      #  指向的是另一個檔案，非常難聯想到是自己的掛載造成的），
+      # 容器接著陷入 Restarting 迴圈。
+      #
+      # envsubst 只會替換「環境變數裡真的存在」的名字，
+      # 所以 $host / $scheme / $pm_forwarded_port 這些 nginx 變數會原樣保留。
+      - ./docker/waf/proxy_backend.conf:/etc/nginx/templates/includes/proxy_backend.conf.template:ro
+      - ./docker/waf/pm-forwarded-port.conf:/etc/nginx/templates/conf.d/pm-forwarded-port.conf.template:ro
     ports:
       - "${WAF_HTTP_PORT:-18081}:8080"
     depends_on:

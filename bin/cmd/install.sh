@@ -61,12 +61,18 @@ $CX_RC_BEGIN
 $CX_RC_END
 
 繼續嗎？" || return "$EX_ABORT"
-            {
-                printf '\n%s\n' "$CX_RC_BEGIN"
-                printf '[ -f %s ] && . %s\n' \
-                    "$CX_ROOT/bin/completion/cx.bash" "$CX_ROOT/bin/completion/cx.bash"
-                printf '%s\n' "$CX_RC_END"
-            } >> "$rc"
+            # 同上：dry-run 之下 `>>` 一樣會真的寫進去。
+            # 重導在命令執行「之前」就套用，cx_run 包不住它。
+            if (( CX_DRY_RUN )); then
+                cx_dim "[dry-run] 會在 $rc 末尾追加 cx 區塊（3 行）"
+            else
+                {
+                    printf '\n%s\n' "$CX_RC_BEGIN"
+                    printf '[ -f %s ] && . %s\n' \
+                        "$CX_ROOT/bin/completion/cx.bash" "$CX_ROOT/bin/completion/cx.bash"
+                    printf '%s\n' "$CX_RC_END"
+                } >> "$rc"
+            fi
             cx_ok "已寫入 $rc"
         fi
     fi
@@ -105,12 +111,44 @@ $( (( do_rc )) && printf '  ~/.bashrc 中的 cx 區塊（會先備份為 .bashrc
     if (( do_rc )); then
         local rc="$HOME/.bashrc"
         if grep -qF "$CX_RC_BEGIN" "$rc" 2>/dev/null; then
-            cx_run cp -p -- "$rc" "$rc.cx.bak"
-            # 用 awk 精確錨定，不用 sed 正規式插值
-            # （標記字串若含正規式元字元，sed 會刪錯範圍）
-            awk -v b="$CX_RC_BEGIN" -v e="$CX_RC_END" \
-                '$0==b{s=1;next} $0==e{s=0;next} !s' "$rc.cx.bak" > "$rc"
-            cx_ok "已移除 ~/.bashrc 的 cx 區塊（備份：$rc.cx.bak）"
+            # ⚠ 這一整段都必須受 --dry-run 保護，不能只保護 cp。
+            #
+            # 原本是：
+            #   cx_run cp -p -- "$rc" "$rc.cx.bak"
+            #   awk … "$rc.cx.bak" > "$rc"
+            # 前者走 cx_run（dry-run 會跳過），後者的 `>` 重導卻是無條件執行的。
+            # 於是 `cx --dry-run uninstall --rc` 的實際效果是：
+            #   1. 備份沒有建立
+            #   2. `>` 立刻把 ~/.bashrc 截成 0 bytes
+            #   3. awk 讀不到不存在的 .cx.bak，什麼也沒寫回去
+            # 使用者的 ~/.bashrc 就這樣沒了，而且沒有任何備份。
+            # 實測（2026-09-04，用假的 HOME）：80 bytes → 0 bytes。
+            #
+            # dry-run 的契約是「只印出要做什麼，不改變任何狀態」，
+            # 而 shell 的重導在命令執行「之前」就會先截斷檔案 ——
+            # 任何 `> 檔案` 都不能出現在 cx_run 之外。
+            if (( CX_DRY_RUN )); then
+                cx_dim "[dry-run] cp -p -- $rc $rc.cx.bak"
+                cx_dim "[dry-run] awk（移除 cx 區塊）$rc.cx.bak > $rc"
+                cx_ok "已移除 ~/.bashrc 的 cx 區塊（dry-run，未實際變更）"
+            else
+                cp -p -- "$rc" "$rc.cx.bak" \
+                    || cx_die "$EX_FAIL" "無法備份 $rc —— 中止，不會改動它"
+                # 先寫暫存檔再覆蓋：awk 失敗時 ~/.bashrc 完全沒被碰過。
+                # 用 awk 精確錨定，不用 sed 正規式插值
+                #（標記字串若含正規式元字元，sed 會刪錯範圍）
+                local tmp_rc
+                tmp_rc=$(mktemp) || cx_die "$EX_FAIL" "無法建立暫存檔"
+                if awk -v b="$CX_RC_BEGIN" -v e="$CX_RC_END" \
+                       '$0==b{s=1;next} $0==e{s=0;next} !s' "$rc.cx.bak" > "$tmp_rc"; then
+                    cat "$tmp_rc" > "$rc"
+                    rm -f "$tmp_rc"
+                    cx_ok "已移除 ~/.bashrc 的 cx 區塊（備份：$rc.cx.bak）"
+                else
+                    rm -f "$tmp_rc"
+                    cx_die "$EX_FAIL" "awk 處理失敗 —— $rc 未被更動，備份在 $rc.cx.bak"
+                fi
+            fi
         else
             cx_dim "~/.bashrc 沒有 cx 區塊"
         fi

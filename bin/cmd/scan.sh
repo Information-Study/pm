@@ -101,17 +101,39 @@ _scan_code() {
     # SonarQube scanner 需要一台 SonarQube server，只有 docker runner 有
     if [[ $(_scan_runner) == docker ]]; then
         if docker network inspect pm_devsecops_net >/dev/null 2>&1; then
-            cx_info "SonarQube scanner …"
-            cx_run docker run --rm -u "$(id -u):$(id -g)" \
-                --network pm_devsecops_net \
-                -e SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}" \
-                -e SONAR_TOKEN="${SONAR_TOKEN:?尚未設定 —— 跑 cx sonar up 之後再跑 cx sonar token}" \
-                -v "$CX_ROOT:/usr/src" \
-                "${CX_IMG_SONAR_SCANNER:-sonarsource/sonar-scanner-cli:latest}" || rc=$?
-            # 這裡曾經寫 worst=$(...)。檔頭第 80-83 行的註解正在講這個坑，
-            # 而這一行自己犯了：worst 不是本函式的 local，寫進去的是呼叫者的變數，
-            # 但下面 return 的是 _lane_worst → SonarQube scanner 的失敗被靜默吞掉。
-            _lane_worst=$(_scan_max "$_lane_worst" "$rc")
+            # ⚠ 這裡原本是 -e SONAR_TOKEN="${SONAR_TOKEN:?…}"。
+            #
+            # ${var:?} 在非互動 shell 是「立刻結束整個 shell」，不是回傳非零 ——
+            # cx 的 `"$fn" "$@" || _rc=$?` 攔不住它（實測：② ③ ④ 與總結全部不執行，
+            # 連已經產生的 reports/quality/larastan.json 都不會被總結）。
+            # 也就是說「沒設 token」會讓整條 cx scan all 在第 ① 道防線就無聲死掉。
+            #
+            # 另外，cx sonar token 會把 token 寫進 .cx/sonar-token 並告訴你
+            # 「cx scan code 會自動讀它」—— 但在 2026-09-04 之前沒有任何地方讀回來。
+            # 這裡補上，並把「沒有 token」降級成「略過 scanner 並警告」。
+            local sonar_token="${SONAR_TOKEN:-}"
+            if [[ -z $sonar_token && -r $CX_ROOT/.cx/sonar-token ]]; then
+                sonar_token=$(< "$CX_ROOT/.cx/sonar-token")
+                sonar_token=${sonar_token//[$'\n\r']/}
+            fi
+            if [[ -z $sonar_token ]]; then
+                cx_warn "沒有 SONAR_TOKEN —— 略過 SonarQube scanner（Larastan 已完成）"
+                cx_dim "  產生：cx sonar token（會寫進 .cx/sonar-token，之後自動讀取）"
+                cx_dim "  或自行 export SONAR_TOKEN=…"
+            else
+                cx_info "SonarQube scanner …"
+                rc=0
+                cx_run docker run --rm -u "$(id -u):$(id -g)" \
+                    --network pm_devsecops_net \
+                    -e SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}" \
+                    -e SONAR_TOKEN="$sonar_token" \
+                    -v "$CX_ROOT:/usr/src" \
+                    "${CX_IMG_SONAR_SCANNER:-sonarsource/sonar-scanner-cli:latest}" || rc=$?
+                # 這裡曾經寫 worst=$(...)。檔頭的註解正在講這個坑，而這一行自己犯了：
+                # worst 不是本函式的 local，寫進去的是呼叫者的變數，
+                # 但下面 return 的是 _lane_worst → scanner 的失敗被靜默吞掉。
+                _lane_worst=$(_scan_max "$_lane_worst" "$rc")
+            fi
         else
             cx_warn "SonarQube 未啟動（cx sonar up）—— 略過 scanner"
         fi

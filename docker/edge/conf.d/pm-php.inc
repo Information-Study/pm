@@ -1,24 +1,33 @@
 # 轉給 app 容器的共用片段。被 default.conf 的多個 location include。
 #
-# 為什麼拆成片段而不是複製七次：nginx 的 add_header 繼承規則是
+# 為什麼拆成片段而不是複製十幾次：nginx 的 add_header 繼承規則是
 # 「當前層有 add_header 就完全不繼承上層」，所以每個 location 都必須
 # 自己帶齊所有 header。拆片段是唯一不會漏的做法。
 proxy_pass http://pm_php;
 proxy_http_version 1.1;
 # nosemgrep: nginx.security.request-host-used.request-host-used
-# 轉發 $host 是反向代理的標準作法，這裡是刻意的：
-#   * edge 是唯一入口，容器內的 app / nuxt 都沒有對外發布埠
-#   * Laravel 端已設定 TrustProxies（backend/bootstrap/app.php），
-#     而且 APP_URL / SANCTUM_STATEFUL_DOMAINS 都是明確值
-#   * 真正要收緊 Host 的地方是最前面那一層：Ansible 的 nginx_myguard
-#     有真實的 server_name（來自 app_domain），不吃未知的 Host
-# 改成寫死 Host 會讓同一份設定無法在 dev(8080) / test(18081) / prod(80) 共用。
+# 見 default.conf 中同一組 header 的說明：edge 是唯一入口，
+# Laravel 端有 TrustProxies，真正收緊 Host 的是最前面那一層。
 proxy_set_header Host              $host;
 proxy_set_header X-Real-IP         $remote_addr;
 proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 proxy_set_header X-Forwarded-Host  $host;
-proxy_set_header X-Forwarded-Port  $server_port;
+
+# ⚠ 不能用 $server_port。
+#
+# $server_port 是「edge 自己監聽的埠」= 8080，不是使用者連進來的埠。
+# dev 剛好也發布 8080，所以看起來是對的；但 test 發布 18080、
+# WAF 發布 18081、prod 發布 80 —— 三者都會讓 Laravel 以為自己在 8080。
+# 2026-09-04 實測：從 18080 / 18081 / 80 打 /admin，302 全部指向
+#   http://localhost:8080/admin/login
+# 而 prod 根本沒有發布 8080，使用者會被導到一個連不上的網址。
+# 同樣的錯誤也會出現在密碼重設信、Filament 的絕對連結、分頁連結上。
+#
+# 正確來源是使用者送來的 Host 標頭裡的埠（nginx.conf 的 map 解析）。
+# Host 沒帶埠時（80/443 的預設情形）退回 $server_port。
+proxy_set_header X-Forwarded-Port  $pm_forwarded_port;
+
 proxy_set_header Connection        "";
 proxy_read_timeout 300s;
 proxy_send_timeout 300s;
