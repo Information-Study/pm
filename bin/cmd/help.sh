@@ -16,7 +16,7 @@ cx — pm 專案統一入口
   --yes, -y         略過互動確認（非互動環境專用，請謹慎）
 
 ── 第一階段：建立與開發 ─────────────────────────────────────────────────────
-  setup             一鍵初始化（.env、目錄、push guard，並盤點工具鏈）
+  setup             一鍵初始化（.env、目錄、collections，並盤點工具鏈）
     setup native            ★ 一行裝完整套原生工具鏈 = system + tools + deps
     setup system [名稱...]  需要 root 的系統套件（php / nginx / git / docker
                             〔含 compose v2〕/ mysql-client / php-sqlite）。
@@ -83,7 +83,7 @@ cx — pm 專案統一入口
   git branch list|new|switch|delete <名稱>
   git remote-init             用 gh 建立 Information-Study 的三個 public repo
   git push                    推送（白名單 + 祕密掃描 + 子模組順序）
-  git guard install|status|remove
+  git guard install|status|remove   pre-push 白名單 hook（**選用**，預設未安裝）
 
 ── 其他 ─────────────────────────────────────────────────────────────────────
   tui               互動選單（預設動詞）

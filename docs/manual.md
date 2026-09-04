@@ -66,7 +66,7 @@ pm/                ← 主庫    → Information-Study/pm
 ```bash
 git clone --recurse-submodules https://github.com/Information-Study/pm.git
 cd pm
-./cx setup                    # .env、目錄、push guard、collections，並盤點工具鏈
+./cx setup                    # .env、目錄、collections，並盤點工具鏈
 ./cx dev up -d --build        # 起開發環境
 ```
 
@@ -74,7 +74,8 @@ cd pm
 
 1. 從 `.env.example` 產生 `.env`（隨機密碼、填入你的 UID/GID）
 2. 建立 `reports/` 與 `.cx/` 的葉目錄（**必須由你建立**，讓 Docker 建會是 root:root）
-3. 安裝三個 repo 的 pre-push hook（白名單防護）
+3. ~~安裝三個 repo 的 pre-push hook~~ —— **已改為選用**，`cx setup` 不再自動安裝。
+   要啟用白名單攔截： `cx git guard install`
 4. 安裝 Ansible collections（`ansible/collections/` 不進版控）
 5. 盤點缺少的工具並告訴你怎麼補
 
@@ -350,7 +351,7 @@ Nuxt 自己的資產全部在 `/_nuxt/` 底下，不會跟這幾個前綴衝突�
 
 ## 6. 紅線
 
-1. **推送有白名單，預設拒絕。**
+1. **推送前先掃祕密。**（白名單 hook 已於 2026-09-04 移除，改為選用）
    唯一合法遠端是 `github.com/Information-Study/{pm,pm-backend,pm-frontend}`。
    舊的 `team-of-P/*` **永久禁止**，pre-push hook 不接受任何覆寫旗標。
    合法入口只有 `cx git push`。

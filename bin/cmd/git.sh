@@ -784,8 +784,20 @@ _git_push() {
         [[ -n $url ]] || cx_die "$EX_PRECOND" "$slug 沒有 origin（先跑 cx git remote-init）"
         printf '%s' "$url" | grep -qE "$CX_DENIED_REMOTE_RE" \
             && cx_die "$EX_PRECOND" "$slug 的 origin 在永久黑名單：$url"
-        printf '%s' "$url" | grep -qE "$CX_ALLOWED_REMOTE_RE" \
-            || cx_die "$EX_PRECOND" "$slug 的 origin 不在白名單：$url"
+        # cx git push 自己的白名單，與 pre-push hook 是兩回事
+        #（hook 已於 2026-09-04 移除，這道還在）。
+        # 保留的理由：cx git push 是「安全路徑」—— 它會掃祕密、排子模組順序、
+        # 驗 gitlink，把它的目標限制在已知的三個 repo 是這條路徑的價值所在。
+        # 但不能只是死掉，要告訴使用者原生路徑現在是通的。
+        if ! printf '%s' "$url" | grep -qE "$CX_ALLOWED_REMOTE_RE"; then
+            cx_error "$slug 的 origin 不在 cx git push 的白名單：$url"
+            cx_dim "  允許的目標："
+            cx_dim "$(cx_guard_allow_list)"
+            cx_dim "  要推到其他遠端請用原生 git（pre-push hook 已移除，不會被攔）："
+            cx_dim "      cx git scan-secrets && git -C $r push <遠端> <分支>"
+            cx_dim "  先掃祕密不是形式 —— 三個 repo 都是 PUBLIC。"
+            return "$EX_PRECOND"
+        fi
         cx_ok "$slug → $url"
     done < <(_git_repos_order)
 

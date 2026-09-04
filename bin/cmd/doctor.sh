@@ -100,7 +100,17 @@ cmd_doctor_main() {
         tot=$((tot+1)); gd=$(git -C "$r" rev-parse --absolute-git-dir 2>/dev/null) || continue
         [[ -x $gd/hooks/pre-push ]] && grep -q "$CX_GUARD_MARK" "$gd/hooks/pre-push" 2>/dev/null && n=$((n+1))
     done < <(cx_guard_repos)
-    (( n == tot )) && _ok "push guard" "$n/$tot 個 repo" || _fl "push guard" "只有 $n/$tot —— 執行 cx git guard install"
+    # push guard 是**選用**的（2026-09-04 起預設不安裝），所以「一個都沒裝」
+    # 不是失敗，是一個有效的狀態 —— 使用者選擇用原生 git push。
+    # 但「裝了一半」一定是問題：三個 repo 的行為會不一致，
+    # 你會以為推送有保護，實際上只有其中一兩個有。
+    if (( n == tot )); then
+        _ok "push guard" "$n/$tot 個 repo"
+    elif (( n == 0 )); then
+        _ok "push guard" "未安裝（選用）—— git push 不受攔截；要裝回來： cx git guard install"
+    else
+        _wr "push guard" "只有 $n/$tot —— 狀態不一致，三個 repo 的推送行為不同。裝滿： cx git guard install／全移除： cx git guard remove"
+    fi
 
     # ── 兩條路各自能不能獨立跑完 ────────────────────────────────────────
     # 專案的要求是「完全用 Docker」或「完全用原生工具鏈」都要能走完，

@@ -56,7 +56,7 @@ cx setup [子指令]
 | （無）/ `all` | env + dirs + guard + collections，最後盤點工具鏈 |
 | `env` | 從 `.env.example` 產生 `.env`（隨機密碼、你的 UID/GID、`PROJECT_SLUG`）。**不覆蓋既有的** |
 | `dirs` | 建立 `reports/` 與 `.cx/` 的葉目錄，並補回 `reports/.gitignore` |
-| `guard` | 安裝三個 repo 的 pre-push hook（白名單從 `.cxroot` 產生） |
+| `guard` | 安裝三個 repo 的 pre-push hook（白名單從 `.cxroot` 產生）。**選用** —— `cx setup` 不含這一步 |
 | **`native`** | **一行裝完整套原生工具鏈** = `system` → `tools` → `deps`。不吃名稱過濾器 —— `system` 與 `tools` 的清單互斥，要裝單一項目請直接用那兩個子指令 |
 | `system [名稱...]` | **需要 root** 的系統套件：`php nginx git docker mysql-client php-sqlite` |
 | `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep` |
@@ -182,7 +182,7 @@ cx doctor
 
 檢查項目：專案標記、Docker daemon 與 compose、PHP 與必要／選用擴充、composer、
 Larastan、node/npm 與版本相容性、frontend 相依、Trivy/gitleaks/Semgrep/ZAP、
-ansible/ansible-lint、whiptail/gh、push guard（三個 repo）、
+ansible/ansible-lint、whiptail/gh、push guard（選用：0/3 與 3/3 都算通過，1-2/3 警告狀態不一致）、
 **可執行位元**（磁碟與 git index 都檢查）、Phase 2 產出物、動詞實作檔完整性。
 
 > 可執行位元那一項不是多餘的：git index 曾經把 `cx` 的模式記成 `100644`
@@ -531,7 +531,7 @@ pm
 
 ### `cx git push` 的閘門順序
 
-1. **遠端白名單**。唯一合法的是
+1. **遠端白名單**（只有裝了 hook 才生效；預設未安裝）。唯一合法的是
    `github.com/Information-Study/{pm,pm-backend,pm-frontend}`。
    `team-of-P/*` 永久禁止，**沒有任何旗標可以覆寫**。
 2. **祕密掃描**。兩層：檔名層（`.env`、`*.pem`、`id_rsa`…）與內容層

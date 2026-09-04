@@ -9,7 +9,7 @@
 ```
 git clone --recurse-submodules https://github.com/Information-Study/pm.git
 cd pm
-./cx setup                 # .env、目錄、push guard，並盤點缺少的工具
+./cx setup                 # .env、目錄、collections，並盤點缺少的工具
 ./cx setup native          # 整套原生工具鏈：system(root) + tools(~/.local) + 專案相依
 ./cx dev up -d --build     # 起開發環境
 ```
@@ -339,9 +339,13 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 
 ## 紅線
 
-1. **推送有白名單，預設拒絕。** 唯一合法遠端是 `github.com/Information-Study/{pm,pm-backend,pm-frontend}`。
-   舊的 `team-of-P/*` **永久禁止**，pre-push hook 不接受任何覆寫旗標。
-   合法入口只有 `cx git push`。
+1. **推送前先掃祕密。** 三個 repo 都是 PUBLIC，祕密進了 git 歷史就收不回來。
+   用 `cx git push`（會先跑 gitleaks 全歷史掃描、處理子模組順序、驗證 gitlink）；
+   要用原生 `git push` 的話，自己先跑 `cx git scan-secrets`。
+
+   > pre-push hook（白名單 + `team-of-P/*` 黑名單 + 預設拒絕）在 2026-09-04
+   > 依使用者指示**全部移除**，現在 `git push <任何遠端>` 都不會被攔截。
+   > 要裝回來：`cx git guard install`；目前狀態看 `cx doctor` 的 push guard 那一行。
 2. **任何刪除都要互動確認**，不可逆的還要輸入確認字串。
 3. **不要繞過 `cx`。** 直接下 `docker compose` 幾乎一定會錯。
 4. **不要用 `--ignore-platform-reqs` 硬過相依衝突**（`cx composer` 會主動拒絕這個旗標）。

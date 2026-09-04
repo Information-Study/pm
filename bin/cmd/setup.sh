@@ -10,10 +10,10 @@ _setup_usage() {
     cat >&2 <<'TXT'
 cx setup [子指令]
 
-  (無參數) / all   env + dirs + guard + galaxy，最後報告缺哪些工具
+  (無參數) / all   env + dirs + galaxy，最後報告缺哪些工具（guard 是選用，不含）
   env              從 .env.example 產生 .env（隨機密碼、你的 UID/GID、專案名）
   dirs             建立 reports/ 與 .cx/ 的葉目錄（必須由你的身分建立，不能讓 Docker 建）
-  guard            安裝三個 repo 的 pre-push 白名單 hook（白名單讀 .cxroot）
+  guard            安裝三個 repo 的 pre-push 白名單 hook（**選用**，白名單讀 .cxroot）
 
   native           ★ 一行裝完整套原生工具鏈 = system + tools + deps（不吃名稱）
                    順序固定 system → tools → deps（composer 的安裝器需要 php）
@@ -624,8 +624,12 @@ _setup_all() {
     _setup_env
     cx_step "目錄"
     _setup_dirs
+    # push guard 不再由 cx setup 自動安裝（2026-09-04 起改為選用）。
+    # 它會攔截所有原生 git push，需要 CX_ALLOW_PUSH=1 才放行 ——
+    # 那對「想直接用 git / IDE 推送」的人是持續的阻礙。
+    # 要的人自己跑： cx setup guard  或  cx git guard install
     cx_step "push guard"
-    _setup_guard || cx_warn "push guard 安裝未完成（三個 repo 都要是 git repo）"
+    cx_dim "選用，預設不安裝。要啟用白名單攔截： cx git guard install"
 
     if cx_have ansible-galaxy && [[ -f $CX_ROOT/ansible/requirements.yml ]]; then
         cx_step "Ansible collections"

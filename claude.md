@@ -12,13 +12,24 @@
 
 ## 0. 紅線（Hard Rules）
 
-1. **推送有嚴格白名單，預設拒絕。**
-   唯一合法的遠端是 `github.com/Information-Study/{pm, pm-backend, pm-frontend}`。
-   舊的 `team-of-P/*` 遠端**永久禁止推送**。
-   三個 repo 都裝了 `pre-push` hook，會同時檢查兩件事：
-   (a) 目標 URL 必須落在 Information-Study 白名單內；(b) `CX_ALLOW_PUSH=1` 必須顯式設定。
-   **AI 助理不得在使用者未於當次對話明確指示的情況下推送**，也不得為了繞過失敗而放寬白名單。
-   合法入口只有 `cx git push`（會要求確認）。
+1. **AI 助理不得在使用者未於當次對話明確指示的情況下推送。**
+   這一條沒有變，而且現在是**唯一**還在生效的推送限制。
+
+   > ⚠ 2026-09-04：依使用者指示，三個 repo 的 `pre-push` hook **已全部移除**。
+   > 白名單、`team-of-P/*` 黑名單、`CX_ALLOW_PUSH=1` 預設拒絕閘門**都不存在了**。
+   > `git push <任何遠端> <任何分支>` 不會被攔截。
+   > 要裝回來：`cx git guard install`（`cx doctor` 會顯示目前是 0/3 還是 3/3）。
+
+   三個 repo 都是 **PUBLIC**，而祕密一旦進入 git 歷史就收不回來。
+   少了 hook 之後，剩下的防線只有 `cx git push` 開頭的 gitleaks 全歷史掃描 ——
+   **直接下 `git push` 不會經過它**。所以：
+
+   * 推送前請用 `cx git push`，它會先掃祕密、處理子模組順序、驗證 gitlink
+   * 真的要用原生 `git push` 時，自己先跑一次 `cx git scan-secrets`
+   * `github.com/team-of-P/PSYOP_DutyManager` 這把 SSH key **推得進去**
+     （實測 `git push` 得到的是 `! [rejected] (fetch first)` 而不是
+     `Permission denied`，也就是通過了授權只是被 non-fast-forward 擋下）。
+     那個遠端來自 `/example/` 底下的舊專案，原本由黑名單封鎖，現在沒有了。
 
 2. **任何刪除必須有互動確認。**
    刪檔、`DROP DATABASE`、`rm -rf`、`docker volume rm`、release prune —— 全部要先 Y/n；
@@ -148,7 +159,7 @@ Docker daemon 不可用，因此改以原生工具鏈建立。**遠端已上線*
 
 > 補裝：`sudo apt install -y php8.5-bcmath php8.5-sqlite3`（sudo 需要人工輸入密碼）
 
-#### push guard 已實測 7 種情境
+#### push guard 已實測 7 種情境（**目前未安裝**，下表是 `cx git guard install` 之後的行為）
 
 | 情境 | 結果 |
 |---|---|

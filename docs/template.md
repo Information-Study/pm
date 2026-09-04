@@ -153,6 +153,9 @@ cx dev restart nuxt                   容器當時在跑，一定要重啟
 
 > ⚠ `.cxroot` 改完之後要重跑 **`cx setup guard`**（hook 是產生出來的檔案，
 > 白名單在安裝當下就被烤進去，不會自己更新）。
+>
+> ⚠ 2026-09-04 起 push guard 預設**不安裝**，`cx setup` 也不再包含它。
+> 下面關於白名單的內容只在你執行過 `cx git guard install` 之後才適用。
 > 已經產生的 `.env` 也不會被回頭改寫 —— 新專案本來就該讓 `cx setup env` 重新產生。
 
 仍然要**手動**改的：
