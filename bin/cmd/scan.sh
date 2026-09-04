@@ -19,18 +19,28 @@ _scan_usage() {
     cat >&2 <<'TXT'
 用法：cx scan <防線> [--runner docker|native|auto] [--fail-on-findings]
 
-  code    ① Quality  Larastan + SonarQube scanner
+  code    ① Quality  Larastan（level 5）+ SonarQube scanner
   sast    ② SAST     Semgrep
   sca     ③ SCA      Trivy（fs/secret/misconfig）+ composer audit + npm audit
   dast    ④ DAST     OWASP ZAP（僅 docker runner）
   secrets    gitleaks 全歷史祕密掃描
-  all        依序執行 ①②③④
+  all        ①②③④ 再加 secrets
+
+  ⚠ all 不是「遇到第一個問題就停」：每一道都會跑完，最後回傳**最嚴重**的退出碼。
+    掃描器的價值在於一次看到全部問題；停在第一道會讓後面三道永遠沒機會跑。
+
+報告位置
+  reports/quality/  larastan.json
+  reports/sast/     semgrep.sarif
+  reports/sca/      trivy-fs.json・composer-audit.json・npm-audit.json
+  reports/secrets/  gitleaks-{pm,backend,frontend}.json
+  reports/dast/     detect/ 與 blocking/ 各一份 report.{json,html}，compare/ 是對照
 
 結束碼
   0   全部通過
-  20  ① Quality 有問題      22  ③ SCA 有問題
+  20  ① Quality 有問題      22  ③ SCA 有問題（secrets 也用這個碼）
   21  ② SAST 有問題         23  ④ DAST 有問題
-  3   前置條件不足（工具缺失／Docker 不可用）
+  3   前置條件不足（工具缺失／Docker 不可用）—— 這是環境問題，不是掃描結果
 TXT
 }
 
@@ -85,8 +95,26 @@ _scan_code() {
                 --error-format=json > "$CX_REPORT_DIR/quality/larastan.json" || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
         if [[ -s $CX_REPORT_DIR/quality/larastan.json ]]; then
-            local n; n=$(python3 -c 'import json,sys;print(json.load(sys.stdin).get("errors","?"))' \
-                         < "$CX_REPORT_DIR/quality/larastan.json" 2>/dev/null || echo '?')
+            # ⚠ 這個檔是 JSONL 不是單一 JSON 物件：phpstan 有 note 要說的時候
+            # （例如「Note: Using configuration file …」）會先吐一行 {"tool":…,"raw":[…]}，
+            # 結果行才在後面。原本寫 json.load(整個檔) 會 JSONDecodeError，
+            # 被 `|| echo '?'` 吞掉 —— 於是 errors= 永遠印成 ?，看起來像「讀不到」，
+            # 實際上是「讀法錯了」。逐行讀、取最後一個帶 errors 的物件。
+            local n; n=$(python3 -c '
+import json, sys
+n = "?"
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(d, dict) and "errors" in d:
+        n = d["errors"]
+print(n)
+' < "$CX_REPORT_DIR/quality/larastan.json" 2>/dev/null || echo '?')
             cx_dim "報告：reports/quality/larastan.json（errors=$n）"
         fi
     else
@@ -95,7 +123,7 @@ _scan_code() {
 
     # SonarQube scanner 需要一台 SonarQube server，只有 docker runner 有
     if [[ $(_scan_runner) == docker ]]; then
-        if docker network inspect pm_devsecops_net >/dev/null 2>&1; then
+        if docker network inspect "$(cx_sonar_net)" >/dev/null 2>&1; then
             # ⚠ 這裡原本是 -e SONAR_TOKEN="${SONAR_TOKEN:?…}"。
             #
             # ${var:?} 在非互動 shell 是「立刻結束整個 shell」，不是回傳非零 ——
@@ -119,7 +147,7 @@ _scan_code() {
                 cx_info "SonarQube scanner …"
                 rc=0
                 cx_run docker run --rm -u "$(id -u):$(id -g)" \
-                    --network pm_devsecops_net \
+                    --network "$(cx_sonar_net)" \
                     -e SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}" \
                     -e SONAR_TOKEN="$sonar_token" \
                     -v "$CX_ROOT:/usr/src" \
@@ -269,7 +297,7 @@ _scan_dast() {
         return "$EX_PRECOND"
     fi
     local target=${ZAP_TARGET:-http://waf:8080}
-    local net=${CX_TEST_NETWORK:-pm_test_net}
+    local net=${CX_TEST_NETWORK:-$(cx_project)_test_net}
     docker network inspect "$net" >/dev/null 2>&1 \
         || cx_die "$EX_PRECOND" "network $net 不存在 —— 先跑 cx test up -d"
 
@@ -373,7 +401,7 @@ _scan_secrets() {
             gitleaks git "$r" --no-banner --redact \
                 --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
                 --report-format json \
-                --report-path "$CX_REPORT_DIR/sca/gitleaks-$slug.json" || rc=$?
+                --report-path "$CX_REPORT_DIR/secrets/gitleaks-$slug.json" || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     done
     # 這裡曾經 return "$worst" —— 那個變數在本函式裡不存在。

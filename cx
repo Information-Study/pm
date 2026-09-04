@@ -111,7 +111,12 @@ declare -A CX_CMD_FILE_OF=(
     # 拆成兩個檔只會讓那段邏輯有兩份、然後漂移。
     [php]=art
     [dc]=compose
+    # 這一行必須與 bin/lib/common.sh 的 CX_COMPOSE_VERBS_LIST 一字不差。
+    # 少一個（config 就曾經漏掉）的症狀是：cx dev config 好好的，
+    # 但裸的 cx config 會噴「未知的指令」—— 因為前者走 cmd_dev_main，
+    # 後者要靠這張表才找得到 compose.sh。
     [up]=compose [down]=compose [restart]=compose [ps]=compose [logs]=compose [sh]=compose [build]=compose
+    [config]=compose
     # dev / prod 只是「把 CX_MODE 設好再往下傳」的前綴動詞，實作同在 compose.sh。
     # test 不在這裡 —— 它有自己的檔，因為 cx test 同時是「test 模式的 compose」
     # 與「跑測試套件」兩件事（cx test up 與 cx test back）。

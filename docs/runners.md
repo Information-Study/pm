@@ -77,8 +77,61 @@ runner: native（指定） — composer 2.10.3
 | `cx test coverage` | **只有容器路徑**（需要 test 映像裡的 xdebug） |
 | `cx db restore` | **只有容器路徑** |
 
-`composer` 與 `node/npm` 由 `cx setup tools` 免 root 安裝到 `~/.local`。
-`php` 與 `mysql-client` 是系統套件，需要 root —— cx 不代裝需要 root 的東西。
+| `cx scan dast` | **只有容器路徑**（ZAP 要 Java） |
+| `cx pma` / `cx sonar` / 所有 compose 動詞 | **只有容器路徑** |
+
+### 一行把原生那一邊裝起來
+
+```bash
+cx setup native          # = setup system + setup tools + setup deps
+```
+
+拆開來看是兩份清單：
+
+| | 工具 | 指令 |
+|---|---|---|
+| 需要 root | `php`（cli + 擴充）・`nginx`・`git`・`docker`・`mysql-client`・`php-sqlite` | `cx setup system [名稱...]` |
+| 免 root（`~/.local`） | `composer`・`node`（含 `npm`）・`ansible`・`trivy`・`gitleaks`・`semgrep` | `cx setup tools [名稱...]` |
+
+**cx 絕不偷偷跑 sudo。** `setup system` 會先把完整的 `apt-get install` 指令列出來
+再問你；`sudo` 需要密碼或不可用時，它**只印出那一行**並回傳 `EX_PRECOND`(3) ——
+那不是失敗，在 CI 或不給 sudo 的機器上那就是正常流程。
+`cx setup native` 遇到這種情況會記下來但**繼續**跑免 root 的那一半。
+
+裝完之後 `cx_runner_need_native` 缺工具時的提示也會直接指向正確的子指令，
+例如缺 `php` 時是 `cx setup system php`，缺 `composer` 時是 `cx setup tools composer`。
+
+### ⚠ 裝好還不夠：`~/.local/bin` 必須在 PATH 上
+
+`~/.profile` 有把它加進 PATH 的那一段，但 **`~/.profile` 只在 login shell 生效**。
+Windows Terminal、VS Code 的終端機、部分 `wsl.exe` 呼叫進來的是非 login shell，
+它們讀的是 `~/.bashrc`。
+
+```bash
+echo $PATH | tr : '\n' | grep '\.local/bin'      # 沒輸出就是中了
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+```
+
+**在 WSL 上這不只是「工具找不到」而已。** WSL 預設把 Windows 的 PATH 併進來，
+所以 `/mnt/c/Program Files/nodejs/npm` 一直都在。Linux 版的 npm 不在 PATH 時，
+`npm` 會**靜默**解析到 Windows 那支 —— 它在 WSL 的專案目錄裡跑會
+`CMD.EXE 不支援 UNC 路徑`，而且 `npm ci` 會「成功」地留下一棵殘缺的
+`node_modules`（2026-09-04 實測 24 KB，裡面沒有 `nuxt`），
+錯誤要到 `vite build` 才炸。
+
+所以原生路徑的判斷用的是 `cx_have_native` 而不是 `cx_have`：
+解析到 `/mnt/<磁碟>/` 或 `.exe` 結尾的一律不算數。
+（`cx pma` 要開瀏覽器時反而**需要** `explorer.exe`，那裡仍用 `cx_have`。）
+
+`cx doctor` 會把這兩種情況分開講：
+
+```
+✘ PATH 上有 Windows 的工具    npm=/mnt/c/Program Files/nodejs/npm
+✘ PATH                        composer npm 已裝在 /home/sixtou/.local/bin，但不在 PATH 上
+```
+
+「裝了但看不到」跟「真的沒裝」的處置完全不同 —— 前者照著「請跑 cx setup tools」
+重裝幾次都不會好，因為東西從來就是裝好的。
 
 `cx doctor` 會把兩條路分開報，缺什麼、缺了會影響哪個動詞都寫清楚：
 

@@ -202,8 +202,8 @@ TXT
 )
     cx_confirm --danger "cx fresh — 刪除確認" "$body" || { cx_error "使用者取消，未變更任何檔案"; return 1; }
     cx_ask_typed "最終確認" \
-        "請輸入下列字串以確認刪除：\n\n    DESTROY pm\n" \
-        "DESTROY pm" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+        "請輸入下列字串以確認刪除：\n\n    DESTROY $(cx_project)\n" \
+        "DESTROY $(cx_project)" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
     return 0
 }
 

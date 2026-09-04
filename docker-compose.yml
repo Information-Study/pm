@@ -168,6 +168,10 @@ volumes:
 
 networks:
   app_net:
-    # 但網路要明寫 name:，因為 cx scan dast 得用 `docker run --network pm_test_net`
+    # 但網路要明寫 name:，因為 cx scan dast 得用 `docker run --network <專案>_test_net`
     # 把 ZAP 塞進 WAF 所在的網路。留給 compose 自動命名就會變成 pm_test_app_net。
-    name: pm_${APP_MODE:-dev}_net
+    #
+    # 前綴走 PROJECT_SLUG 而不是寫死 pm：網路名是**全 daemon 唯一**的，
+    # 寫死的話，這個 repo 複製出去改名的新專案會跟本專案搶同一個網路。
+    # PROJECT_SLUG 由 cx setup env 從 .cxroot 的 CX_PROJECT_NAME 填入。
+    name: ${PROJECT_SLUG:-pm}_${APP_MODE:-dev}_net

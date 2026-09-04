@@ -17,17 +17,23 @@ cx — pm 專案統一入口
 
 ── 第一階段：建立與開發 ─────────────────────────────────────────────────────
   setup             一鍵初始化（.env、目錄、push guard，並盤點工具鏈）
-    setup tools [名稱...]   免 root 安裝 composer / node / ansible / trivy /
-                            gitleaks / semgrep 到 ~/.local（每個都核對 SHA256）
-    setup deps              backend 的 composer install + frontend 的 npm ci
-    setup env|dirs|guard     只做其中一項
-    setup system [名稱...]  需要 root 的系統套件（php / nginx / git / docker /
-                            mysql-client / php-sqlite）。sudo 不可用時只印指令
+    setup native [名稱...]  ★ 一行裝完整套原生工具鏈 = system + tools + deps
+    setup system [名稱...]  需要 root 的系統套件（php / nginx / git / docker
+                            〔含 compose v2〕/ mysql-client / php-sqlite）。
+                            sudo 不可用時只印指令並回傳 3，不會替你輸入密碼
+    setup tools [名稱...]   免 root 安裝 composer / node〔含 npm〕/ ansible /
+                            trivy / gitleaks / semgrep 到 ~/.local（核對 SHA256）
+    setup deps              backend 的 composer install + npm ci + vite build，
+                            frontend 的 npm ci
+    setup env|dirs|guard    只做其中一項
+                            （artisan 不必安裝 —— 它是 backend/artisan）
   doctor            檢查工具鏈、Docker daemon、埠、子模組、執行位元
 
   dev up -d --build 起開發環境（bind mount + HMR + xdebug + phpMyAdmin）
   dev down [-v]     關閉（-v 連資料庫一起刪，會要求確認）
   dev ps|logs|sh|restart|build|config|dc
+                    （這 9 個動作也可以不加模式直接打：cx ps / cx config …，
+                     沿用 --mode，預設 dev）
   art <參數>        php artisan（容器或原生，看 --runner）
   php <參數>        直接跑 php（-v / -m / -r / 一次性腳本）
   composer <參數>   composer（在 backend/；容器或原生）
@@ -47,7 +53,8 @@ cx — pm 專案統一入口
   scan sca          ③ SCA      Trivy + composer audit + npm audit
   scan dast         ④ DAST     OWASP ZAP（DetectionOnly 與 On 各跑一次做對照）
   scan secrets      gitleaks 全歷史祕密掃描
-  scan all          依序執行     --runner docker|native|auto
+  scan all          ①②③④ 再加 secrets，**全部跑完**再回傳最嚴重的那個退出碼
+                    （不是遇到第一個 finding 就停）  --runner docker|native|auto
   sonar up|down|status|token|url|logs|wait
                     常駐 SonarQube（獨立 project pm_devsecops）
 
@@ -71,6 +78,8 @@ cx — pm 專案統一入口
   git pull                    三個 repo 一起更新（主庫先、子模組後，只快轉）
   git sync                    子模組 checkout 追蹤分支
   git commit [-m <訊息>]      提交（子模組先、主庫 gitlink 後）
+  git save [-m <訊息>]        commit 的別名
+  git scan-secrets            推送前的祕密掃描（gitleaks，push 會自動先跑）
   git branch list|new|switch|delete <名稱>
   git remote-init             用 gh 建立 Information-Study 的三個 public repo
   git push                    推送（白名單 + 祕密掃描 + 子模組順序）

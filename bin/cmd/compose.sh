@@ -52,7 +52,6 @@ _compose_prepare_dirs() {
         "$CX_ROOT/reports/quality" \
         "$CX_ROOT/reports/sast" \
         "$CX_ROOT/reports/sca" \
-        "$CX_ROOT/reports/dast/no-waf" \
         "$CX_ROOT/reports/dast/detect" \
         "$CX_ROOT/reports/dast/blocking" \
         "$CX_ROOT/reports/dast/compare" \

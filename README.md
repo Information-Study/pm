@@ -10,7 +10,7 @@
 git clone --recurse-submodules https://github.com/Information-Study/pm.git
 cd pm
 ./cx setup                 # .env、目錄、push guard，並盤點缺少的工具
-./cx setup tools           # 免 root 安裝 composer / node / ansible / trivy / gitleaks / semgrep
+./cx setup native          # 整套原生工具鏈：system(root) + tools(~/.local) + 專案相依
 ./cx dev up -d --build     # 起開發環境
 ```
 
@@ -39,11 +39,18 @@ cd pm
 每一個功能都有**原生工具鏈**的路徑，用 `--runner` 強制：
 
 ```bash
+./cx setup native                 # 一行把原生那一邊全部裝起來
 ./cx --runner native composer install
 ./cx --runner native npm ci
 ./cx --runner native test front
-./cx setup system                 # 需要 root 的系統套件（會先列指令再問你）
 ```
+
+`cx setup native` = `setup system`（需要 root：php / nginx / git / docker /
+mysql-client / php-sqlite）+ `setup tools`（免 root，裝到 `~/.local`：composer /
+node〔含 npm〕/ ansible / trivy / gitleaks / semgrep）+ `setup deps`（vendor 與
+node_modules）。**cx 絕不偷偷跑 sudo** —— sudo 不可用時它只把 `apt-get` 那一行
+印出來讓你自己貼，然後繼續裝免 root 的那一半。
+（`artisan` 不必安裝，它是 `backend/artisan`。）
 
 被指定的那一邊不可用時會**硬失敗**，不會偷偷換另一邊跑。
 兩條路各自需要什麼、產出為何不可互換，見 [`docs/runners.md`](docs/runners.md)。
@@ -96,7 +103,7 @@ phpMyAdmin。`vendor/` 與 `node_modules/` 用具名 volume 蓋回去，所以�
 ./cx scan sca                 # ③ SCA      Trivy + composer audit + npm audit
 ./cx scan dast                # ④ DAST     ZAP（DetectionOnly 與 On 各跑一次做對照）
 ./cx scan secrets             # gitleaks 全歷史祕密掃描
-./cx scan all                 # 依序全跑
+./cx scan all                 # 上面五道全部跑完，回傳最嚴重的退出碼（不是遇到問題就停）
 
 ./cx sonar up                 # 常駐 SonarQube（獨立 project，dev/test 共用）
 ./cx sonar token              # 產生分析 token
@@ -104,6 +111,34 @@ phpMyAdmin。`vendor/` 與 `node_modules/` 用具名 volume 蓋回去，所以�
 ./cx verify                   # 跑驗收清單，產出 reports/verify/<時間戳>.md
 ./cx verify all               # 含執行期與 Ansible
 ```
+
+#### 報告在哪裡、怎麼看
+
+所有輸出都落在 `reports/`（目錄進版控、內容不進，可以安心刪掉重建）。
+
+| 指令 | 報告 |
+|---|---|
+| `cx verify` | `reports/verify/<時間戳>.md` —— PASS / FAIL / SKIP 逐項表 |
+| `cx scan code` | `reports/quality/larastan.json`（**JSONL**，一行一個物件） |
+| `cx scan sast` | `reports/sast/semgrep.sarif` |
+| `cx scan sca` | `reports/sca/{trivy-fs,composer-audit,npm-audit}.json` |
+| `cx scan secrets` | `reports/secrets/gitleaks-{pm,backend,frontend}.json` |
+| `cx scan dast` | `reports/dast/{detect,blocking}/report.{json,html}` + `compare/` |
+| `cx test coverage` | `reports/quality/{coverage-backend,junit-backend}.xml` |
+
+```bash
+cx verify                        # 最後一行就是報告路徑
+ls -t reports/verify | head -3   # 最近三份
+```
+
+`cx test back` / `front` 的結果只印在終端機，不產生檔案。
+**`SKIP` 不等於 `PASS`** —— 它的意思是「這次沒辦法驗」。
+CI 用退出碼判斷比讀報告可靠：`20`/`21`/`22`/`23` 各代表一道防線有 finding，
+`3` 是環境問題（工具沒裝、Docker 不可用），不是掃描結果。
+
+每個檔案要怎麼讀（含免安裝的 `python3` 一行指令）、DAST 的兩份報告為什麼要一起看、
+ZAP 的退出碼為什麼不是「0 成功 / 非 0 失敗」—— 全部在
+[`docs/reports.md`](docs/reports.md)。
 
 **test 模式的特性**：原始碼烘進映像（沒有任何原始碼 bind mount，掃到的就是要上線的東西）、
 對外入口是 WAF（`ZAP → waf:18081 → edge → app/nuxt`）、
@@ -242,6 +277,35 @@ pm/
 ├── backend/                 submodule → Information-Study/pm-backend
 └── frontend/                submodule → Information-Study/pm-frontend
 ```
+
+---
+
+## 拿這個 repo 當新專案的範本
+
+整套工具鏈與「pm」這個名字是**解耦**的：改 `.cxroot` 一個檔，compose 的
+project 前綴、SonarQube 的 project 與網路、push guard 的白名單、
+`cx fresh` 的確認字串就全部跟著換。
+
+```bash
+rsync -a --exclude .git --exclude node_modules --exclude vendor \
+        --exclude .cx --exclude reports --exclude .env \
+        --exclude ansible/collections \
+        --exclude 'ansible/inventory/hosts.yml' \
+        --exclude 'ansible/inventory/group_vars/all/vault.yml' \
+        pm/ newproj/
+
+cd newproj
+$EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
+./cx setup                 # .env（新密碼 + 新的 PROJECT_SLUG）、目錄、guard
+./cx setup native          # 整套原生工具鏈 + 專案相依
+./cx doctor && ./cx dev up -d --build && ./cx verify
+```
+
+不改 `docker/env/*.env` 的埠段的話，新專案沒辦法跟本專案**同時**跑
+（`-p` 隔離容器與網路，但不隔離 host 埠）。
+
+哪些目錄可以刪掉重建、哪些不可重建、換名字還要手動改什麼，見
+[`docs/template.md`](docs/template.md)。
 
 ---
 

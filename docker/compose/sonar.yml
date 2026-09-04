@@ -1,7 +1,7 @@
 # ── SonarQube 常駐 stack ────────────────────────────────────────────────────
-# 獨立 compose project（cx sonar up 用 -p pm_devsecops），dev / test 共用。
-# 網路名明寫 pm_devsecops_net，因為 sonar-scanner 是短暫容器，
-# 要用 `docker run --network pm_devsecops_net` 加進來才解析得到 http://sonarqube:9000
+# 獨立 compose project（cx sonar up 用 -p <專案>_devsecops），dev / test 共用。
+# 網路名明寫 <專案>_devsecops_net，因為 sonar-scanner 是短暫容器，
+# 要用 `docker run --network <專案>_devsecops_net` 加進來才解析得到 http://sonarqube:9000
 #（傳 localhost 進容器指的是容器自己）。
 
 services:
@@ -65,4 +65,6 @@ volumes:
 
 networks:
   devsecops_net:
-    name: pm_devsecops_net
+    # 前綴走 PROJECT_SLUG（cx setup env 從 .cxroot 填入），不寫死 pm ——
+    # 網路名是全 daemon 唯一的，寫死會讓改名後的新專案跟本專案相撞。
+    name: ${PROJECT_SLUG:-pm}_devsecops_net

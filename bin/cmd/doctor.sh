@@ -98,7 +98,7 @@ cmd_doctor_main() {
     local r gd n=0 tot=0
     while read -r r; do
         tot=$((tot+1)); gd=$(git -C "$r" rev-parse --absolute-git-dir 2>/dev/null) || continue
-        [[ -x $gd/hooks/pre-push ]] && grep -q Information-Study "$gd/hooks/pre-push" 2>/dev/null && n=$((n+1))
+        [[ -x $gd/hooks/pre-push ]] && grep -q "$CX_GUARD_MARK" "$gd/hooks/pre-push" 2>/dev/null && n=$((n+1))
     done < <(cx_guard_repos)
     (( n == tot )) && _ok "push guard" "$n/$tot 個 repo" || _fl "push guard" "只有 $n/$tot —— 執行 cx git guard install"
 
@@ -122,15 +122,36 @@ cmd_doctor_main() {
         _wr "docker runner" "daemon 不可用 —— cx --runner docker 會硬失敗"
     fi
 
+    # ⚠ WSL：PATH 上找得到的 npm 可能是 Windows 那支（/mnt/c/Program Files/nodejs/npm）。
+    # 它在 WSL 的專案目錄裡跑會 CMD.EXE UNC 錯誤，而且 npm ci 會「成功」地留下
+    # 一棵殘缺的 node_modules —— 錯誤要到 vite build 才炸，看起來像前端壞了。
+    # 2026-09-04 的刪除重建實測就是這樣失敗的，所以這裡要單獨點名。
+    local t winp interop=()
+    for t in php composer npm node; do
+        winp=$(cx_win_interop_path "$t" 2>/dev/null) && interop+=("$t=$winp")
+    done
+    if (( ${#interop[@]} )); then
+        _fl "PATH 上有 Windows 的工具" "${interop[*]}"
+        cx_dim "  這些不能用來建置 WSL 裡的專案。把 Linux 版排到前面："
+        cx_dim '    export PATH="$HOME/.local/bin:$PATH"'
+    fi
+
     # 原生路徑逐項列：缺哪一個就只有哪一個動詞不能用，其他照常。
     local nt_missing=()
-    cx_have php      || nt_missing+=(php)
-    cx_have composer || nt_missing+=(composer)
-    cx_have npm      || nt_missing+=(npm)
+    cx_have_native php      || nt_missing+=(php)
+    cx_have_native composer || nt_missing+=(composer)
+    cx_have_native npm      || nt_missing+=(npm)
     if (( ${#nt_missing[@]} == 0 )); then
         _ok "native runner" "php / composer / npm 齊全"
     else
         _wr "native runner" "缺 ${nt_missing[*]} —— 相關動詞的 --runner native 會硬失敗"
+        # 東西裝好了但 PATH 看不到，跟真的沒裝，處置完全不同。
+        local lb="${CX_LOCAL_BIN:-$HOME/.local/bin}" have_but_hidden=()
+        for t in "${nt_missing[@]}"; do [[ -e $lb/$t ]] && have_but_hidden+=("$t"); done
+        if (( ${#have_but_hidden[@]} )); then
+            _fl "PATH" "${have_but_hidden[*]} 已裝在 $lb，但不在 PATH 上"
+            cx_dim '  export PATH="$HOME/.local/bin:$PATH"（~/.profile 只在 login shell 生效）'
+        fi
     fi
 
     # 原生的 vendor / node_modules：容器路徑不需要它們（映像自帶），
@@ -138,9 +159,15 @@ cmd_doctor_main() {
     [[ -f $CX_ROOT/backend/vendor/autoload.php ]] \
         && _ok "native backend/vendor" "已安裝" \
         || _wr "native backend/vendor" "缺（cx --runner native composer install）"
-    [[ -d $CX_ROOT/frontend/node_modules ]] \
-        && _ok "native frontend/node_modules" "已安裝" \
-        || _wr "native frontend/node_modules" "缺（cx --runner native npm ci）"
+    # 只檢查目錄存在是不夠的：Windows npm 跑出來的殘骸也是一個「存在的目錄」
+    # （實測 24 KB，裡面沒有 nuxt）。要檢查真正的進入點在不在。
+    if [[ -d $CX_ROOT/frontend/node_modules/nuxt ]]; then
+        _ok "native frontend/node_modules" "已安裝"
+    elif [[ -d $CX_ROOT/frontend/node_modules ]]; then
+        _fl "native frontend/node_modules" "目錄在但沒有 nuxt —— 殘缺的安裝，重跑 cx setup deps"
+    else
+        _wr "native frontend/node_modules" "缺（cx --runner native npm ci）"
+    fi
 
     # 原生的 cx test back 走 sqlite :memory:，缺了 pdo_sqlite 的錯誤是
     # "could not find driver"，完全不會提到套件名。
@@ -206,16 +233,39 @@ cmd_doctor_main() {
     # dispatcher 的 CX_CMD_FILE_OF 曾經把 8 個動詞指到一個不存在的
     # bin/cmd/compose.sh，於是 cx up 直接「未知的指令」。
     # 這裡實際檢查每個對外動詞都找得到實作檔。
-    local v file missing_verbs=()
+    # 清單要涵蓋每一個「有自己的實作檔」的動詞。code / pma / php 曾經漏掉，
+    # 於是這一項在它們不存在時仍然報 ✔ —— 檢查了個寂寞。
+    # 數量不寫死：加動詞時忘了改數字，訊息就會開始說謊。
+    local v file missing_verbs=() nverbs=0
     for v in help doctor setup lint scan verify git fresh tui install art composer npm \
-             db test sonar deploy compose; do
+             db test sonar deploy compose code pma; do
+        nverbs=$((nverbs + 1))
         file="$CX_ROOT/bin/cmd/${v}.sh"
         [[ -f $file ]] || missing_verbs+=("$v")
     done
+
+    # 別名動詞沒有自己的檔，要驗的是「dispatcher 的對照表指得到實作函式」。
+    # cx config 就曾經因為 CX_CMD_FILE_OF 漏了一筆而變成「未知的指令」，
+    # 但 cx dev config 是好的 —— 只檢查檔案存在抓不到這種洞。
+    # 只看 declare -A CX_CMD_FILE_OF=( … ) 之間，而且砍掉註解 ——
+    # 直接 grep 整個 cx 會連「被註解掉的那一筆」都算數，等於驗不到東西。
+    local table
+    table=$(sed -n '/declare -A CX_CMD_FILE_OF=(/,/^)/p' "$CX_ROOT/cx" | sed 's/#.*//')
+
+    local a
+    for a in php:art config:compose up:compose down:compose restart:compose \
+             ps:compose logs:compose sh:compose build:compose dc:compose \
+             dev:compose prod:compose uninstall:install; do
+        nverbs=$((nverbs + 1))
+        [[ -f $CX_ROOT/bin/cmd/${a#*:}.sh ]] || { missing_verbs+=("${a%%:*}"); continue; }
+        grep -qE "\[${a%%:*}\]=${a#*:}([[:space:]]|\)|$)" <<< "$table" \
+            || missing_verbs+=("${a%%:*}（cx 的 CX_CMD_FILE_OF 沒有這一筆）")
+    done
+
     if (( ${#missing_verbs[@]} )); then
         _fl "動詞實作檔" "缺少：${missing_verbs[*]}"
     else
-        _ok "動詞實作檔" "18 個全部存在"
+        _ok "動詞實作檔" "$nverbs 個全部存在"
     fi
 
     cx_step "結果"

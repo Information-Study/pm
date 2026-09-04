@@ -75,6 +75,46 @@ cx_run() {
 cx_q() { local a out=(); for a in "$@"; do printf -v a '%q' "$a"; out+=("$a"); done; printf '%s' "${out[*]}"; }
 
 cx_have() { command -v "$1" >/dev/null 2>&1; }
+
+# ── WSL interop：PATH 上的 Windows 執行檔不是「原生工具鏈」 ───────────────────
+#
+# WSL 預設把 Windows 的 PATH 併進來，所以 /mnt/c/Program Files/nodejs/npm 會被
+# command -v 找到。裝在 ~/.local/bin 的 Linux node 一旦不在 PATH 上（例如
+# ~/.profile 沒被 source 的非登入 shell），npm 就會**靜默**解析到 Windows 那支。
+#
+# 那支不是「比較舊的 npm」，是根本不能用：Windows 的 CMD.EXE 不支援 UNC 路徑
+# 當工作目錄，在 WSL 的專案目錄裡跑會得到
+#
+#   '\\wsl.localhost\Ubuntu-26.04\home\sixtou\pm\backend'
+#   CMD.EXE 不支援 UNC 路徑作為目前工作目錄
+#   ✗ Build failed in 111ms
+#
+# 而 npm ci 會「成功」地留下一棵殘缺的 node_modules（實測 24 KB）。
+# 也就是說：不擋的話，錯誤會以「vite build 壞了」的樣子出現在完全無關的地方。
+#
+# 2026-09-04 實測就是這樣炸的 —— 所以原生路徑一律用 cx_have_native。
+cx_is_win_interop() {
+    local p=$1
+    [[ $p == /mnt/[a-z]/* ]] && return 0     # /mnt/c/... 的 Windows 磁碟
+    [[ ${p,,} == *.exe ]]    && return 0
+    return 1
+}
+
+# 跟 cx_have 一樣，但「解析到 Windows 執行檔」算沒有。
+# 只用在原生工具鏈的判斷上 —— cx pma 要開瀏覽器時反而**需要** explorer.exe，
+# 那裡仍然用 cx_have。
+cx_have_native() {
+    local p; p=$(command -v "$1" 2>/dev/null) || return 1
+    cx_is_win_interop "$p" && return 1
+    return 0
+}
+
+# 給錯誤訊息用：這個工具是不是「有，但有的是 Windows 那支」？
+cx_win_interop_path() {
+    local p; p=$(command -v "$1" 2>/dev/null) || return 1
+    cx_is_win_interop "$p" || return 1
+    printf '%s' "$p"
+}
 # 記憶化：一次 cx doctor 會問 4 次，daemon 掛在無回應的 TCP socket 上時
 # 每次都要等 timeout。command -v docker 不能拿來判斷（WSL 上 CLI 在 PATH 但 daemon 不通）。
 cx_docker_ok() {
@@ -135,16 +175,31 @@ cx_runner_need_docker() {
 cx_runner_need_native() {
     local what=$1; shift
     local t missing=()
-    for t in "$@"; do cx_have "$t" || missing+=("$t"); done
+    for t in "$@"; do cx_have_native "$t" || missing+=("$t"); done
     (( ${#missing[@]} == 0 )) && return 0
     cx_error "$what 的原生路徑缺少：${missing[*]}"
+    # 「找得到但那是 Windows 那支」要單獨講清楚，否則使用者會盯著
+    # 一個 which 找得到的 npm 看「明明就有為什麼說缺」。
+    local winp
+    for t in "${missing[@]}"; do
+        if winp=$(cx_win_interop_path "$t"); then
+            cx_warn "  $t 在 PATH 上找得到，但那是 Windows 的：$winp"
+            cx_dim  "    WSL 的專案目錄是 UNC 路徑，Windows 執行檔在這裡跑會壞（見 troubleshooting.md）"
+        fi
+    done
+    cx_dim "  PATH 有沒有 ~/.local/bin？ echo \$PATH | tr : '\\n' | grep .local/bin"
     for t in "${missing[@]}"; do
         case $t in
             composer) cx_dim "  composer → cx setup tools composer" ;;
             node|npm) cx_dim "  $t → cx setup tools node" ;;
-            php)      cx_dim "  php → 系統套件（sudo apt install php8.5-cli），cx 不代裝需要 root 的東西" ;;
+            # php / mysql 需要 root，所以走 setup system 而不是 setup tools。
+            # cx 仍然不會偷偷 sudo：sudo 不可用時 setup system 只把指令印出來。
+            php)      cx_dim "  php → cx setup system php（需要 root；sudo 不可用時只印指令）" ;;
+            nginx)    cx_dim "  nginx → cx setup system nginx" ;;
+            git)      cx_dim "  git → cx setup system git" ;;
+            docker)   cx_dim "  docker → cx setup system docker" ;;
             mysql|mysqldump)
-                      cx_dim "  $t → 系統套件（sudo apt install mysql-client）" ;;
+                      cx_dim "  $t → cx setup system mysql-client" ;;
             *)        cx_dim "  $t → 請自行安裝" ;;
         esac
     done
@@ -182,10 +237,32 @@ cx_docker_need() {
     exit "$EX_PRECOND"
 }
 
+# ── 專案識別 ─────────────────────────────────────────────────────────────────
+# compose project 前綴、網路名、映像前綴全部從這裡長出來。
+#
+# ⚠ 不可以寫死 'pm'。這個 repo 的用途之一是「當成新專案的範本」，
+# 而 compose 的 -p 決定容器／網路／volume 的命名空間：
+# 寫死的話，複製出去改名的專案仍然會建出 pm_dev / pm_dev_net，
+# 於是它跟本專案在同一台機器上會互相搶容器名與網路 ——
+# 症狀是新專案 up 之後，舊專案的容器被「接管」或直接衝突。
+#
+# .cxroot 在 cx:99 被 source，時間點在 lib 載入之後、動詞執行之前，
+# 所以這個函式只能在**執行期**呼叫，不能拿去做頂層變數賦值。
+cx_project() { printf '%s' "${CX_PROJECT_NAME:-pm}"; }
+
+# compose project 名（-p 的值）。
+cx_project_for() { printf '%s_%s' "$(cx_project)" "${1:?mode}"; }
+
+# SonarQube 那組是獨立的 compose project（生命週期跟三個模式無關），
+# 但一樣要跟著專案名走，否則兩個專案會共用同一台 SonarQube 與同一個網路。
+# scan.sh 需要網路名去 docker run 一次性的 sonar-scanner，所以放在共用層。
+cx_sonar_project() { printf '%s_devsecops' "$(cx_project)"; }
+cx_sonar_net()     { printf '%s_devsecops_net' "$(cx_project)"; }
+
 # ── compose 引數組裝 ──────────────────────────────────────────────────────────
 # claude.md §4 的四個陷阱全部在這裡處理掉，所有動詞都必須走這條路：
 #   1) --project-directory "$CX_ROOT"：相對路徑以「第一個 -f 的目錄」為基準，不是 cwd。
-#   2) -p pm_<mode>：隔離容器／網路／volume（但**不隔離 host 埠**，埠靠 docker/env/<mode>.env）。
+#   2) -p <專案>_<mode>：隔離容器／網路／volume（但**不隔離 host 埠**，埠靠 docker/env/<mode>.env）。
 #   3) --env-file 顯式缺檔是硬錯誤（隱式 ./.env 才會靜默略過）→ 只加存在的檔。
 #   4) 網路名在 compose 裡明寫 name:，否則會被命名空間化成 <project>_<key>。
 CX_DC_ARGS=()
@@ -200,7 +277,7 @@ cx_compose_init() {
     [[ -f $base    ]] || cx_die "$EX_PRECOND" "缺少 base compose：$base"
     [[ -f $overlay ]] || cx_die "$EX_PRECOND" "缺少 overlay compose：$overlay"
 
-    CX_DC_ARGS=(--project-directory "$CX_ROOT" -p "pm_${mode}" -f "$base" -f "$overlay")
+    CX_DC_ARGS=(--project-directory "$CX_ROOT" -p "$(cx_project_for "$mode")" -f "$base" -f "$overlay")
     local f
     # 後面的 --env-file 優先：模式專屬值（埠、target）要能蓋掉根 .env 的通用值。
     for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do
@@ -249,7 +326,7 @@ cx_assert_mount_sources() {
 # 用 config --format json 而非 grep yaml：合併後的結果才是真相。
 cx_compose_mount_sources() {
     local mode=${1:-${CX_DC_MODE:-dev}} f
-    local -a a=(--project-directory "$CX_ROOT" -p "pm_${mode}"
+    local -a a=(--project-directory "$CX_ROOT" -p "$(cx_project_for "$mode")"
                 -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/docker/compose/${mode}.yml")
     for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do
         [[ -f $f ]] && a+=(--env-file "$f")

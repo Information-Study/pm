@@ -40,8 +40,8 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 
 | 動詞 | 狀態 | 備註 |
 |---|---|---|
-| `setup` | ✅ | env / dirs / guard / tools / deps |
-| `doctor` | ✅ | 含 Phase 2 產出物與動詞完整性檢查 |
+| `setup` | ✅ | env / dirs / guard / **native** / system / tools / deps |
+| `doctor` | ✅ | 含 Phase 2 產出物與動詞完整性檢查（33 項，含 dispatcher 對照表） |
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
 | `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
@@ -57,6 +57,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `pma` | ✅ | 開 phpMyAdmin；只有 dev 有，埠從合併後的 compose 設定讀 |
 | `php` | ✅ | 直接跑 php（`cx art` 只涵蓋 artisan），兩條 runner 都支援 |
 | `setup system` | ✅ | 需要 root 的系統套件；有確認閘門，sudo 不可用時只印指令 |
+| `setup native` | ✅ | system → tools → deps 一次做完（2026-09-04 新增） |
 | `fresh` | ⚠ 部分 | 備份／驗證／確認閘門／刪除都可用；**重建階段與 `--rollback` 仍未實作** |
 
 ---
@@ -82,20 +83,77 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 兩個 ⚠ 都是**系統套件、需要 root**，`cx setup system` 會列出指令。
 詳見 [`runners.md`](runners.md)。
 
+## 範本化：專案名與程式碼解耦（2026-09-04）
+
+這個 repo 要當成新專案的起點，所以「pm」這個名字不可以寫死在任何會造成**衝突**的地方。
+以下原本是硬編碼，現在全部從 `.cxroot` 的 `CX_PROJECT_NAME` 長出來：
+
+| 原本寫死 | 現在 | 寫死會怎樣 |
+|---|---|---|
+| `-p pm_<mode>` | `cx_project_for()` | 改名的新專案仍建出 `pm_dev`，跟本專案搶容器／volume |
+| `pm_<mode>_net`（compose） | `${PROJECT_SLUG}_<mode>_net` | 網路名是全 daemon 唯一的，直接相撞 |
+| `pm_devsecops` / `pm_devsecops_net` | `cx_sonar_project()` / `cx_sonar_net()` | 兩個專案共用同一台 SonarQube |
+| `pm_test_net`（ZAP 用） | `$(cx_project)_test_net` | DAST 掃到別的專案的 WAF |
+| `Information-Study/pm(-backend|-frontend)` 白名單 | `cx_guard_allow_re()` | 新專案的 hook **拒絕它自己的合法遠端** |
+| `DESTROY pm`（fresh 確認字串） | `DESTROY $(cx_project)` | 確認字串跟專案對不上 |
+| `.env` 的 `PROJECT_SLUG` / `IMAGE_PREFIX` | `cx setup env` 從 `.cxroot` 填 | 映像 tag 與網路名還是 pm |
+
+**實測**：用假的 `.cxroot`（`shop` / `Acme-Inc` / `shop-api` / `shop-web`）產生：
+
+```
+compose -p : shop_dev
+push 白名單: ^(https://github\.com/|git@github\.com:)Acme-Inc/(shop|shop-api|shop-web)(\.git)?/?$
+```
+
+該 hook 接受 `Acme-Inc/{shop,shop-api,shop-web}`、拒絕 `Information-Study/pm`、
+仍然拒絕永久黑名單的 `team-of-P/*`。
+另外在一個「只有 `.cxroot` + `.env.example` + `bin/`」的空目錄上實測
+`cx --root <空目錄> setup dirs` 與 `setup env`：11 個葉目錄與 `reports/.gitignore`
+全部從無到有建起來，`.env` 的 `PROJECT_SLUG=shop`、`IMAGE_PREFIX=shop`、
+密碼 32 字元、權限 0600、重跑不覆蓋。
+
+> ⚠ `.cxroot` 改完之後要重跑 `cx setup guard` —— hook 是產生出來的檔案，
+> 白名單在安裝當下就被烤進去。
+
+詳見 [`template.md`](template.md)。
+
+---
+
 ## 刪除與重建（2026-09-04 實測）
 
 把 `backend/vendor`、`frontend/node_modules`、`backend/node_modules`、
-`reports/`、`.cx/`、`ansible/collections/` 全部 `rm -rf` 之後：
+`reports/`、`.cx/`、`ansible/collections/` 全部 `rm -rf` 之後（共 1.9 GB）：
 
 | 步驟 | 結果 |
 |---|---|
-| `cx help` / `cx doctor` / `cx git status` | 仍然 rc=0（cx 本身不依賴任何產出物） |
-| `cx setup` | 重建 reports/ .cx/ collections/，**不覆蓋 `.env`** |
-| `cx setup deps` | 28 秒重建三棵相依樹（54 / 464 / 77 項） |
+| `cx help` / `cx git status` / `cx code` / `cx pma --url` | rc=0（cx 本身不依賴任何產出物） |
+| `cx doctor` | rc=3 —— 正確，它就是該報缺東西 |
+| `cx setup` | 重建 reports/ 與 .cx/，**不覆蓋 `.env`** |
+| `cx setup deps` | 重建三棵相依樹（204 + 89 + 278 MB） |
+| `cx deploy galaxy` | 重建 `ansible/collections`（38 MB） |
 | `cx dev restart nuxt` | 容器當時在跑，node_modules 被抽掉會讓 dev server 壞掉，要重啟 |
-| 之後 | `cx doctor` 0 失敗、`cx verify` 39 通過 0 失敗、17 個容器仍在跑、端點全 200 |
+| 之後 | `cx doctor` 32/0/0、`cx verify` 39 通過 0 失敗、17 個容器仍在跑、端點全 200 |
+| `reports/` | `.gitignore` 與 `README.md` 都由 `cx setup dirs` 自動補回，之後 `git status reports/` 是空的 |
 
-詳見 [`template.md`](template.md)。
+### 第一輪失敗，暴露三個缺陷（都已修）
+
+第一輪跑的那個 shell 沒有把 `~/.local/bin` 放進 PATH（`~/.profile` 只在
+login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部「不存在」，
+但 `npm` **存在** —— WSL 把 Windows 的 PATH 併了進來，抓到
+`/mnt/c/Program Files/nodejs/npm`。那支在 WSL 專案目錄裡跑會
+`CMD.EXE 不支援 UNC 路徑`，而且 `npm ci` 會「成功」地留下一棵 24 KB 的殘骸。
+
+| 缺陷 | 修法 |
+|---|---|
+| `cx_have` 把 Windows interop 執行檔當成原生工具鏈 | 新增 `cx_have_native`／`cx_win_interop_path`：解析到 `/mnt/<磁碟>/` 或 `.exe` 一律不算。`cx pma` 開瀏覽器仍用 `cx_have`（那裡確實需要 `explorer.exe`） |
+| `cx setup deps` 拿 Windows npm 去建置，且對已裝但 PATH 看不到的工具說「請安裝」 | 改用 `cx_have_native`，並區分「沒裝」與「裝在 `~/.local/bin` 但 PATH 看不到」 |
+| `cx doctor` 只檢查 `frontend/node_modules` 目錄存在 | 改檢查 `node_modules/nuxt`；另外新增「PATH 上有 Windows 的工具」與「已裝但不在 PATH」兩項檢查 |
+
+教訓：真正的原因（PATH）跟看到的症狀（`vite build` 失敗）隔了三層，
+中間每一層都「成功」。這正是 `--runner` 硬失敗原則要防的同一類問題 ——
+只是這次漏在 `cx_have` 這個更底層的地方。
+
+詳見 [`template.md`](template.md) 與 [`troubleshooting.md`](troubleshooting.md)。
 
 ## 四道防線
 

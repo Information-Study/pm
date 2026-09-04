@@ -9,20 +9,26 @@
 
 | 防線 | 指令 | 工具 | 閘門 | 退出碼 | 報告 |
 |---|---|---|---|---|---|
-| ① Quality | `cx scan code` | Larastan (level max) + SonarQube | 任一 finding | 20 | `reports/quality/` |
+| ① Quality | `cx scan code` | Larastan (level 5) + SonarQube | 任一 finding | 20 | `reports/quality/larastan.json` |
 | ② SAST | `cx scan sast` | Semgrep | **只有 `error` 等級** | 21 | `reports/sast/` |
 | ③ SCA | `cx scan sca` | Trivy + `composer audit` + `npm audit` | 任一 finding | 22 | `reports/sca/` |
 | ④ DAST | `cx scan dast` | OWASP ZAP baseline | High risk alert | 23 | `reports/dast/` |
-| 祕密 | `cx scan secrets` | gitleaks（全歷史） | 任一 finding | 1 | `reports/secrets/` |
+| 祕密 | `cx scan secrets` | gitleaks（全歷史） | 任一 finding | **22**（與 ③ 共用） | `reports/secrets/gitleaks-*.json` |
 
 ```bash
-cx scan all                      # 依序，任一失敗即停
+cx scan all                      # ①②③④ 再加 secrets，全部跑完
 cx scan all --runner native      # 用 ~/.local 的二進位
 cx scan all --runner docker      # 用容器
 ```
 
-`--runner auto`（預設）先試 native、失敗再退回 docker。
-ZAP 只有 docker 一條路（要 Java）。
+> `all` **不是**「任一失敗即停」。五道全部跑完，最後回傳其中**最嚴重**的退出碼。
+> 停在第一道會讓後面幾道永遠沒機會跑，而掃描的價值就在於一次看到全部問題。
+
+`--runner auto`（預設）**有可用的 Docker daemon 就走容器**，沒有才走原生
+（`cx_runner()` 在 `bin/lib/common.sh`）。ZAP 只有 docker 一條路（要 Java）。
+
+被 `--runner` 明確指定的那一邊不可用時是**硬失敗**，不會偷偷換另一邊 ——
+否則「原生路徑可以獨立運作」永遠無法被驗證。
 
 ---
 
@@ -48,12 +54,18 @@ esac
 
 ### Larastan
 
-`level: max`，設定在 `backend/phpstan.neon`。
+`level: 5`，設定在 `backend/phpstan.neon.dist`（另有 `checkModelProperties: true`）。
+第 5 級的意思是「型別完整但不強制所有 array 泛型」，新專案可以逐步往上提。
+
+報告 `reports/quality/larastan.json` 是 **JSONL**（一行一個 JSON 物件），
+不是單一 JSON —— phpstan 有 note 要說時會多吐一行 `{"tool":…,"raw":[…]}`。
+用 `json.load(整個檔)` 讀會 JSONDecodeError。
 
 ### SonarQube
 
-`cx sonar up` 起一個常駐的 SonarQube（獨立 compose project `pm_sonar`，
-不干擾三個模式）。
+`cx sonar up` 起一個常駐的 SonarQube（獨立 compose project `<專案>_devsecops`，
+本專案是 `pm_devsecops`；網路 `pm_devsecops_net`，不干擾三個模式）。
+前綴跟著 `.cxroot` 的 `CX_PROJECT_NAME` 走，見 `bin/lib/common.sh` 的 `cx_sonar_project()`。
 
 token 從 `.cx/sonar-token` 讀（mode 0600）。
 **不用 `${SONAR_TOKEN:?}`** —— 在 `set -u` 之下，`:?` 會直接讓整個 shell 結束，
@@ -249,5 +261,5 @@ cx scan dast             # 最慢，放最後
 cx test down -v
 ```
 
-`cx scan all` 已經把前四項串起來（任一失敗即停）。
+`cx scan all` 已經把前四項加上 secrets 串起來（全部跑完，回傳最嚴重的碼）。
 分開寫的好處是 CI 上每一步各自一個 job，看得出是哪一道防線紅的。

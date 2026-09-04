@@ -73,6 +73,96 @@ cx --root /path/to/pm doctor
 
 ---
 
+### `cx setup deps` 說「沒有 composer」，但 `which composer` 明明找得到
+
+`~/.local/bin` 不在**這個 shell** 的 PATH 上。
+
+`~/.profile` 裡確實有把它加進 PATH 的那段，但 `~/.profile` **只在 login shell 生效**。
+從 Windows Terminal、VS Code 的終端機、或某些 `wsl.exe` 呼叫進來的 bash 是
+非 login shell，它讀 `~/.bashrc` 而不是 `~/.profile`。
+
+於是同一台機器上：
+
+```
+$ bash -lc 'command -v composer'      # login shell
+/home/sixtou/.local/bin/composer
+$ bash -c  'command -v composer'      # 非 login shell
+（沒有輸出）
+```
+
+```bash
+# 這次先生效
+export PATH="$HOME/.local/bin:$PATH"
+
+# 永久生效（非 login shell 也吃得到）
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+# 確認
+echo $PATH | tr : '\n' | grep '\.local/bin'
+```
+
+`cx doctor` 現在會直接點名這種情況：
+
+```
+✘ PATH    composer npm 已裝在 /home/sixtou/.local/bin，但不在 PATH 上
+```
+
+它跟「真的沒裝」是不同的處置 —— 照著「請跑 cx setup tools」重裝一百次也不會好，
+因為東西從來就是裝好的。
+
+---
+
+### WSL：`npm ci` 成功了，但 `vite build` 說 `CMD.EXE 不支援 UNC 路徑`
+
+```
+'\\wsl.localhost\Ubuntu-26.04\home\sixtou\pm\backend'
+CMD.EXE 不支援 UNC 路徑作為目前工作目錄
+✗ Build failed in 111ms
+```
+
+**你跑到的是 Windows 的 npm。** WSL 預設把 Windows 的 PATH 併進來，所以
+`/mnt/c/Program Files/nodejs/npm` 一直都在 PATH 上。只要 Linux 版的
+`~/.local/bin/npm` 不在（見上一則），`npm` 就會靜默解析到 Windows 那支。
+
+它不是「比較舊的 npm」，是根本不能用在 WSL 的專案目錄上 ——
+Windows 的 CMD.EXE 沒辦法把 UNC 路徑當工作目錄。
+
+最惡劣的地方是 **`npm ci` 會「成功」**：它留下一棵殘缺的 `node_modules`
+（2026-09-04 實測是 24 KB，裡面根本沒有 `nuxt`），錯誤要到後面
+`vite build` 或 `nuxt` 啟動時才炸 —— 看起來像前端壞了，跟 npm 毫無關聯。
+
+```bash
+# 確認你跑的是哪一支
+command -v npm            # 出現 /mnt/c/... 就是中了
+npm --version             # Windows 那支的版號會跟 node --version 對不起來
+
+# 修
+export PATH="$HOME/.local/bin:$PATH"
+rm -rf frontend/node_modules backend/node_modules
+cx setup deps
+```
+
+`cx` 現在會擋下來，不會讓它跑：
+
+```
+✘ PATH 上的 npm 是 Windows 的：/mnt/c/Program Files/nodejs/npm
+    它不能用來建置 WSL 裡的專案：CMD.EXE 不支援 UNC 路徑當工作目錄，
+    症狀是 npm ci 留下一棵殘缺的 node_modules、然後 vite build 失敗。
+```
+
+判斷邏輯是 `cx_have_native`（`bin/lib/common.sh`）：解析到 `/mnt/<磁碟>/` 或
+`.exe` 結尾的一律不算數。`cx pma` 要開瀏覽器時反而**需要** `explorer.exe`，
+所以那裡用的仍然是 `cx_have`。
+
+`cx doctor` 也會單獨列出來：
+
+```
+✘ PATH 上有 Windows 的工具    npm=/mnt/c/Program Files/nodejs/npm
+✘ native frontend/node_modules  目錄在但沒有 nuxt —— 殘缺的安裝，重跑 cx setup deps
+```
+
+---
+
 ### Windows 上 python3 沒反應
 
 Git Bash 看到的 `python3` 是 Microsoft Store 的 stub，
@@ -620,7 +710,7 @@ preflight 會斷言。
 
 ### ZAP 掃出零個 alert，而且很快
 
-目標可能根本沒起來。`_scan_dast_probe` 會先確認目標會回應。
+目標可能根本沒起來。**cx 目前沒有前置可達性檢查**（`_scan_dast_probe` 是兩輪掃描之後才跑的 WAF 攔截率探針，不是這件事），所以這個症狀是真的會發生的。確認方法：`cx --mode test ps` 看 waf 在不在，再看 `reports/dast/detect/report.json` 有沒有掃到任何 URL。
 
 也檢查退出碼：3 以上是工具本身出錯，不是「沒有漏洞」。
 

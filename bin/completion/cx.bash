@@ -65,11 +65,19 @@ _cx_completion() {
     # 動詞的子指令與旗標
     case $verb in
         setup)
-            COMPREPLY=($(compgen -W "all env dirs guard tools deps --help -h" -- "$cur")) ;;
-        setup_tools_names)
-            COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep" -- "$cur")) ;;
-        system)
-            COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite" -- "$cur")) ;;
+            # 第一層是子指令；第二層起是工具名，而工具名分屬 tools / system 兩份清單。
+            # 舊版寫成 case $verb in setup_tools_names) / system) —— 那兩個分支永遠
+            # 匹配不到（$verb 是頂層動詞，不可能等於這些字串），等於沒有補全。
+            if [[ -z $sub ]]; then
+                COMPREPLY=($(compgen -W "all native env dirs guard tools system deps --help -h" -- "$cur"))
+            else
+                case $sub in
+                    tools)  COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep" -- "$cur")) ;;
+                    system) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite" -- "$cur")) ;;
+                    native) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite" -- "$cur")) ;;
+                esac
+            fi
+            ;;
         db)
             COMPREPLY=($(compgen -W "status shell wait migrate fresh seed dump restore admin --help -h" -- "$cur")) ;;
         sonar)

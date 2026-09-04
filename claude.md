@@ -499,7 +499,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 |---|---|---|---|---|
 | ① Quality | 型別錯誤、複雜度、重複、覆蓋率、歷史趨勢 | commit 前 / PR | Larastan level 達標 + Sonar Quality Gate PASSED | `reports/quality/` |
 | ② SAST | 注入、XSS、硬編憑證、不安全 API 用法 | commit 前 / PR | 無 ERROR 等級 finding | `reports/sast/` |
-| ③ SCA | 相依 CVE、憑證外洩、IaC 錯配、映像漏洞 | PR / 每日 | 無 HIGH/CRITICAL（除非在 `.trivyignore` 且有到期日） | `reports/sca/` |
+| ③ SCA | 相依 CVE、憑證外洩、IaC 錯配、映像漏洞 | PR / 每日 | 無 HIGH/CRITICAL（除非在 `docker/security/trivy/.trivyignore.yaml` 且有到期日） | `reports/sca/` |
 | ④ DAST | 執行期真實攻擊面 | 合併前 / 發版前 | 無 High risk alert | `reports/dast/` |
 
 ### 為什麼是這個順序
@@ -716,14 +716,29 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 
 ## 9. docs/
 
-| 文件 | 內容 | 狀態 |
-|---|---|---|
-| [`docs/progress.md`](docs/progress.md) | 逐項進度追蹤：Phase、`cx` 動詞、四道防線、仍未驗證的東西 | 隨時更新 |
-| [`docs/docker-verification.md`](docs/docker-verification.md) | Docker 三模式的驗收需求 **與實測結果** | ✅ 已回填（2026-09-04） |
+索引在 [`docs/README.md`](docs/README.md)。這裡是完整清單：
+
+| 文件 | 內容 |
+|---|---|
+| [`docs/README.md`](docs/README.md) | 索引與閱讀順序 |
+| [`docs/manual.md`](docs/manual.md) | 完整操作說明書，從零到三個階段 |
+| [`docs/cx-reference.md`](docs/cx-reference.md) | `cx` 每個動詞的語法、參數、行為、退出碼、陷阱 |
+| [`docs/docker-reference.md`](docs/docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF |
+| [`docs/ansible-reference.md`](docs/ansible-reference.md) | play 結構、12 個 role、vault、MySQL 五個坑 |
+| [`docs/runners.md`](docs/runners.md) | 兩條 runner：容器與原生各自獨立、產出為何不可互換 |
+| [`docs/devsecops.md`](docs/devsecops.md) | 四道防線的原理、閘門定義、退出碼、報告格式 |
+| [`docs/reports.md`](docs/reports.md) | 測試與掃描的報告怎麼看（含逐檔案的讀法） |
+| [`docs/template.md`](docs/template.md) | 拿這個 repo 當新專案範本：哪些能刪、換名字要改哪裡 |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症狀 → 原因 → 解法，全部是實際踩過的坑 |
+| [`docs/progress.md`](docs/progress.md) | 逐項進度追蹤與「仍未驗證什麼」 |
+| [`docs/docker-verification.md`](docs/docker-verification.md) | Phase 2 的驗收需求 **與實測結果**（2026-09-04 已回填） |
 
 `docs/docker-verification.md` 現在包含：15 項舊缺陷的驗收條件與結果、
 5 項阻斷級與 12 項重大項目的逐項結論、WAF 攔截率實測、
 以及 **20 條驗證過程才發現的新缺陷**（§7 追加發現）。
+
+`docs/` 是「怎麼用」，本文件是「為什麼這樣設計」。
+兩邊衝突時的權威順序見 `docs/README.md` 的「三份權威來源」。
 
 ---
 

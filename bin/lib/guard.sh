@@ -9,20 +9,60 @@
 # 真正擋得住 --no-verify 的是「不設定遠端」與「cx 不提供 push 動詞」。
 # 因此白名單檢查同時存在於 hook 與 cx git push 兩處。
 
-CX_ALLOWED_REMOTE_RE='^(https://github\.com/|git@github\.com:)Information-Study/pm(-backend|-frontend)?(\.git)?/?$'
+# ⚠ 白名單不可以寫死組織名與 repo 名。
+# 這個 repo 會被當成新專案的範本複製出去，寫死的話，新專案安裝的 hook
+# 會拒絕它**自己**的合法遠端 —— 而且錯誤訊息還會叫使用者去推 Information-Study/pm。
+# 單一來源是 .cxroot（cx:99 在動詞執行前 source，所以這裡讀得到）。
 CX_DENIED_REMOTE_RE='team-of-P/'
 
+# hook 檔裡的辨識標記。cx doctor 與 cx git guard status 靠它判斷「這是 cx 裝的」，
+# 不能拿組織名來認 —— 換了名字的專案會全部顯示成沒安裝。
+CX_GUARD_MARK='cx-push-guard'
+
+_cx_guard_re_escape() { printf '%s' "${1//./\\.}"; }
+
+cx_guard_repo_names() {
+    local main=${CX_REPO_MAIN:-${CX_PROJECT_NAME:-}}
+    [[ -n $main ]] || cx_die "$EX_PRECOND" ".cxroot 未定義 CX_REPO_MAIN／CX_PROJECT_NAME，無法組出推送白名單"
+    printf '%s\n%s\n%s\n' "$main" \
+        "${CX_REPO_BACKEND:-${main}-backend}" \
+        "${CX_REPO_FRONTEND:-${main}-frontend}"
+}
+
+cx_guard_allow_re() {
+    local org; org=$(_cx_guard_re_escape "${CX_GH_ORG:?.cxroot 未定義 CX_GH_ORG}")
+    local n alts=''
+    while read -r n; do alts+="|$(_cx_guard_re_escape "$n")"; done < <(cx_guard_repo_names)
+    printf '^(https://github\\.com/|git@github\\.com:)%s/(%s)(\\.git)?/?$' "$org" "${alts#|}"
+}
+
+# 拒絕訊息裡列出的合法目標。訊息跟著白名單走，否則會叫使用者去推別人的 repo。
+cx_guard_allow_list() {
+    local n
+    while read -r n; do printf '    github.com/%s/%s\n' "$CX_GH_ORG" "$n"; done < <(cx_guard_repo_names)
+}
+
+CX_ALLOWED_REMOTE_RE=$(cx_guard_allow_re)
+
 cx_guard_hook_body() {
-    cat <<'HOOK'
+    # 前段要「展開」（把白名單烤進 hook：hook 執行時沒有 cx，讀不到 .cxroot），
+    # 後段必須「不展開」（$remote_url 等要留到 hook 執行時才解析）。
+    # 所以是兩個 heredoc，不是一個。
+    cat <<HEAD
 #!/usr/bin/env bash
 # 由 cx git guard install 產生。請勿手動編輯。
+# $CX_GUARD_MARK —— 這一行是 cx doctor / cx git guard status 的辨識標記，請勿刪除。
+# 白名單來自 .cxroot；改了 .cxroot 之後要重跑 cx git guard install 才會生效。
 set -uo pipefail
 
-remote_name=${1:-}
-remote_url=${2:-}
+remote_name=\${1:-}
+remote_url=\${2:-}
 
-ALLOW_RE='^(https://github\.com/|git@github\.com:)Information-Study/pm(-backend|-frontend)?(\.git)?/?$'
-DENY_RE='team-of-P/'
+ALLOW_RE=$(printf '%q' "$(cx_guard_allow_re)")
+DENY_RE=$(printf '%q' "$CX_DENIED_REMOTE_RE")
+ALLOW_LIST=$(printf '%q' "$(cx_guard_allow_list)")
+HEAD
+    cat <<'HOOK'
 
 say() { printf '%s\n' "$*" >&2; }
 
@@ -49,9 +89,7 @@ if ! printf '%s' "$remote_url" | grep -qE "$ALLOW_RE"; then
     say "  URL   : $remote_url"
     say ''
     say '  唯一允許的推送目標：'
-    say '    github.com/Information-Study/pm'
-    say '    github.com/Information-Study/pm-backend'
-    say '    github.com/Information-Study/pm-frontend'
+    say "$ALLOW_LIST"
     say ''
     exit 1
 fi
@@ -109,7 +147,7 @@ cx_guard_status() {
         gd=$(git -C "$r" rev-parse --absolute-git-dir)
         hook="$gd/hooks/pre-push"
         printf '  %-40s ' "$(realpath --relative-to="$(dirname "$CX_ROOT")" "$r")"
-        if [[ -x $hook ]] && grep -q 'Information-Study' "$hook" 2>/dev/null; then
+        if [[ -x $hook ]] && grep -q "$CX_GUARD_MARK" "$hook" 2>/dev/null; then
             printf 'hook ✔  '
         else
             printf 'hook ✘  '

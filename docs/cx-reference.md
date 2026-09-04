@@ -14,12 +14,15 @@
 | `--root <path>` | 目錄 | 指定專案根目錄。不給的話向上搜尋 `.cxroot` |
 | `--mode <m>` | `dev` \| `test` \| `prod` | 預設 `dev`。決定 compose project 與 overlay |
 | `--ui <u>` | `whiptail` \| `dialog` \| `plain` | 預設 `auto`（有 tty 就用 whiptail） |
+| `--runner <r>` | `docker` \| `native` \| `auto` | 預設 `auto`（有 Docker daemon 就用容器）。強制的那一邊不可用時**硬失敗**，不會偷偷換邊 |
 | `--dry-run` | — | 只印出要執行的指令，不改變任何狀態 |
 | `--yes` / `-y` | — | 略過互動確認。**非互動環境專用** |
 | `-h` / `--help` | — | 等同 `cx help` |
 
-三個值都會被白名單驗證。`--mode` 會被拿去組 `-p pm_${CX_MODE}` 與
+`--mode`、`--ui`、`--runner` 三個值都會被白名單驗證（`--root` 另外驗路徑與 `.cxroot`）。
+`--mode` 會被拿去組 `-p <專案>_${CX_MODE}` 與
 `-f docker/compose/${CX_MODE}.yml`，不驗證等於留一個檔名／專案名注入面。
+`--runner` 不驗證的話，打錯的值會落進 `auto` 分支 —— 你以為在測原生，實際上跑的是容器。
 `--ui` 不驗證的話，非法值會讓 `_cx_dlg` 的 case 找不到分支而「什麼都不做並回傳 0」，
 而回傳 0 在 `cx_confirm` 眼中就是「使用者按了 Yes」—— 所有刪除閘門會同時失效。
 
@@ -51,12 +54,33 @@ cx setup [子指令]
 | 子指令 | 做什麼 |
 |---|---|
 | （無）/ `all` | env + dirs + guard + collections，最後盤點工具鏈 |
-| `env` | 從 `.env.example` 產生 `.env`（隨機密碼、你的 UID/GID）。**不覆蓋既有的** |
-| `dirs` | 建立 `reports/` 與 `.cx/` 的葉目錄 |
-| `guard` | 安裝三個 repo 的 pre-push hook |
-| `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep` |
+| `env` | 從 `.env.example` 產生 `.env`（隨機密碼、你的 UID/GID、`PROJECT_SLUG`）。**不覆蓋既有的** |
+| `dirs` | 建立 `reports/` 與 `.cx/` 的葉目錄，並補回 `reports/.gitignore` |
+| `guard` | 安裝三個 repo 的 pre-push hook（白名單從 `.cxroot` 產生） |
+| **`native [名稱...]`** | **一行裝完整套原生工具鏈** = `system` → `tools` → `deps` |
 | `system [名稱...]` | **需要 root** 的系統套件：`php nginx git docker mysql-client php-sqlite` |
-| `deps` | backend 的 `composer install`、backend/frontend 的 npm |
+| `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep` |
+| `deps` | backend 的 `composer install` + `npm ci` + `vite build`、frontend 的 `npm ci` |
+
+### 哪個工具在哪一邊
+
+| | 工具 | 裝到哪 |
+|---|---|---|
+| `system`（要 root） | `php`（cli + 8 個擴充）・`nginx`・`git`・`docker`（含 compose v2）・`mysql-client`・`php-sqlite` | 系統 |
+| `tools`（免 root） | `composer`・`node`（含 `npm` / `npx`）・`ansible`（含 `ansible-lint` / `yamllint`）・`trivy`・`gitleaks`・`semgrep` | `~/.local` |
+| 不必安裝 | `artisan` —— 它是 `backend/artisan`，隨 Laravel 一起來 | — |
+
+打錯邊不會只丟一句「未知的工具」，會直接告訴你正確的指令：
+
+```
+$ cx setup system npm
+✘ 未知的系統工具：npm（可用：php nginx git docker mysql-client php-sqlite）
+    npm 隨 node 一起裝 → cx setup tools node
+```
+
+`cx setup native` 的順序是固定的：`system` 必須先跑，因為 composer 的安裝器需要 `php`。
+`system` 因為缺 sudo 而只印出指令時（回傳 3），`native` 會**繼續**跑 `tools` ——
+免 root 的那一半仍然裝得起來，沒有理由整個停掉。
 
 **為什麼目錄要由你建立**：掛在「image 中不存在的路徑」上的具名 volume 一律被
 Docker 建成 `root:root 0755`，之後以 uid 1000 執行的 Trivy / Semgrep / PHPStan / ZAP
@@ -175,6 +199,11 @@ cx <動作> [參數...]          # 用 --mode 指定，預設 dev
 ```
 
 動作：`up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc`
+
+這九個動作**也可以不帶模式直接當成頂層動詞**（`cx ps`、`cx config`、`cx logs -f`…），
+沿用 `--mode`，預設 `dev`。它們靠 `cx` 的 `CX_CMD_FILE_OF` 對照表指到 `compose.sh`；
+漏掉任何一筆的症狀是「`cx dev config` 好好的，但裸的 `cx config` 說未知的指令」。
+`cx doctor` 的「動詞完整性」現在會檢查這張表。
 
 | 動作 | 說明 |
 |---|---|
@@ -301,17 +330,19 @@ cx scan <code|sast|sca|dast|secrets|all> [--runner docker|native|auto]
 
 | 子指令 | 防線 | 工具 | 失敗退出碼 |
 |---|---|---|---|
-| `code` | ① Quality | Larastan (level max) + SonarQube scanner | 20 |
+| `code` | ① Quality | Larastan (level 5) + SonarQube scanner | 20 |
 | `sast` | ② SAST | Semgrep | 21 |
 | `sca` | ③ SCA | Trivy + `composer audit` + `npm audit` | 22 |
 | `dast` | ④ DAST | OWASP ZAP baseline | 23 |
-| `secrets` | — | gitleaks（全歷史） | 1 |
-| `all` | 全部 | 依序，任一失敗即停 | 第一個非零 |
+| `secrets` | — | gitleaks（全歷史） | 22（與 ③ 共用） |
+| `all` | ①②③④ + secrets | **全部跑完**，不在第一個 finding 停 | 五道之中最嚴重的那個 |
 
-報告輸出到 `reports/{quality,sast,sca,dast,secrets}/`。
+報告輸出到 `reports/{quality,sast,sca,secrets,dast}/`。
+各檔案的實際名稱與讀法見 [`reports.md`](reports.md)。
 
 **`--runner`**：`docker` 用容器、`native` 用 `~/.local` 的二進位、`auto`（預設）
-先試 native 再退回 docker。ZAP 只有 docker 一條路（要 Java）。
+**有 Docker daemon 就走容器**，沒有才走原生。ZAP 只有 docker 一條路（要 Java）。
+`cx scan` 另外接受自己的 `--runner`，位置較近者優先。
 
 ### SAST 的嚴重度閘門
 
@@ -337,8 +368,13 @@ ZAP baseline 的退出碼不是「0 成功 / 非 0 失敗」：
 | ≥3 | 工具本身出錯（目標連不上、設定壞掉） | `EX_FAIL`，不是掃描失敗 |
 
 把 2 當失敗會讓每一次掃描都紅，把 ≥3 當成功則會讓「ZAP 根本沒跑起來」
-被記成「沒有漏洞」。`_scan_dast_probe` 會在正式掃描前先確認目標會回應，
-免得把連線失敗誤報成安全結論。
+被記成「沒有漏洞」。
+
+`_scan_dast_probe` 是**兩輪掃描之後**才跑的 WAF 攻擊探針（用真的 payload 量
+攔截率與誤擋率，結果寫進 `reports/dast/compare/waf-probe.json`），
+**不是**掃描前的可達性檢查 —— 目前沒有前置可達性檢查，所以
+「ZAP 很快就跑完而且零 alert」仍然可能是目標根本沒起來。
+判斷方法是看 `reports/dast/*/report.json` 裡有沒有實際掃到 URL。
 
 ZAP 跑兩次：`DetectionOnly` 與 `On`，用來對照 WAF 到底擋掉了什麼。
 
@@ -359,7 +395,8 @@ ZAP 會往裡面寫，把唯讀設定放進去會在某些版本被覆寫。
 cx sonar <up|down|status|token|url|logs|wait>
 ```
 
-獨立的 compose project（`pm_sonar`），跟三個模式互不相干。
+獨立的 compose project（`<專案>_devsecops`，本專案是 `pm_devsecops`），
+跟三個模式互不相干。名字跟著 `.cxroot` 的 `CX_PROJECT_NAME` 走。
 `cx sonar token` 引導產生 token 並存到 `.cx/sonar-token`（mode 0600）。
 
 ---

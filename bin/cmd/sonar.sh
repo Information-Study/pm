@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # cx sonar —— 常駐的 SonarQube stack（dev 與 test 共用）。
 #
-# 獨立的 compose project（pm_devsecops），因為它的生命週期跟三個模式無關：
+# 獨立的 compose project（<專案>_devsecops），因為它的生命週期跟三個模式無關：
 # 你會希望它一直開著累積歷史趨勢，而不是每次 cx dev down 就跟著消失。
 #
-# 網路名明寫 pm_devsecops_net —— bin/cmd/scan.sh 用
-# `docker run --network pm_devsecops_net` 把短暫的 sonar-scanner 容器加進來，
+# 網路名明寫 <專案>_devsecops_net —— bin/cmd/scan.sh 用
+# `docker run --network <專案>_devsecops_net` 把短暫的 sonar-scanner 容器加進來，
 # 這樣它才解析得到 http://sonarqube:9000（傳 localhost 進容器指的是容器自己）。
 
-CX_SONAR_PROJECT=pm_devsecops
-CX_SONAR_NET=pm_devsecops_net
+# 前綴不可寫死 pm —— 見 bin/lib/common.sh 的 cx_project()。
+# sonar.sh 是在 .cxroot 被 source 之後才載入的，所以這裡讀得到 CX_PROJECT_NAME。
+CX_SONAR_PROJECT=$(cx_sonar_project)
+CX_SONAR_NET=$(cx_sonar_net)
 
 _sonar_usage() {
     cat >&2 <<'TXT'

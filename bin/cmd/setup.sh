@@ -10,14 +10,28 @@ _setup_usage() {
     cat >&2 <<'TXT'
 cx setup [子指令]
 
-  (無參數) / all   env + dirs + guard，最後報告缺哪些工具
-  env              從 .env.example 產生 .env（隨機密碼、填入你的 UID/GID）
+  (無參數) / all   env + dirs + guard + galaxy，最後報告缺哪些工具
+  env              從 .env.example 產生 .env（隨機密碼、你的 UID/GID、專案名）
   dirs             建立 reports/ 與 .cx/ 的葉目錄（必須由你的身分建立，不能讓 Docker 建）
-  guard            安裝三個 repo 的 pre-push 白名單 hook
-  tools [名稱...]  安裝原生工具鏈到 ~/.local（免 root）
+  guard            安裝三個 repo 的 pre-push 白名單 hook（白名單讀 .cxroot）
+
+  native [名稱...] ★ 一行裝完整套原生工具鏈 = system + tools + deps
+                   順序固定 system → tools → deps（composer 的安裝器需要 php）
+
+  system [名稱...] 需要 root 的系統套件（apt）
+                   可選：php nginx git docker mysql-client php-sqlite
+                   sudo 不可用時**只印指令**並回傳 3，不會替你輸入密碼
+  tools [名稱...]  免 root 的工具鏈到 ~/.local（每個下載都核對 SHA256）
                    可選：composer node ansible trivy gitleaks semgrep
-                   省略名稱 = 裝全部缺少的
-  deps             安裝專案相依（backend 的 composer install、frontend 的 npm ci）
+                   （npm / npx 隨 node 一起裝；ansible-lint / yamllint 隨 ansible）
+  deps             專案相依：backend 的 composer install + npm ci + vite build，
+                   frontend 的 npm ci
+  省略名稱 = 裝全部缺少的（已存在的會安靜略過，可重複執行）
+
+哪個工具在哪一邊
+  需要 root（system）  php・nginx・git・docker（含 compose v2）・mysql-client・php-sqlite
+  免 root（tools）     composer・node（含 npm）・ansible・trivy・gitleaks・semgrep
+  不必安裝             artisan —— 它是 backend/artisan，隨 Laravel 一起來
 
 為什麼需要 tools：Docker 可用時大部分工作可以在容器內完成，但
   * cx lint / cx deploy 需要 host 上的 ansible
@@ -55,11 +69,14 @@ _setup_env() {
         return 0
     fi
 
-    local root_pw app_pw uid gid line
+    local root_pw app_pw uid gid line slug
     root_pw=$(_setup_gen_secret)
     app_pw=$(_setup_gen_secret)
     uid=$(id -u)
     gid=$(id -g)
+    # 專案識別從 .cxroot 帶進 .env：compose 的網路名與映像前綴都吃這個值。
+    # 少了它，複製出去改名的專案會建出 pm_dev_net、pm/app:… 跟本專案相撞。
+    slug=$(cx_project)
 
     : > "$out"
     chmod 600 "$out"
@@ -70,6 +87,8 @@ _setup_env() {
             'DB_PASSWORD=__CHANGE_ME__')         line="DB_PASSWORD=$app_pw" ;;
             'APP_UID=1000')                      line="APP_UID=$uid" ;;
             'APP_GID=1000')                      line="APP_GID=$gid" ;;
+            'PROJECT_SLUG=pm')                   line="PROJECT_SLUG=$slug" ;;
+            'IMAGE_PREFIX=pm')                   line="IMAGE_PREFIX=$slug" ;;
         esac
         printf '%s\n' "$line" >> "$out"
     done < "$tpl"
@@ -84,7 +103,6 @@ _setup_dirs() {
         "$CX_ROOT/reports/quality" \
         "$CX_ROOT/reports/sast" \
         "$CX_ROOT/reports/sca" \
-        "$CX_ROOT/reports/dast/no-waf" \
         "$CX_ROOT/reports/dast/detect" \
         "$CX_ROOT/reports/dast/blocking" \
         "$CX_ROOT/reports/dast/compare" \
@@ -112,6 +130,27 @@ _setup_dirs() {
 GITIGNORE
         cx_ok "已補回 reports/.gitignore"
     fi
+
+    # reports/README.md 跟 .gitignore 一樣是「進版控的檔案」，rm -rf reports 會帶走它。
+    # 但它是純文件，內容不該被複製一份到這支腳本裡（兩份一定會漂移）——
+    # 所以從版控取回，而不是用 heredoc 重寫。
+    #
+    # 三個前提都要成立才做，任何一個不成立就只是提示，不當成錯誤：
+    #   1) 有 git（cx fresh 會刪掉 .git，那之後這裡本來就取不回來）
+    #   2) 這裡真的是 git 工作區
+    #   3) 這個路徑真的被追蹤（新專案可能根本沒有這個檔）
+    if [[ ! -f $CX_ROOT/reports/README.md ]]; then
+        if cx_have git \
+           && git -C "$CX_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
+           && git -C "$CX_ROOT" ls-files --error-unmatch reports/README.md >/dev/null 2>&1 \
+           && cx_run git -C "$CX_ROOT" checkout -- reports/README.md 2>/dev/null; then
+            cx_ok "已從版控取回 reports/README.md"
+        else
+            cx_warn "reports/README.md 不見了，而且取不回來（沒有 git 或它沒被追蹤）"
+            cx_dim "  這只是文件，不影響任何功能。要的話自己補一份。"
+        fi
+    fi
+
     cx_ok "reports/ 與 .cx/ 的葉目錄已就緒（擁有者：$(id -un)）"
     cx_dim "  這些目錄必須由你建立。讓 Docker 自動建立會是 root:root 0755，"
     cx_dim "  之後以 uid 1000 執行的 Trivy / Semgrep / PHPStan / ZAP 全部 EACCES。"
@@ -349,7 +388,34 @@ _setup_system_have() {
     esac
 }
 
+# tools 與 system 是兩個清單，但使用者不會記得哪個工具在哪一邊。
+# 打錯邊時要直接告訴他正確的指令，而不是丟一句「未知的工具」讓他自己猜。
+_setup_hint_other_list() {
+    local t=$1
+    case " $CX_SETUP_TOOLS " in
+        *" $t "*) cx_dim "  $t 是免 root 的工具 → cx setup tools $t"; return 0 ;;
+    esac
+    case " $CX_SETUP_SYSTEM_TOOLS " in
+        *" $t "*) cx_dim "  $t 需要 root → cx setup system $t"; return 0 ;;
+    esac
+    # 常見的別名／誤解
+    case $t in
+        npm|node|nodejs)     cx_dim "  npm 隨 node 一起裝 → cx setup tools node" ;;
+        docker-compose|compose)
+                             cx_dim "  compose v2 是 docker 的一部分 → cx setup system docker" ;;
+        artisan)             cx_dim "  artisan 不是要安裝的工具，它是 backend/artisan（隨 Laravel 一起來）" ;;
+        mysql|mysql-cli)     cx_dim "  → cx setup system mysql-client" ;;
+        ansible-lint|yamllint)
+                             cx_dim "  → cx setup tools ansible（同一個 venv 一起裝）" ;;
+    esac
+    return 1
+}
+
 _setup_system() {
+    case ${1:-} in
+        -h|--help|help) _setup_usage; return 0 ;;
+    esac
+
     cx_have apt-get || cx_die "$EX_PRECOND" \
         "只支援 Debian/Ubuntu 系（找不到 apt-get）。請自行安裝：$CX_SETUP_SYSTEM_TOOLS"
 
@@ -360,7 +426,9 @@ _setup_system() {
     for t in "${want[@]}"; do
         case " $CX_SETUP_SYSTEM_TOOLS " in
             *" $t "*) : ;;
-            *) cx_die "$EX_USAGE" "未知的系統工具：$t（可用：$CX_SETUP_SYSTEM_TOOLS）" ;;
+            *) cx_error "未知的系統工具：$t（可用：$CX_SETUP_SYSTEM_TOOLS）"
+               _setup_hint_other_list "$t" || true
+               return "$EX_USAGE" ;;
         esac
     done
 
@@ -420,6 +488,10 @@ _setup_system() {
 }
 
 _setup_tools() {
+    case ${1:-} in
+        -h|--help|help) _setup_usage; return 0 ;;
+    esac
+
     local -a want=("$@")
     local t rc=0
     (( ${#want[@]} )) || read -r -a want <<< "$CX_SETUP_TOOLS"
@@ -427,7 +499,9 @@ _setup_tools() {
     for t in "${want[@]}"; do
         case " $CX_SETUP_TOOLS " in
             *" $t "*) : ;;
-            *) cx_error "未知的工具：$t（可用：$CX_SETUP_TOOLS）"; return "$EX_USAGE" ;;
+            *) cx_error "未知的工具：$t（可用：$CX_SETUP_TOOLS）"
+               _setup_hint_other_list "$t" || true
+               return "$EX_USAGE" ;;
         esac
     done
 
@@ -451,15 +525,35 @@ _setup_tools() {
 }
 
 # ── deps ────────────────────────────────────────────────────────────────────
+# 「工具在 PATH 上但那是 Windows 那支」是 WSL 專屬的坑，訊息要講清楚，
+# 不能只說「沒有 npm」—— 使用者 which 得到東西，會覺得 cx 在騙人。
+_setup_deps_missing() {
+    local t=$1 how=$2 winp
+    if winp=$(cx_win_interop_path "$t"); then
+        cx_error "PATH 上的 $t 是 Windows 的：$winp"
+        cx_dim "  它不能用來建置 WSL 裡的專案：CMD.EXE 不支援 UNC 路徑當工作目錄，"
+        cx_dim "  症狀是 npm ci 留下一棵殘缺的 node_modules、然後 vite build 失敗。"
+        cx_dim "  Linux 版裝在 ~/.local/bin，但你的 shell 沒把它排在前面："
+        cx_dim '    export PATH="$HOME/.local/bin:$PATH"   # 或重開一個 login shell'
+    elif [[ -e $CX_LOCAL_BIN/$t ]]; then
+        # 叫使用者去「安裝一個已經裝好的東西」是最浪費時間的錯誤訊息：
+        # 他會照做、看到安裝成功、然後發現 cx 還是說沒有。
+        cx_error "$t 已經裝在 $CX_LOCAL_BIN/$t —— 是這個 shell 的 PATH 看不到它"
+        cx_dim '    export PATH="$HOME/.local/bin:$PATH"   # 或重開一個 login shell'
+    else
+        cx_warn "沒有 $t —— 先跑 $how"
+    fi
+}
+
 _setup_deps() {
     local rc=0
     if [[ -f $CX_ROOT/backend/composer.json ]]; then
         cx_step "backend：composer install"
-        if cx_have composer; then
+        if cx_have_native composer; then
             # 不加 --no-dev：host 上的 vendor 是給 IDE 與 cx scan code（larastan）用的。
             ( cd "$CX_ROOT/backend" && cx_run composer install --no-interaction --prefer-dist ) || rc=1
         else
-            cx_warn "沒有 composer —— 先跑 cx setup tools composer"
+            _setup_deps_missing composer "cx setup tools composer"
             rc=1
         fi
     fi
@@ -470,21 +564,21 @@ _setup_deps() {
         # 就會丟 ViteManifestNotFoundException。
         # 舊專案的 init.sh 呼叫一個從來不存在的 npm-php service 來做這件事（缺陷 D3），
         # 所以後端資產在舊專案裡其實從來沒被建置過。
-        if cx_have npm; then
+        if cx_have_native npm; then
             ( cd "$CX_ROOT/backend" \
               && cx_run npm ci --no-audit --no-fund \
               && cx_run npm run build ) || rc=1
         else
-            cx_warn "沒有 npm —— 先跑 cx setup tools node"
+            _setup_deps_missing npm "cx setup tools node"
             rc=1
         fi
     fi
     if [[ -f $CX_ROOT/frontend/package.json ]]; then
         cx_step "frontend：npm ci"
-        if cx_have npm; then
+        if cx_have_native npm; then
             ( cd "$CX_ROOT/frontend" && cx_run npm ci --no-audit --no-fund ) || rc=1
         else
-            cx_warn "沒有 npm —— 先跑 cx setup tools node"
+            _setup_deps_missing npm "cx setup tools node"
             rc=1
         fi
     fi
@@ -499,6 +593,29 @@ _setup_guard() {
 }
 
 # ── all ─────────────────────────────────────────────────────────────────────
+# 缺的東西其實已經裝在 CX_LOCAL_BIN，只是 PATH 沒有它 —— 這是最容易誤診的情況：
+# 使用者會一直重跑 cx setup tools，而每次都「安裝成功」然後 cx 還是說缺。
+# 回傳 0 表示「已經給出 PATH 的建議，不要再叫他去安裝」。
+_setup_path_hint() {
+    local t found=0
+    for t in "$@"; do
+        case $t in
+            ansible) [[ -e $CX_LOCAL_BIN/ansible-playbook ]] && found=1 ;;
+            node)    [[ -e $CX_LOCAL_BIN/node ]] && found=1 ;;
+            *)       [[ -e $CX_LOCAL_BIN/$t ]]   && found=1 ;;
+        esac
+    done
+    (( found )) || return 1
+    cx_error "這些其實已經裝在 $CX_LOCAL_BIN 了 —— 是這個 shell 的 PATH 看不到它"
+    cx_dim '  這次先生效： export PATH="$HOME/.local/bin:$PATH"'
+    cx_dim '  永久生效：   ~/.profile 已經有這段，但它只在 login shell 生效；'
+    cx_dim '               非 login shell 請把同一行加到 ~/.bashrc'
+    cx_dim "  確認：        echo \$PATH | tr : '\\n' | grep '\.local/bin'"
+    cx_warn "PATH 沒修好之前不要跑 cx setup deps —— 在 WSL 上 npm 會解析到"
+    cx_warn "Windows 的 /mnt/c/.../npm，留下一棵殘缺的 node_modules 並讓 vite build 失敗。"
+    return 0
+}
+
 _setup_all() {
     local t
     local -a missing=()
@@ -525,13 +642,19 @@ _setup_all() {
     cx_step "工具鏈盤點"
     for t in $CX_SETUP_TOOLS; do
         case $t in
-            ansible) cx_have ansible-playbook || missing+=("$t") ;;
-            *)       cx_have "$t"             || missing+=("$t") ;;
+            ansible) cx_have_native ansible-playbook || missing+=("$t") ;;
+            *)       cx_have_native "$t"             || missing+=("$t") ;;
         esac
     done
     if (( ${#missing[@]} )); then
         cx_warn "缺少：${missing[*]}"
-        cx_dim "  安裝：cx setup tools ${missing[*]}"
+        # 「東西其實裝好了，只是這個 shell 看不到」跟「真的沒裝」要分開講，
+        # 否則使用者會照著建議重裝一次，然後發現還是缺 —— 因為問題從來不是沒裝。
+        if _setup_path_hint "${missing[@]}"; then
+            :
+        else
+            cx_dim "  安裝：cx setup tools ${missing[*]}"
+        fi
     else
         cx_ok "原生工具鏈齊全"
     fi
@@ -549,6 +672,50 @@ _setup_all() {
     cx_dim "  cx dev up -d --build   起開發環境"
 }
 
+# ── native：一行把「完全不用 Docker 也能跑完」需要的東西全部裝起來 ──────────
+#
+# 為什麼需要這個而不是叫大家自己打三行：
+#   原生工具鏈被切成 system（需要 root）與 tools（免 root）兩份清單，
+#   這個切分對「誰來裝」是必要的，但對「我要把原生路徑準備好」的人是雜訊 ——
+#   他要的是 php / nginx / git / docker / composer / node+npm 全部就位。
+#
+# 順序不能反：composer 的安裝器需要 php（_setup_tool_composer 會 cx_need php），
+# 所以 system 必須先跑。system 因為缺 sudo 而只印出指令時回傳 EX_PRECOND，
+# 這裡把它記下來但**繼續**跑 tools —— 免 root 的那一半仍然裝得起來，
+# 沒有理由因為使用者等一下才要貼 sudo 指令就整個停掉。
+_setup_native() {
+    local rc=0 sys_rc=0
+
+    cx_step "① 需要 root 的系統套件"
+    _setup_system "$@" || sys_rc=$?
+    (( sys_rc == 0 )) || rc=$sys_rc
+
+    cx_step "② 免 root 的工具鏈（~/.local）"
+    _setup_tools || rc=$?
+
+    cx_step "③ 專案相依"
+    if cx_have composer && cx_have npm; then
+        _setup_deps || rc=$?
+    else
+        cx_warn "composer / npm 還沒就緒 —— 略過 deps"
+        cx_dim "  上面的步驟修好之後再跑： cx setup deps"
+        rc=${rc:-1}; (( rc )) || rc=1
+    fi
+
+    cx_step "結果"
+    if (( sys_rc == EX_PRECOND )); then
+        cx_warn "系統套件那一段需要你自己貼上 sudo 指令（見上面 ① 的輸出）"
+    fi
+    if (( rc == 0 )); then
+        cx_ok "原生工具鏈就緒 —— 現在 cx --runner native <動詞> 應該可以完全不用 Docker"
+        cx_dim "  驗證： cx doctor（看「兩條 runner 各自的完整性」那一段）"
+    else
+        cx_warn "有步驟沒完成（rc=$rc）。修好之後可以只重跑缺的那一段："
+        cx_dim "  cx setup system / cx setup tools / cx setup deps"
+    fi
+    return "$rc"
+}
+
 cmd_setup_main() {
     local sub=${1:-all}
     [[ $# -gt 0 ]] && shift
@@ -560,6 +727,7 @@ cmd_setup_main() {
         guard)   _setup_guard ;;
         tools)   cx_lock setup; _setup_tools "$@" ;;
         system)  cx_lock setup; _setup_system "$@" ;;
+        native)  cx_lock setup; _setup_native "$@" ;;
         deps)    cx_lock setup; _setup_deps ;;
         *) cx_error "未知的子指令：$sub"; _setup_usage; return "$EX_USAGE" ;;
     esac
