@@ -854,7 +854,12 @@ _git_push() {
         # 會被擋下來，而不是把別人的 commit 直接蓋掉。
         (( force )) && pushargs=(push -u --force-with-lease origin "$br")
 
-        cx_info "推送 $slug（$br${force:+，強制}）…"
+        # ⚠ 不能用 ${force:+…}——那是「字串非空就展開」，而 force=0 是非空字串，
+        # 所以普通推送也會印出「強制」。在整個工具最危險的操作上印錯訊息，
+        # 會讓人以為自己剛剛改寫了遠端歷史（或反過來，對真正的強制推送麻木）。
+        # 實際參數是由 (( force )) 決定的，這裡要用同一個判斷。
+        local _fmark=''; (( force )) && _fmark='，強制'
+        cx_info "推送 $slug（$br$_fmark）…"
         if ! CX_ALLOW_PUSH=1 cx_run git -C "$r" "${pushargs[@]}"; then
             # 推送失敗就要停下來，不能繼續推主庫 ——
             # 否則 gitlink 會指向遠端不存在的 commit。
