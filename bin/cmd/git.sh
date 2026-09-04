@@ -434,10 +434,26 @@ _git_scan_secrets() {
         fi
 
         # 2) 內容層級（排除 .example / lock 檔）
-        hits=$(printf '%s\n' "$files" | grep -vE '\.example$|lock$|\.lock$' | tr '\n' '\0' \
-               | xargs -0 -r grep -lIE \
-                 'APP_KEY=base64:[A-Za-z0-9+/=]{20,}|BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]{10,}' \
-                 2>/dev/null || true)
+        #
+        # ⚠ 必須 cd 進那個 repo。
+        #
+        # `git -C "$r" ls-files` 輸出的是**相對於該 repo 根目錄**的路徑。
+        # 原本直接把它交給在 CX_ROOT 執行的 grep，於是對 backend / frontend
+        # 這兩個子模組來說，每一個路徑都指向 CX_ROOT 底下不存在的位置：
+        #   grep: .editorconfig: No such file or directory
+        # 而那些錯誤又被 2>/dev/null 吞掉，結果是「掃了 0 個檔案然後回報乾淨」。
+        #
+        # 2026-09-04 實測：在 backend/config/ 放一個
+        #   APP_KEY=base64:AAAA…
+        # 並 git add，`cx git scan-secrets` 仍然回報「pm-backend 乾淨」。
+        # 也就是說推送前的內容層級防線對兩個子模組完全沒有作用過。
+        # （gitleaks 那一層掃的是 git 歷史，抓不到只在工作區/暫存區的東西。）
+        hits=$( cd "$r" && printf '%s\n' "$files" \
+                | grep -vE '\.example$|lock$|\.lock$' \
+                | tr '\n' '\0' \
+                | xargs -0 -r grep -lIE \
+                  'APP_KEY=base64:[A-Za-z0-9+/=]{20,}|BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]{10,}' \
+                  2>/dev/null || true )
         if [[ -n $hits ]]; then
             cx_error "$slug 疑似含憑證："; printf '%s\n' "$hits" | sed 's/^/      /' >&2; repo_bad=1
         fi

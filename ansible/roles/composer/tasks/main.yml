@@ -127,14 +127,26 @@
   environment:
     COMPOSER_HOME: "{{ composer_stage_dir }}/.home"
     COMPOSER_ALLOW_SUPERUSER: "1"
+  # ⚠ check_mode: false + failed_when: false 是一組的，缺一不可。
+  #
+  # --check 之下 shell/command 預設會被**跳過**，register 出來的物件沒有
+  # stdout_lines，於是下一個 assert 參照到未定義的欄位而失敗 ——
+  # `cx deploy check` 在一台全新機器上因此必然紅燈，而訊息完全指向錯誤的方向。
+  #
+  # 讀取金鑰指紋不改變任何狀態，在 check 模式真的執行它是安全的。
+  # 但全新機器上 keyring 還不存在（get_url 在 check 模式被跳過），
+  # gpg 會失敗 —— 所以 failed_when: false，改由下面的 assert 用
+  # 「有沒有讀到東西」來決定要不要比對。
+  # mysql role 早就是這個模式，這裡補齊。
   register: composer_version_check
+  failed_when: false
+  check_mode: false
   changed_when: false
-  failed_when: composer_version_check.rc != 0
 
 - name: 版本不符時 fail fast
   ansible.builtin.assert:
     that:
-      - composer_version in composer_version_check.stdout
+      - composer_version in (composer_version_check.stdout | default(''))
     fail_msg: >-
       安裝後回報的版本與預期不符。
       預期含 "{{ composer_version }}"，實際輸出：

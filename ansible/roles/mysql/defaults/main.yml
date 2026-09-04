@@ -43,6 +43,20 @@ mysql_repo_key_url: https://repo.mysql.com/RPM-GPG-KEY-mysql-2025
 mysql_repo_keyring_path: /etc/apt/keyrings/mysql-repo.asc
 # 下載後會用 gpg --show-keys 取指紋並比對這個白名單；不符就 fail fast。
 # Oracle 若輪替金鑰，這裡要更新（更新前請自行從官方管道確認指紋）。
+# ── 認證外掛 ───────────────────────────────────────────────────────────────
+# MySQL 8.4 的預設是 caching_sha2_password，而且 mysql_native_password
+# 已經從預設建置移除（外掛還在，但預設不載入）。
+#
+# 這個值必須明確指定，不能讓 ansible.mysql.mysql_user 自己決定 ——
+# 它在收到 password: 時會用版本判斷「伺服器支援 native password」，
+# 然後送出 IDENTIFIED WITH mysql_native_password，在 8.4 上必定失敗：
+#   (1524, "Plugin 'mysql_native_password' is not loaded")
+# 詳見 tasks/secure.yml 的說明。
+#
+# 要改成 sha256_password 之類的話這裡改一個值即可；
+# 不要改回 mysql_native_password —— MySQL 9.x 已經把它完全移除。
+mysql_auth_plugin: caching_sha2_password
+
 mysql_repo_key_fingerprints_allowed:
   - BCA43417C3B485DD128EC6D4B7B3B788A8D3785C
 mysql_repo_check_suite: true

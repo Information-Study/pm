@@ -166,7 +166,16 @@ certbot_webroot: "/var/www/letsencrypt"
 # 那個逃生門按下去完全沒有反應。
 nginx_myguard_repo_manage: "{{ waf_repo_manage | default(true) }}"
 nginx_myguard_repo_probe: true
-nginx_myguard_host: "{{ waf_repo_base | default('deb.myguard.nl') }}"
+# ⚠ waf_repo_base 是**完整 URL**（all.yml 寫 https://deb.myguard.nl），
+# 而這個變數要的是**純主機名** —— 它會被拿去組 keyring 的檔案路徑：
+#   /etc/apt/keyrings/{{ nginx_myguard_host }}.gpg
+# 直接接過來會變成 /etc/apt/keyrings/https://deb.myguard.nl.gpg，
+# 那不是一個合法路徑，deb822 來源檔名與 apt pin 檔名也會含 "://"。
+# 所以要先把 scheme 與後面的路徑剝掉。
+nginx_myguard_host: >-
+  {{ (waf_repo_base | default('https://deb.myguard.nl'))
+     | regex_replace('^[a-z]+://', '')
+     | regex_replace('/.*$', '') }}
 nginx_myguard_suite: "{{ waf_repo_suite | default(ansible_facts['distribution_release']) }}"
 nginx_myguard_uri: "{{ waf_repo_uri | default('https://' ~ nginx_myguard_host ~ '/apt/dists/' ~ nginx_myguard_suite) }}"
 nginx_myguard_components: "{{ waf_repo_components | default(['main']) }}"

@@ -41,15 +41,54 @@
     mode: "0755"
   when: nodejs_repo_manage | bool
 
-- name: 下載 NodeSource 簽章金鑰
+- name: 下載 NodeSource 簽章金鑰到暫存位置
   ansible.builtin.get_url:
     url: "{{ nodejs_key_url }}"
-    dest: "{{ nodejs_keyring }}"
+    dest: "/tmp/.nodesource-key.download"
     owner: root
     group: root
-    mode: "0644"
-    force: false
+    mode: "0600"
+    # force: true —— dest 已存在就不下載的話，上游輪替金鑰之後
+    # 這台機器會永遠留著舊的（MySQL role 踩過同一個坑）。
+    force: true
     timeout: 30
+  register: nodejs_key_dl
+  when: nodejs_repo_manage | bool
+
+# ⚠ ASCII armor 存成 .gpg，apt 會直接拒絕整個來源。
+#
+# NodeSource 的 gpgkey/nodesource-repo.gpg.key 是 **ASCII armored**
+#（開頭是 -----BEGIN PGP PUBLIC KEY BLOCK-----），但檔名結尾是 .key/.gpg。
+# 原本的做法是 get_url 直接存到 /etc/apt/keyrings/nodesource.gpg 就結束 ——
+# gpg --show-keys 讀得懂（所以指紋驗證會通過，看起來一切正常），
+# 但 apt 讀不懂，於是整個 repo 被當成「未簽章」而忽略，Node 24 裝不起來。
+#
+# 2026-09-04 在真實 Ubuntu 24.04 上實測：
+#   armored 存成 .gpg  → apt 拒絕（GPG error / not signed）
+#   dearmor 後的二進位 → apt 接受
+#
+# nginx_myguard role 早就有同樣的正規化步驟，這裡補上。
+# 用「先判斷格式再決定要不要 dearmor」而不是無條件 dearmor：
+# 對已經是二進位的 keyring 再 dearmor 一次會失敗。
+- name: 依實際格式正規化 NodeSource 金鑰（armor 就 dearmor）
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      if head -c 40 /tmp/.nodesource-key.download | grep -q 'BEGIN PGP PUBLIC KEY BLOCK'; then
+        gpg --batch --yes --dearmor -o {{ nodejs_keyring | quote }} /tmp/.nodesource-key.download;
+      else
+        install -m 0644 -o root -g root /tmp/.nodesource-key.download {{ nodejs_keyring | quote }};
+      fi;
+      chmod 0644 {{ nodejs_keyring | quote }}
+    executable: /bin/bash
+  register: nodejs_key_norm
+  changed_when: true
+  when: nodejs_repo_manage | bool
+
+- name: 移除金鑰暫存檔
+  ansible.builtin.file:
+    path: /tmp/.nodesource-key.download
+    state: absent
   when: nodejs_repo_manage | bool
 
 - name: 讀出 NodeSource 金鑰指紋
@@ -59,15 +98,27 @@
       gpg --batch --no-tty --show-keys --with-colons {{ nodejs_keyring | quote }}
       | awk -F: '$1 == "fpr" { print $10 }'
     executable: /bin/bash
+  # ⚠ check_mode: false + failed_when: false 是一組的，缺一不可。
+  #
+  # --check 之下 shell/command 預設會被**跳過**，register 出來的物件沒有
+  # stdout_lines，於是下一個 assert 參照到未定義的欄位而失敗 ——
+  # `cx deploy check` 在一台全新機器上因此必然紅燈，而訊息完全指向錯誤的方向。
+  #
+  # 讀取金鑰指紋不改變任何狀態，在 check 模式真的執行它是安全的。
+  # 但全新機器上 keyring 還不存在（get_url 在 check 模式被跳過），
+  # gpg 會失敗 —— 所以 failed_when: false，改由下面的 assert 用
+  # 「有沒有讀到東西」來決定要不要比對。
+  # mysql role 早就是這個模式，這裡補齊。
   register: node_key_fpr
+  failed_when: false
+  check_mode: false
   changed_when: false
-  failed_when: node_key_fpr.rc != 0
   when: nodejs_repo_manage | bool
 
 - name: 驗證 NodeSource 金鑰指紋
   ansible.builtin.assert:
     that:
-      - nodejs_key_fingerprint in node_key_fpr.stdout_lines
+      - nodejs_key_fingerprint in (node_key_fpr.stdout_lines | default([]))
     fail_msg: >-
       {{ nodejs_keyring }} 的主鑰指紋不是預期的 {{ nodejs_key_fingerprint }}
       （實際讀到：{{ node_key_fpr.stdout_lines | join(', ') | default('（空）', true) }}）。

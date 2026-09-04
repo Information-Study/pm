@@ -60,15 +60,27 @@
       gpg --batch --no-tty --show-keys --with-colons {{ php_ondrej_keyring | quote }}
       | awk -F: '$1 == "fpr" { print $10 }'
     executable: /bin/bash
+  # ⚠ check_mode: false + failed_when: false 是一組的，缺一不可。
+  #
+  # --check 之下 shell/command 預設會被**跳過**，register 出來的物件沒有
+  # stdout_lines，於是下一個 assert 參照到未定義的欄位而失敗 ——
+  # `cx deploy check` 在一台全新機器上因此必然紅燈，而訊息完全指向錯誤的方向。
+  #
+  # 讀取金鑰指紋不改變任何狀態，在 check 模式真的執行它是安全的。
+  # 但全新機器上 keyring 還不存在（get_url 在 check 模式被跳過），
+  # gpg 會失敗 —— 所以 failed_when: false，改由下面的 assert 用
+  # 「有沒有讀到東西」來決定要不要比對。
+  # mysql role 早就是這個模式，這裡補齊。
   register: php_ondrej_fpr
+  failed_when: false
+  check_mode: false
   changed_when: false
-  failed_when: php_ondrej_fpr.rc != 0
   when: ansible_facts['distribution'] == 'Ubuntu'
 
 - name: 驗證 ondrej 金鑰指紋（Ubuntu）
   ansible.builtin.assert:
     that:
-      - php_ondrej_key_fingerprint in php_ondrej_fpr.stdout_lines
+      - php_ondrej_key_fingerprint in (php_ondrej_fpr.stdout_lines | default([]))
     fail_msg: >-
       {{ php_ondrej_keyring }} 的指紋不是預期的 {{ php_ondrej_key_fingerprint }}
       （實際讀到：{{ php_ondrej_fpr.stdout_lines | join(', ') | default('（空）', true) }}）。
@@ -145,15 +157,27 @@
       gpg --batch --no-tty --show-keys --with-colons {{ php_sury_keyring | quote }}
       | awk -F: '$1 == "fpr" { print $10 }'
     executable: /bin/bash
+  # ⚠ check_mode: false + failed_when: false 是一組的，缺一不可。
+  #
+  # --check 之下 shell/command 預設會被**跳過**，register 出來的物件沒有
+  # stdout_lines，於是下一個 assert 參照到未定義的欄位而失敗 ——
+  # `cx deploy check` 在一台全新機器上因此必然紅燈，而訊息完全指向錯誤的方向。
+  #
+  # 讀取金鑰指紋不改變任何狀態，在 check 模式真的執行它是安全的。
+  # 但全新機器上 keyring 還不存在（get_url 在 check 模式被跳過），
+  # gpg 會失敗 —— 所以 failed_when: false，改由下面的 assert 用
+  # 「有沒有讀到東西」來決定要不要比對。
+  # mysql role 早就是這個模式，這裡補齊。
   register: php_sury_fpr
+  failed_when: false
+  check_mode: false
   changed_when: false
-  failed_when: php_sury_fpr.rc != 0
   when: ansible_facts['distribution'] == 'Debian'
 
 - name: 驗證 sury 金鑰指紋（Debian）
   ansible.builtin.assert:
     that:
-      - php_sury_key_fingerprint in php_sury_fpr.stdout_lines
+      - php_sury_key_fingerprint in (php_sury_fpr.stdout_lines | default([]))
     fail_msg: >-
       {{ php_sury_keyring }} 的指紋不是預期的 {{ php_sury_key_fingerprint }}
       （實際讀到：{{ php_sury_fpr.stdout_lines | join(', ') | default('（空）', true) }}）。

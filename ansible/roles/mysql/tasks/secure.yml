@@ -27,9 +27,27 @@
   # host_all 不能與「建立/更新使用者」併用（模組只允許用於 state=absent），
   # 而且對 root 用 host_all 會把 root@localhost 一起改掉／刪掉。
   ansible.mysql.mysql_user:
+    # ⚠ 用 plugin + plugin_auth_string，不能用 password。
+    #
+    # ansible.mysql.mysql_user 在收到 `password:` 時的邏輯是
+    # （modules/mysql_user.py 第 227-235 行）：
+    #   如果伺服器「支援」mysql_native_password → 用 SHA1 自己算 hash，
+    #   再送 IDENTIFIED WITH mysql_native_password AS <hash>
+    # 而它的「支援」判斷是看版本（< 9.7.0 就算支援），不是看外掛有沒有載入。
+    #
+    # MySQL 8.4 把 mysql_native_password 從預設建置移除（外掛還在，但預設不載入），
+    # 於是這條路必定失敗：
+    #   (1524, "Plugin 'mysql_native_password' is not loaded")
+    # 而且 no_log: true 會把這個訊息整個遮掉，只看得到 "changed": false。
+    # 2026-09-04 在真實的 MySQL 8.4.11 上實測，連建立一個全新使用者都會失敗。
+    #
+    # 同一個模組的第 236-238 行顯示：同時給 plugin 與 plugin_auth_string 時
+    # 會走 `IDENTIFIED WITH <plugin> BY <auth>`，完全繞過 native password。
+    # 實測建立成功、實際登入通過、root 改密碼也可以。
     name: root
     host: localhost
-    password: "{{ mysql_root_password }}"
+    plugin: "{{ mysql_auth_plugin }}"
+    plugin_auth_string: "{{ mysql_root_password }}"
     update_password: "{{ mysql_root_password_update }}"
     state: present
     login_unix_socket: "{{ mysql_socket }}"

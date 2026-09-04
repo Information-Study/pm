@@ -18,7 +18,10 @@
   ansible.mysql.mysql_user:
     name: "{{ mysql_app_db_user }}"
     host: "{{ item }}"
-    password: "{{ mysql_app_db_password }}"
+    # 見 secure.yml 的說明：MySQL 8.4 之下不能用 password:，
+    # 那會讓模組走 mysql_native_password 而失敗。
+    plugin: "{{ mysql_auth_plugin }}"
+    plugin_auth_string: "{{ mysql_app_db_password }}"
     priv: "{{ mysql_app_priv }}"
     update_password: "{{ mysql_app_password_update }}"
     state: present
