@@ -215,7 +215,7 @@ pm/
 │   ├── security/            trivy / semgrep / zap / gitleaks 設定
 │   └── legacy/              舊設定的 .orig 副本（只供對照）
 ├── ansible/                 12 個 role + site.yml + playbooks
-├── docs/                    驗收需求與進度追蹤
+├── docs/                    說明書、參考手冊、驗收與進度追蹤
 ├── reports/                 掃描與驗收輸出（目錄進版控，內容不進）
 ├── backend/                 submodule → Information-Study/pm-backend
 └── frontend/                submodule → Information-Study/pm-frontend
@@ -254,3 +254,20 @@ pm/
 
 完整原理、每個坑的來由、以及未驗證項目清單見 [`claude.md`](claude.md)。
 驗收狀態見 [`docs/docker-verification.md`](docs/docker-verification.md) 與 `reports/verify/`。
+
+---
+
+## 文件
+
+| 文件 | 內容 |
+|---|---|
+| [`docs/manual.md`](docs/manual.md) | **完整操作說明書**，從零開始到三個階段全流程 |
+| [`docs/cx-reference.md`](docs/cx-reference.md) | `cx` 每一個動詞的完整參考 |
+| [`docs/docker-reference.md`](docs/docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF |
+| [`docs/ansible-reference.md`](docs/ansible-reference.md) | play 結構、12 個 role、vault、實測踩過的坑 |
+| [`docs/devsecops.md`](docs/devsecops.md) | 四道防線的原理、閘門定義、退出碼 |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症狀 → 原因 → 解法 |
+| [`docs/progress.md`](docs/progress.md) | 進度追蹤與「還沒驗證什麼」 |
+| [`claude.md`](claude.md) | 設計原理（`docs/` 是「怎麼用」，這份是「為什麼這樣設計」） |
+
+索引與閱讀順序見 [`docs/README.md`](docs/README.md)。

@@ -115,6 +115,38 @@
       若 MyGuard 來源沒生效，請檢查 apt pin（{{ nginx_myguard_pin_file }}）與
       apt-cache policy nginx 顯示的實際來源。
 
+# ── 發行版 nginx.conf 已經在 http{} 宣告過哪些指令 ──────────────────────────
+# nginx 對同一層重複宣告是 emerg，不是 warning：
+#   [emerg] "client_max_body_size" directive is duplicate in
+#           /etc/nginx/conf.d/00-pm-http.conf:35
+# 而且 nginx -t 只回報第一個錯誤 —— 修掉一個還有下一個。
+#
+# MyGuard 打包的 nginx.conf 在 http{} 裡就有 gzip*、client_body_*、
+# client_max_body_size；我們的 conf.d 片段是被 include 進同一個 http{}，
+# 於是每一個都撞。（2026-09-04 對真實目標實測，第 279 個 task 中止。）
+#
+# 因為「哪個發行版／哪個打包宣告了什麼」不可預測，這裡不寫死，
+# 直接讀 nginx.conf 把已宣告的指令名撈出來，模板再逐一跳過。
+# 跳過是安全的：這些值 vhost 的 server{} 都會再寫一次（server 覆蓋 http），
+# 真正只能待在 http context 的東西（upstream / map / limit_req_zone / log_format）
+# 不在這個清單裡，永遠照常輸出。
+- name: 事實 | 讀取發行版 nginx.conf
+  ansible.builtin.slurp:
+    src: "{{ nginx_conf_dir }}/nginx.conf"
+  register: nginx_main_raw
+  changed_when: false
+  check_mode: false
+
+- name: 事實 | 解析 nginx.conf 已宣告的指令名
+  ansible.builtin.set_fact:
+    nginx_existing_directives: >-
+      {{ (nginx_main_raw.content | b64decode).splitlines()
+         | map('regex_replace', '#.*$', '')
+         | map('trim')
+         | select('match', '^[a-z][a-z0-9_]*[ \t]')
+         | map('regex_replace', '^([a-z][a-z0-9_]*).*$', '\1')
+         | list | unique }}
+
 - name: 事實 | nginx.conf 是否 include sites-enabled
   ansible.builtin.command:
     argv:

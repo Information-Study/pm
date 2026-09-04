@@ -38,6 +38,21 @@
   ansible.builtin.import_tasks: backup.yml
   tags: [mysql, mysql-backup]
 
+# ⚠ verify.yml 讀的是 MySQL 的「執行期」設定（SHOW VARIABLES），
+# 所以必須在 restart handler 真的跑完之後才有意義。
+#
+# handler 預設要等到整個 play 結束才執行，而 verify 就在同一個 role 裡 ——
+# 於是第一次部署時它驗到的是「重啟前」的狀態，必定失敗：
+#   collation=utf8mb4_0900_ai_ci（預期 utf8mb4_unicode_ci）
+#   skip_name_resolve=0
+# 而 zz-app.cnf 明明已經寫好、!includedir 也正確，訊息卻把人導向去查設定檔路徑。
+# 2026-09-04 在真實主機上實測踩到（178 個 task 之後才浮現）。
+#
+# certbot role 早就用了同樣的手法（它的 verify 也要讀 nginx 實際載入的設定）。
+- name: 套用設定變更（verify 之前必須先讓 restart handler 跑完）
+  ansible.builtin.meta: flush_handlers
+  tags: [mysql, mysql-verify]
+
 - name: 驗證
   ansible.builtin.import_tasks: verify.yml
   when: mysql_installed_ok | default(false) | bool

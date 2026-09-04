@@ -53,12 +53,32 @@
   when: not ansible_check_mode
   no_log: true
 
+# 與 env.yml 同一個坑，同樣不用 regex_search 的捕獲組（理由見 env.yml）。
+- name: AppKey | 重讀後的 .env 內容
+  ansible.builtin.set_fact:
+    backend_env_text_after: "{{ backend_env_slurp_after.content | default('') | b64decode }}"
+  when: not ansible_check_mode
+  no_log: true
+
+- name: AppKey | 取出所有 APP_KEY= 的值
+  ansible.builtin.set_fact:
+    backend_app_key_lines_after: >-
+      {{ backend_env_text_after.splitlines()
+         | map('trim')
+         | select('match', '^APP_KEY[ \t]*=')
+         | map('regex_replace', '^APP_KEY[ \t]*=[ \t]*', '')
+         | map('trim')
+         | map('trim', '"')
+         | list }}
+  when: not ansible_check_mode
+  no_log: true
+
 - name: AppKey | 解析最終的 APP_KEY
   ansible.builtin.set_fact:
     backend_app_key_final: >-
-      {{ ((backend_env_slurp_after.content | default('') | b64decode)
-          | regex_search('(?m)^[ \\t]*APP_KEY[ \\t]*=[ \\t]*"?([^"\\r\\n]*)"?[ \\t]*$', '\\1')
-          | default([''], true) | first | default('', true)) | trim }}
+      {{ (backend_app_key_lines_after | last)
+         if (backend_app_key_lines_after | length) > 0
+         else '' }}
   when: not ansible_check_mode
   no_log: true
 

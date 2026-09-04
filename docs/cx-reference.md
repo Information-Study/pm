@@ -1,0 +1,442 @@
+# cx 動詞參考
+
+> 這份是逐個動詞的完整參考。流程性的說明看 [`manual.md`](manual.md)。
+> **`cx help` 的輸出永遠是權威** —— 這份文件是它的展開版。
+
+---
+
+## 全域旗標
+
+放在動詞**之前**。
+
+| 旗標 | 值 | 說明 |
+|---|---|---|
+| `--root <path>` | 目錄 | 指定專案根目錄。不給的話向上搜尋 `.cxroot` |
+| `--mode <m>` | `dev` \| `test` \| `prod` | 預設 `dev`。決定 compose project 與 overlay |
+| `--ui <u>` | `whiptail` \| `dialog` \| `plain` | 預設 `auto`（有 tty 就用 whiptail） |
+| `--dry-run` | — | 只印出要執行的指令，不改變任何狀態 |
+| `--yes` / `-y` | — | 略過互動確認。**非互動環境專用** |
+| `-h` / `--help` | — | 等同 `cx help` |
+
+三個值都會被白名單驗證。`--mode` 會被拿去組 `-p pm_${CX_MODE}` 與
+`-f docker/compose/${CX_MODE}.yml`，不驗證等於留一個檔名／專案名注入面。
+`--ui` 不驗證的話，非法值會讓 `_cx_dlg` 的 case 找不到分支而「什麼都不做並回傳 0」，
+而回傳 0 在 `cx_confirm` 眼中就是「使用者按了 Yes」—— 所有刪除閘門會同時失效。
+
+## 退出碼
+
+| 碼 | 常數 | 意義 |
+|---|---|---|
+| 0 | `EX_OK` | 成功 |
+| 1 | `EX_FAIL` | 一般失敗 |
+| 2 | `EX_USAGE` | 用法錯誤（未知動詞、未知參數） |
+| 3 | `EX_PRECOND` | 前置條件不足（沒有 Docker、缺檔、工具沒裝） |
+| 4 | `EX_ABORT` | 使用者取消 |
+| 20 | `EX_SCAN_QUALITY` | ① Quality 有 finding |
+| 21 | `EX_SCAN_SAST` | ② SAST 有 ERROR 等級 finding |
+| 22 | `EX_SCAN_SCA` | ③ SCA 有 finding |
+| 23 | `EX_SCAN_DAST` | ④ DAST 有 High risk alert |
+
+**「有 finding」與「工具當掉」是不同的事。** `cx scan` 顯式捕捉工具的退出碼並
+映射到專屬的 `EX_SCAN_*`，CI 才分得出來。
+
+---
+
+## `cx setup` — 初始化
+
+```
+cx setup [子指令]
+```
+
+| 子指令 | 做什麼 |
+|---|---|
+| （無）/ `all` | env + dirs + guard + collections，最後盤點工具鏈 |
+| `env` | 從 `.env.example` 產生 `.env`（隨機密碼、你的 UID/GID）。**不覆蓋既有的** |
+| `dirs` | 建立 `reports/` 與 `.cx/` 的葉目錄 |
+| `guard` | 安裝三個 repo 的 pre-push hook |
+| `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep` |
+| `deps` | backend 的 `composer install`、backend/frontend 的 npm |
+
+**為什麼目錄要由你建立**：掛在「image 中不存在的路徑」上的具名 volume 一律被
+Docker 建成 `root:root 0755`，之後以 uid 1000 執行的 Trivy / Semgrep / PHPStan / ZAP
+全部 EACCES。
+
+**密碼的字元集刻意限制在 `A-Za-z0-9`**：base64 會產生 `/` 與 `+`，而 `&` 是 sed 的
+整段回填 —— 只要有任何一段流程用 sed 套密碼，密碼就會被靜默竄改，
+一小時後才以 `Access denied` 現形。
+
+冪等：跑第二次不會覆蓋 `.env`，也不會重裝已經對版的工具。
+
+---
+
+## `cx doctor` — 診斷
+
+```
+cx doctor
+```
+
+不接參數。逐項檢查並回報 `通過 / 警告 / 失敗`。有任何失敗就回 `EX_PRECOND`。
+
+檢查項目：專案標記、Docker daemon 與 compose、PHP 與必要／選用擴充、composer、
+Larastan、node/npm 與版本相容性、frontend 相依、Trivy/gitleaks/Semgrep/ZAP、
+ansible/ansible-lint、whiptail/gh、push guard（三個 repo）、
+**可執行位元**（磁碟與 git index 都檢查）、Phase 2 產出物、動詞實作檔完整性。
+
+> 可執行位元那一項不是多餘的：git index 曾經把 `cx` 的模式記成 `100644`
+> 而磁碟是 755 —— 內容零差異、`git diff` 看不出來，但任何人 clone 下來
+> 打 `./cx` 都是 `Permission denied`，單一入口在第 0 步就壞了。
+
+---
+
+## `cx dev` / `cx test` / `cx prod` / `cx up|down|…` — 容器操作
+
+```
+cx <模式> <動作> [參數...]
+cx <動作> [參數...]          # 用 --mode 指定，預設 dev
+```
+
+動作：`up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc`
+
+| 動作 | 說明 |
+|---|---|
+| `up [-d] [--build]` | 啟動前會先建立 reports/ 葉目錄，並**斷言每個 bind mount 來源都存在** |
+| `down [-v]` | `-v` 會刪掉所有 volume（含資料庫），**要求確認** |
+| `restart [服務...]` | |
+| `ps` | 容器與埠 |
+| `logs [-f] [服務...]` | 沒給 `--tail` 時預設 `--tail=200` |
+| `sh [服務]` | 預設 `app`。用 `sh` 不是 `bash` —— 映像是 Alpine |
+| `build [--no-cache]` | 只建置不啟動 |
+| `config` | 印出**合併後**的 compose 設定（除錯合併鏈用） |
+| `dc <原生參數...>` | 逃生門，參數原樣交給 `docker compose` |
+
+**為什麼要斷言 bind mount 來源**：來源不存在時 Docker 不會報錯，
+它會靜默建立一個 `root:root 0755` 的空目錄再掛上去。於是 CRS 排除規則從未載入、
+WAF 悄悄失效，而且沒有任何線索。
+
+`cx test` 同時是「test 模式的 compose」與「跑測試套件」。
+第一個參數落在動作白名單裡就走 compose，否則走測試 —— 兩組沒有交集，不會有歧義。
+
+---
+
+## `cx test` — 測試套件
+
+```
+cx test <back|front|all|coverage|larastan>
+```
+
+| 子指令 | 做什麼 | 需要什麼 |
+|---|---|---|
+| `back` | `php artisan test` | 不需要 MySQL（走 sqlite `:memory:`） |
+| `front` | `nuxt typecheck` | frontend 的 node_modules |
+| `all` | 兩者 | |
+| `coverage` | 後端覆蓋率，報告搬到 `reports/quality/` | 臨時打開 `XDEBUG_MODE=coverage` |
+| `larastan` | 等同 `cx scan code` 的第一段 | |
+
+`cx test back` 會額外傳 `-e DB_CONNECTION=sqlite -e DB_DATABASE=:memory:`。
+這是第二道保險 —— `phpunit.xml` 已經有 `force="true"`，但就算有人把它拿掉，
+測試也不會打到真的資料庫。
+
+---
+
+## `cx db` — 資料庫
+
+```
+cx db <子指令> [參數...]        # 作用於 --mode，預設 dev
+```
+
+| 子指令 | 說明 | 閘門 |
+|---|---|---|
+| `status` | 連線資訊、資料表清單、migration 狀態 | |
+| `shell [SQL]` | 進 mysql client；給了 SQL 就執行後結束 | |
+| `wait` | 等 MySQL 就緒（CI 用） | |
+| `migrate` | `artisan migrate --force` | |
+| `seed` | `artisan db:seed --force` | |
+| `fresh` | ⚠ `migrate:fresh --seed`，清空所有資料表 | 互動確認 |
+| `dump [檔案]` | `mysqldump` → `reports/db/<mode>-<時間>.sql.gz`，並 `gzip -t` 驗證 | |
+| `restore <檔案>` | ⚠ 從 dump 還原，會覆蓋現有資料 | 確認 + **輸入 `RESTORE <mode>`** |
+| `admin` | `artisan make:filament-user` | |
+
+**client 一律在 mysql 容器裡執行**，不是 app 容器。app 是 Alpine，
+`apk add mysql-client` 裝到的其實是 **MariaDB client**，它預設會驗證伺服器憑證，
+對上 MySQL 8.4 的自簽憑證每次都是
+`ERROR 2026 (HY000): TLS/SSL error: self-signed certificate in certificate chain`
+—— 訊息看起來像 TLS 壞了，其實只是用錯 client。
+
+密碼從不經過 host 的行程列表：指令用 `sh -c '… -p"$MYSQL_ROOT_PASSWORD" …'`，
+只在容器內展開。
+
+---
+
+## `cx art` / `cx composer` / `cx npm` — 工具包裝
+
+```
+cx art <artisan 參數...>
+cx composer <composer 參數...>
+cx npm [--backend] <npm 參數...>
+```
+
+三者都是「有 Docker 走容器、沒有就用本機」。`cx_dim` 會印出 `runner: docker`
+或 `runner: native`，執行前先看那一行。
+
+| | 容器 | 本機 fallback |
+|---|---|---|
+| `cx art` | `run --rm --entrypoint php app artisan` | `env -C backend php artisan` |
+| `cx composer` | `run --rm --no-deps --entrypoint composer app` | `env -C backend composer` |
+| `cx npm` | compose 的 `nuxt` service | `env -C frontend npm` |
+| `cx npm --backend` | `node:24.20-bookworm-slim` 一次性容器 | `env -C backend npm`（**優先**） |
+
+`cx composer` 會主動拒絕任何 `--ignore-platform-req*` 參數：
+```
+✘ 拒絕 --ignore-platform-reqs —— 正確診斷是 composer why-not <套件> <版本>
+```
+
+### `cx npm --backend` 為什麼是特例
+
+backend 也有自己的 `package.json`（Vite + Tailwind，建置 Laravel 端的
+`public/build/`）。舊版的 `init.sh` 呼叫一個叫 `npm-php` 的 service 來做這件事，
+**但那個 service 從來沒有存在過** —— 所以後端資產在舊專案裡從來沒被建置過。
+`welcome.blade.php` 有 `@vite(...)`，缺 `public/build/manifest.json` 時直接
+`ViteManifestNotFoundException`。
+
+它**不能**用 `app` service：`app` 是 `php:8.5-fpm-alpine`，裡面沒有 node，
+實測是 `exec: "npm": executable file not found in $PATH`。
+
+它也**不能**用 Alpine 的 node 映像：`backend/node_modules` 是掛在 host 上的
+真實目錄，原生模組（Vite 8 的 rolldown binding）照安裝當下的 libc 編。
+host 是 Ubuntu（glibc），掛進 Alpine（musl）會是
+```
+Error: Cannot find native binding
+Cannot find module '@rolldown/binding-linux-x64-musl'
+```
+訊息指向 npm 的 optional dependencies bug，其實只是 libc 不匹配。
+所以 fallback 映像刻意選 `bookworm-slim`（glibc），兩條路產生的
+`node_modules` 可以互通。
+
+---
+
+## `cx scan` — 四道防線
+
+```
+cx scan <code|sast|sca|dast|secrets|all> [--runner docker|native|auto]
+```
+
+| 子指令 | 防線 | 工具 | 失敗退出碼 |
+|---|---|---|---|
+| `code` | ① Quality | Larastan (level max) + SonarQube scanner | 20 |
+| `sast` | ② SAST | Semgrep | 21 |
+| `sca` | ③ SCA | Trivy + `composer audit` + `npm audit` | 22 |
+| `dast` | ④ DAST | OWASP ZAP baseline | 23 |
+| `secrets` | — | gitleaks（全歷史） | 1 |
+| `all` | 全部 | 依序，任一失敗即停 | 第一個非零 |
+
+報告輸出到 `reports/{quality,sast,sca,dast,secrets}/`。
+
+**`--runner`**：`docker` 用容器、`native` 用 `~/.local` 的二進位、`auto`（預設）
+先試 native 再退回 docker。ZAP 只有 docker 一條路（要 Java）。
+
+### SAST 的嚴重度閘門
+
+**不使用 `semgrep --error`。** 那個旗標的語意是「只要有任何 finding 就回傳非零」，
+於是 INFO 等級的風格建議跟 SQL injection 有同樣的效果 —— 閘門一定會被關掉，
+關掉之後就再也沒有閘門。
+
+改成永遠產出 SARIF，再由 `bin/lib/sarif_gate.py` 依 `level` 分級：
+只有 `error` 會讓 `cx scan sast` 回傳 `EX_SCAN_SAST`，`warning` 與 `note` 印出來但放行。
+
+`.semgrepignore` **必須在專案根目錄** —— Semgrep 只在「掃描目標的根目錄」找它，
+放在 `docker/security/` 底下完全不會被讀到。
+
+### DAST 的退出碼映射
+
+ZAP baseline 的退出碼不是「0 成功 / 非 0 失敗」：
+
+| ZAP rc | 意義 | cx 的處置 |
+|---|---|---|
+| 0 | 沒有任何 alert | 通過 |
+| 1 | 至少一個 FAIL | `EX_SCAN_DAST` |
+| 2 | 只有 WARN | **通過**（並印出警告數） |
+| ≥3 | 工具本身出錯（目標連不上、設定壞掉） | `EX_FAIL`，不是掃描失敗 |
+
+把 2 當失敗會讓每一次掃描都紅，把 ≥3 當成功則會讓「ZAP 根本沒跑起來」
+被記成「沒有漏洞」。`_scan_dast_probe` 會在正式掃描前先確認目標會回應，
+免得把連線失敗誤報成安全結論。
+
+ZAP 跑兩次：`DetectionOnly` 與 `On`，用來對照 WAF 到底擋掉了什麼。
+
+`baseline.conf` 掛在 `/zap/pmconf/` 而不是 `/zap/wrk/` —— `/zap/wrk/` 是輸出目錄，
+ZAP 會往裡面寫，把唯讀設定放進去會在某些版本被覆寫。
+
+### SonarQube token
+
+從 `.cx/sonar-token` 讀。**不用 `${SONAR_TOKEN:?}`** —— 在 `set -u` 之下，
+`:?` 會直接讓整個 shell 結束，連「SonarQube 未設定，略過」這行訊息都印不出來。
+沒有 token 就跳過 Sonar 那一段，Larastan 照跑。
+
+---
+
+## `cx sonar` — 常駐 SonarQube
+
+```
+cx sonar <up|down|status|token|url|logs|wait>
+```
+
+獨立的 compose project（`pm_sonar`），跟三個模式互不相干。
+`cx sonar token` 引導產生 token 並存到 `.cx/sonar-token`（mode 0600）。
+
+---
+
+## `cx verify` — 驗收
+
+```
+cx verify [範圍...] [--report <檔案>] [--quiet]
+```
+
+| 範圍 | 內容 | 需要容器 |
+|---|---|---|
+| `static` | compose 合併結果、Dockerfile、版本鎖定 | 否 |
+| `runtime` | supervisord、vendor、端點、資料庫 | **是**（先 `cx dev up -d`） |
+| `ansible` | syntax-check + ansible-lint + yamllint | 否 |
+| `app` | `/up`、`/admin`、`/sanctum`、前端 | 是 |
+| `all` | 全部，會依序把三個模式都起起來 | 很慢 |
+
+省略範圍 = `static app ansible`。
+報告預設寫到 `reports/verify/<時間戳>.md`。
+
+---
+
+## `cx deploy` — Ansible
+
+```
+cx deploy <子指令> [限制]
+```
+
+| 子指令 | 對應 | 危險度 |
+|---|---|---|
+| `galaxy` | `ansible-galaxy install -r requirements.yml` | |
+| `syntax` | `--syntax-check`（三個 playbook） | |
+| `lint` | `ansible-lint`（production profile）+ `yamllint` | |
+| `ping` | 確認 SSH 與 become | |
+| `check [限制]` | `--check --diff` 乾跑 | |
+| `apply [限制]` | ⚠ **真的部署** | 列出目標主機並要求確認 |
+| `app [限制]` | 只跑應用層（`playbooks/deploy-only.yml`） | 同上 |
+| `rollback` | 互動式回滾 | 同上 |
+
+`[限制]` 會變成 `--limit`。
+
+---
+
+## `cx git` — 版本控制
+
+```
+cx git <子指令> [參數...]
+```
+
+| 子指令 | 說明 |
+|---|---|
+| `status` | 三個 repo 的分支 / 變更 / 上游 |
+| `sync` | 子模組 checkout 到追蹤分支 |
+| `commit [-m 訊息]` | 子模組先、主庫 gitlink 後 |
+| `branch list\|new\|switch\|delete <名稱>` | 三個 repo 同步操作 |
+| `remote-init` | 用 `gh` 建立 Information-Study 的三個 public repo |
+| `push [--force]` | 推送 |
+| `guard install\|status\|remove` | pre-push hook |
+
+### `cx git push` 的閘門順序
+
+1. **遠端白名單**。唯一合法的是
+   `github.com/Information-Study/{pm,pm-backend,pm-frontend}`。
+   `team-of-P/*` 永久禁止，**沒有任何旗標可以覆寫**。
+2. **祕密掃描**。兩層：檔名層（`.env`、`*.pem`、`id_rsa`…）與內容層
+   （AWS key、私鑰 PEM header、`APP_KEY=base64:`…）。
+   內容層對每個 repo 都會先 `cd` 進去再掃 —— 早期版本沒有 `cd`，
+   於是兩個子模組實際上掃了零個檔案。
+3. **順序**。子模組先推、主庫後推。反過來的話主庫的 gitlink 會指向
+   遠端不存在的 commit，別人 clone 下來 `submodule update` 直接失敗。
+   任何子模組推失敗就中止，不會繼續推主庫。
+4. **推完驗證 gitlink**。用 `git ls-remote` 確認主庫記錄的每個 gitlink
+   在對應的遠端真的存在。
+5. `--force` 需要**輸入 `REWRITE HISTORY`** 才會繼續。
+
+detached HEAD 之下會先 `git checkout -q -B <追蹤分支> HEAD` 再推
+（子模組在 `submodule update` 之後預設就是 detached）。
+
+> `cx git sync` 用 `checkout -q -B "$b" "$head"` 而不是 `checkout -q "$b"`。
+> 後者在「本地分支落後 gitlink」時會靜默把工作區切到舊的 commit，
+> 看起來成功，實際上剛剛的提交不見了。
+
+---
+
+## `cx fresh` — 清理與重建
+
+```
+cx fresh [--phase preflight|backup|migrate|delete|all] [--mode backup-only|carryover|scaffold]
+```
+
+流程：**備份 → 驗證備份 → 確認閘門 → 刪除 → 重建**。
+
+`_fresh_nuke` 的護欄（任何一條不成立就中止，不是跳過）：
+- 拒絕 symlink（避免被指到樹外）
+- 路徑必須**嚴格**位於 `CX_ROOT` 之下
+- 拒絕 `CX_ROOT` 本身、`$HOME`、`/`
+- 不可以 root 執行
+
+備份驗證不是「檔案存在就算數」：從 MANIFEST 推導出**預期產物清單**逐一比對，
+每個 tar 都 `tar -tzf` 過一遍，每個 git bundle 都**真的解一次**
+（`git init --bare` + `fetch`）—— `git bundle verify` 只讀 header，
+一個被截斷的 bundle 它照樣說 OK。
+
+尚未實作：`--rollback`、`--mode carryover|scaffold` 的重建階段（見 `claude.md` §12）。
+
+---
+
+## `cx install` / `cx uninstall`
+
+```
+cx install [--rc]
+cx uninstall [--rc]
+```
+
+`install` 建立 `~/.local/bin/cx` symlink 並註冊 bash 補全。
+`--rc` 會動 `~/.bashrc`。
+
+`--dry-run` 之下**不會**碰 `~/.bashrc`。這不是小事：
+`{ ...; } >> "$rc"` 的重導向在指令執行**之前**就先建立，
+所以 `cx_run` 印出 `[dry-run]` 而不執行時，重導向已經生效了 ——
+早期版本的 `--dry-run` 會真的截斷使用者的 `~/.bashrc`。
+現在真實路徑也是先寫暫存檔再 `cp`。
+
+---
+
+## `cx lint`
+
+```
+cx lint [目錄]
+```
+
+沒裝 `ansible-lint` 時的替代品，用 `bin/lib/ansible_lint.py`。
+會排除 `collections/`、`.cache/`、`.ansible/`、`.git/`、`__pycache__/`
+—— 不排除的話它會去檢查上游 collection 的原始碼，回報 803 個跟本專案無關的 finding。
+
+---
+
+## `cx tui`
+
+不給動詞時的預設。whiptail 選單，把上面所有動詞包成互動式。
+沒有 tty 時自動退回 `plain`。
+
+---
+
+## 從子目錄執行
+
+`cx` 向上搜尋 `.cxroot`，所以 `backend/`、`ansible/roles/mysql/` 底下
+都可以直接跑：
+
+```bash
+cd backend && ../cx doctor          # 或者 cx install 之後直接 cx doctor
+cd ansible/roles/mysql && cx deploy syntax
+```
+
+搜尋順序是「呼叫者的 cwd 往上」→ 找不到才退回「`cx` 自身所在目錄往上」。
+`CX_INVOKE_PWD` 在任何 `cd` 之前就記下來，`cx_resolve` 用它把相對路徑
+（例如 `cx verify --report out.md`）解析成呼叫者所在位置的路徑，
+而不是專案根目錄的路徑。

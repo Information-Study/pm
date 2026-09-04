@@ -252,3 +252,29 @@
     - frontend_mode in ['ssr', 'spa']
     - (frontend_pm2_desired_names | default([])) | length > 0
     - not ansible_check_mode
+
+# ── 讓 systemd 接管 ────────────────────────────────────────────────────────
+# nodejs_pm2 role 只把 pm2 的 systemd 單元 enable 起來，沒有 start ——
+# 因為那個時間點前端還沒 build，dump.pm2 是空的，而 pm2 的單元是
+# Type=forking + PIDFile；空 dump 的 resurrect 不會留下 pid file，
+# systemd 會判定 Failed with result "protocol" 並重試到 rate limit。
+#
+# 到這裡 process 已經 online、dump 也存好了，才輪到 systemd 接管。
+# 不做這一步的話：process 現在是活的，但**重開機之後不會自動回來**，
+# 而 healthcheck 檢查的是 systemd 單元，會回報 pm2-<user>.service inactive。
+#（2026-09-04 實測：deploy 全綠但 healthcheck 少一項。）
+#
+# 先 flush_handlers 讓 pm2 save 真的跑完，dump 才是這一版的內容。
+- name: PM2 | 先把 pm2 save 執行掉（dump 要先是新的）
+  ansible.builtin.meta: flush_handlers
+
+- name: PM2 | 交給 systemd 接管（開機自動 resurrect）
+  ansible.builtin.systemd_service:
+    name: "{{ pm2_systemd_unit }}"
+    enabled: true
+    state: started
+  when:
+    - frontend_pm2_manage | bool
+    - frontend_mode in ['ssr', 'spa']
+    - (frontend_pm2_desired_names | default([])) | length > 0
+    - not ansible_check_mode

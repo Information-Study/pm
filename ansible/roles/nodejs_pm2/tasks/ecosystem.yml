@@ -220,9 +220,38 @@
     or (pm2_start.changed | default(false))
     or (pm2_delete.changed | default(false))
 
-- name: 啟用並啟動 PM2 的 systemd 單元
+# ⚠ enable 與 start 必須拆開。
+#
+# PM2 產生的 systemd 單元是 Type=forking + PIDFile={{ pm2_home }}/pm2.pid，
+# ExecStart 是 `pm2 resurrect`。dump.pm2 是空清單時（第一次部署、前端還沒 build，
+# 或 static 模式本來就沒有 process），resurrect 會啟動、發現沒有東西要接管、
+# 然後直接結束 —— pm2.pid 從來不會出現，systemd 判定：
+#   Can't open PID file /home/deploy/.pm2/pm2.pid (yet?) after start
+#   pm2-deploy.service: Failed with result 'protocol'
+# 並在 Restart= 之下重試到 "Start request repeated too quickly"。
+#
+# 這不是設定錯誤，是「沒有東西要 resurrect」的正常狀態，但 systemd_service
+# 的 state: started 會把它當成部署失敗（實測：第一次部署在第 236 個 task 中止）。
+#
+# enabled 一定要設 —— 開機時的 resurrect 靠的是它，跟現在有沒有 process 無關。
+- name: 啟用 PM2 的 systemd 單元（開機自動 resurrect）
   ansible.builtin.systemd_service:
     name: "{{ pm2_systemd_unit }}"
     enabled: true
-    state: started
     daemon_reload: true
+
+- name: 讀取 dump.pm2（判斷現在有沒有 process 要 resurrect）
+  ansible.builtin.slurp:
+    src: "{{ pm2_home }}/dump.pm2"
+  register: pm2_dump_raw
+  failed_when: false
+  changed_when: false
+
+# W10= 是 base64 的 "[]" —— 檔案不存在或讀不到時當成空清單。
+- name: dump 裡真的有 process 時才啟動單元
+  ansible.builtin.systemd_service:
+    name: "{{ pm2_systemd_unit }}"
+    state: started
+  when: >-
+    ((pm2_dump_raw.content | default('W10=') | b64decode | from_json)
+     | default([], true) | length) > 0

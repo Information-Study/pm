@@ -24,6 +24,69 @@
   register: mysql_runtime
   changed_when: false
 
+# ── 為什麼這裡要「自己修好」而不是直接 assert ────────────────────────────────
+# handler 的通知不會跨 play 保留。只要有任何一次部署在「zz-app.cnf 已寫入、
+# restart handler 還沒執行」之間失敗（例如後面的 backup 任務出錯），通知就消失；
+# 而下一次部署因為檔案內容已經一樣，template 回報 ok 而不是 changed，
+# 於是**永遠不會再 notify**，mysqld 就一直跑著舊設定。
+# 這個狀態會卡死，而錯誤訊息（「!includedir 沒載入」）把人導向完全錯誤的方向。
+# 2026-09-04 實測：第一次部署在此失敗，第二次部署即使加了 flush_handlers 也一樣失敗，
+# 因為根本沒有 handler 可以 flush。
+#
+# 所以判斷依據不是「這次有沒有變更」，而是「執行期的值對不對」——
+# 對了就什麼都不做（冪等），不對就重啟再讀一次。
+- name: 判斷執行期設定是否與預期不符
+  ansible.builtin.set_fact:
+    mysql_runtime_mismatch: >-
+      {{ mysql_runtime.query_result[0][0].charset != mysql_charset
+         or mysql_runtime.query_result[0][0].collation != mysql_collation
+         or (mysql_runtime.query_result[0][0].skip_name_resolve | int)
+            != ((mysql_skip_name_resolve | bool) | ternary(1, 0))
+         or (mysql_runtime.query_result[0][0].max_allowed_packet | int)
+            < ((mysql_max_allowed_packet_mb | int) * 1024 * 1024) }}
+
+- name: 執行期設定與 {{ mysql_conf_file }} 不一致 → 重啟並重讀（補上遺失的 handler）
+  when:
+    - mysql_runtime_mismatch | bool
+    - not ansible_check_mode
+  block:
+    - name: 重新啟動 {{ mysql_service_name }}
+      ansible.builtin.systemd_service:
+        name: "{{ mysql_service_name }}"
+        state: restarted
+
+    - name: 等待 MySQL 重新接受連線
+      ansible.builtin.wait_for:
+        path: "{{ mysql_socket }}"
+        state: present
+        timeout: 60
+
+    # ⚠ 不可以直接 register: mysql_runtime。
+    # 被 when 略過的任務「照樣會寫入 register 變數」，寫進去的是
+    # {"changed": false, "skipped": true, "skip_reason": ...}。
+    # 於是已經收斂的主機（mismatch=false、整個 block 略過）會把上面那次
+    # 成功查詢的結果覆蓋掉，下一個 assert 的 fail_msg 求值就變成
+    #   object of type 'dict' has no attribute 'query_result'
+    # ——訊息完全不會提到 register，而且只在「第二次以後的部署」才出現。
+    - name: 重讀伺服器實際生效的設定
+      ansible.mysql.mysql_query:
+        query: >-
+          SELECT VERSION() AS version,
+                 @@character_set_server AS charset,
+                 @@collation_server AS collation,
+                 @@skip_name_resolve AS skip_name_resolve,
+                 @@bind_address AS bind_address,
+                 @@max_allowed_packet AS max_allowed_packet
+        login_db: mysql
+        login_unix_socket: "{{ mysql_socket }}"
+        config_file: "{{ mysql_defaults_file }}"
+      register: mysql_runtime_after_restart
+      changed_when: false
+
+    - name: 以重啟後的結果取代原本的讀值
+      ansible.builtin.set_fact:
+        mysql_runtime: "{{ mysql_runtime_after_restart }}"
+
 - name: 設定必須真的生效（不是只有寫進檔案）
   ansible.builtin.assert:
     that:
@@ -34,13 +97,14 @@
       - (mysql_runtime.query_result[0][0].max_allowed_packet | int) >=
         ((mysql_max_allowed_packet_mb | int) * 1024 * 1024)
     fail_msg: >-
-      MySQL 執行期設定與預期不符：
+      MySQL 執行期設定在重啟之後仍與預期不符：
       charset={{ mysql_runtime.query_result[0][0].charset }}（預期 {{ mysql_charset }}）、
       collation={{ mysql_runtime.query_result[0][0].collation }}（預期 {{ mysql_collation }}）、
       skip_name_resolve={{ mysql_runtime.query_result[0][0].skip_name_resolve }}、
       max_allowed_packet={{ mysql_runtime.query_result[0][0].max_allowed_packet }}。
-      最可能的原因是 {{ mysql_conf_file }} 沒有被 {{ mysql_my_cnf }} 載入，
-      或 MySQL 尚未重啟（handler 被 --skip-tags 之類略過）。
+      已經重啟過仍不生效，代表 {{ mysql_conf_file }} 真的沒有被
+      {{ mysql_my_cnf }} 載入，或被後面的 !includedir 目錄覆寫。
+      用 `mysqld --verbose --help | grep -A99 'Default options'` 確認讀檔順序。
     quiet: true
 
 - name: 版本必須是 {{ mysql_version_series }} 系列

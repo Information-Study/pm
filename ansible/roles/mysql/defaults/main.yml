@@ -76,8 +76,18 @@ mysql_packages_distro:
   - mysql-client
 # python3-pymysql 是 ansible.mysql 模組的必要相依；
 # python3-debian / python3-apt 是 deb822_repository 的必要相依（A6）。
+#
+# python3-cryptography：MySQL 8.4 的預設認證外掛是 caching_sha2_password，
+# 它在「非 unix socket」的連線上要求 RSA 交換，而 PyMySQL 把那一段委託給
+# cryptography。缺了它，走 unix socket 的任務全部正常，只有 TCP 127.0.0.1
+# 的連線會失敗，訊息是
+#   'cryptography' package is required for sha256_password or
+#   caching_sha2_password auth methods
+# 看起來像授權沒建好（'pm'@'127.0.0.1' 不存在），其實是目標機少一個 python 套件。
+# 2026-09-04 對真實 Ubuntu 24.04 目標實測踩到。
 mysql_support_packages:
   - python3-pymysql
+  - python3-cryptography
   - python3-debian
   - python3-apt
   - gnupg

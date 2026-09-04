@@ -75,6 +75,10 @@ common_base_packages:
   - python3-debian          # A6：ansible.builtin.deb822_repository 的必要條件
   - python3-apt             # A6：ansible.builtin.apt 的必要條件
   - python3-pymysql         # ansible.mysql 的必要條件（mysql role 會用）
+  # MySQL 8.4 的 caching_sha2_password 在 TCP 連線上要走 RSA 交換，
+  # PyMySQL 把那一段委託給 cryptography。缺了它只有 TCP 會壞，socket 正常，
+  # 於是症狀看起來像「授權沒建好」。
+  - python3-cryptography
   # ansible.builtin.debconf 需要 debconf-get-selections 這支執行檔，它在
   # debconf-utils 裡，而 Ubuntu 的 minimal 映像預設不裝。
   # 缺了它，mysql role 在寫 root 密碼的 debconf 答案時會直接失敗：

@@ -69,6 +69,46 @@
     - healthcheck_tls_autodetect | bool
     - not (healthcheck_cert_stat.stat.exists | default(true))
 
+# ── app 層的前提：目標機自己解析得到 app_domain ────────────────────────────
+# app 層打的是公開網址（http://{{ app_domain }}/...），這需要**目標機**
+# 解析得到那個名字。解析不到時 uri 模組回的是
+#   Status code was -1 and not [200]: Request failed:
+#   <urlopen error [Errno -2] Name or service not known>
+# 而 retries 會把它重試滿 12 次 —— DNS 不存在再重試幾次都一樣，
+# 白白花掉一分多鐘，最後還給出一份指向 PHP / nginx 的錯誤提示（方向完全錯）。
+#
+# 所以先用 getent 問一次。解析不到就直接跳過 app 層並說清楚原因 ——
+# edge 層（127.0.0.1 + Host 標頭）本來就已經涵蓋「nginx 到應用」這一段，
+# app 層額外驗的只有「DNS 與對外路徑」。
+- name: Prepare | 目標機能不能解析 {{ app_domain }}
+  ansible.builtin.command:
+    argv: [getent, hosts, "{{ app_domain }}"]
+  register: healthcheck_domain_resolve
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: healthcheck_check_app | bool
+
+- name: Prepare | 解析不到就跳過 app 層
+  ansible.builtin.set_fact:
+    healthcheck_check_app: false
+    healthcheck_app_skipped_reason: >-
+      目標機解析不到 {{ app_domain }}（getent hosts 回 {{ healthcheck_domain_resolve.rc }}）。
+  when:
+    - healthcheck_check_app | bool
+    - (healthcheck_domain_resolve.rc | default(0)) != 0
+
+- name: Prepare | 說明為何跳過 app 層
+  ansible.builtin.debug:
+    msg: >-
+      {{ healthcheck_app_skipped_reason }}
+      edge 層（{{ healthcheck_edge_url_clean }} + Host: {{ app_domain }}）已經涵蓋
+      「nginx 到應用」這一段，所以本次仍然有驗到服務本身；
+      跳過的只有「DNS 與對外路徑」。
+      要讓 app 層也跑起來：把 {{ app_domain }} 指到這台機器
+      （公開 DNS，或在目標機的 /etc/hosts 加一筆指向 127.0.0.1）。
+  when: healthcheck_app_skipped_reason is defined
+
 - name: Prepare | 本次檢查範圍
   ansible.builtin.debug:
     msg: >-

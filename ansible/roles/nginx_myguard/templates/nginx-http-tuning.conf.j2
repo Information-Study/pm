@@ -37,18 +37,36 @@ log_format {{ log_fmt }} '$remote_addr - $remote_user [$time_local] '
 # 不重算。鏈：app_max_upload_mb → php_upload/php_post → nginx_client_max_body_size
 #           → waf_request_body_limit（必須最大）。
 # vhost 的 server{} 會再寫一次同一個變數（server 覆蓋 http），兩邊同源不會漂移。
-client_max_body_size {{ nginx_client_max_body_size }};
-client_body_timeout 60s;
-client_body_buffer_size 128k;
+#
+# ⚠ 發行版的 nginx.conf 若已經在 http{} 宣告過同一個指令，這裡必須跳過 ——
+#   同層重複是 emerg，nginx 完全起不來。跳過不影響本站，因為 vhost 的
+#   server{} 一定會覆蓋成正確的值（見 facts.yml 的 nginx_existing_directives）。
+{% for d, v in [('client_max_body_size', nginx_client_max_body_size),
+                ('client_body_timeout', '60s'),
+                ('client_body_buffer_size', '128k')] %}
+{%   if d in (nginx_existing_directives | default([])) %}
+# {{ d }}：nginx.conf 的 http{} 已宣告，此處跳過（vhost 的 server{} 會覆蓋）
+{%   else %}
+{{ d }} {{ v }};
+{%   endif %}
+{% endfor %}
 {% if nginx_gzip_enabled | bool %}
 
 # ---- gzip ------------------------------------------------------------------
-gzip on;
-gzip_vary on;
-gzip_proxied any;
-gzip_comp_level 5;
-gzip_min_length 256;
-gzip_types {{ nginx_gzip_types | join(' ') }};
+# 同上：發行版已宣告的逐一跳過（gzip 系列的預設值本來就相近，
+# 沿用發行版的值比讓 nginx 起不來好）。
+{% for d, v in [('gzip', 'on'),
+                ('gzip_vary', 'on'),
+                ('gzip_proxied', 'any'),
+                ('gzip_comp_level', '5'),
+                ('gzip_min_length', '256'),
+                ('gzip_types', nginx_gzip_types | join(' '))] %}
+{%   if d in (nginx_existing_directives | default([])) %}
+# {{ d }}：nginx.conf 的 http{} 已宣告，此處跳過
+{%   else %}
+{{ d }} {{ v }};
+{%   endif %}
+{% endfor %}
 {% endif %}
 
 # ---- map -------------------------------------------------------------------
@@ -83,8 +101,13 @@ limit_req_zone $binary_remote_addr zone={{ var }}_general:{{ nginx_limit_req_zon
 limit_req_zone ${{ var }}_login_key zone={{ var }}_login:{{ nginx_limit_req_zone_size }} rate={{ nginx_limit_req_login_rate }};
 {% endif %}
 limit_conn_zone $binary_remote_addr zone={{ var }}_conn:{{ nginx_limit_req_zone_size }};
-limit_req_status 429;
-limit_conn_status 429;
+{% for d, v in [('limit_req_status', '429'), ('limit_conn_status', '429')] %}
+{%   if d in (nginx_existing_directives | default([])) %}
+# {{ d }}：nginx.conf 的 http{} 已宣告，此處跳過
+{%   else %}
+{{ d }} {{ v }};
+{%   endif %}
+{% endfor %}
 {% if is_proxy %}
 
 # ---- 前端 upstream（A10）---------------------------------------------------

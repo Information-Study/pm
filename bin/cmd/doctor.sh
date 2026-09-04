@@ -106,9 +106,13 @@ cmd_doctor_main() {
     # 這個 repo 的進入點必須可執行。git index 曾經把 cx 的模式記成 100644
     # 而磁碟是 755 —— 內容零差異，git diff 看不出來，但一旦提交，
     # 任何人 clone 下來打 ./cx 都是 Permission denied。
+    # 清單是「相對 CX_ROOT」的路徑（cd 只發生在下面那個 process substitution 的
+    # 子 shell 裡，不影響這裡的 cwd）。所以測試一定要自己補上 $CX_ROOT/ ——
+    # 少了它，從任何子目錄執行 cx doctor 都會把 28 個檔案全部誤報成
+    # 「磁碟未設執行位元」，而在專案根目錄執行卻完全正常。
     local f nx=0 idx_bad=0
     while IFS= read -r f; do
-        [[ -x $f ]] || { _fl "磁碟未設執行位元" "$f"; nx=$((nx+1)); }
+        [[ -x $CX_ROOT/$f ]] || { _fl "磁碟未設執行位元" "$f"; nx=$((nx+1)); }
         if git -C "$CX_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
             local m; m=$(git -C "$CX_ROOT" ls-files -s -- "$f" 2>/dev/null | awk '{print $1}')
             [[ -n $m && $m != 100755 ]] && { _fl "git index 模式錯誤" "$f（$m，應為 100755）"; idx_bad=$((idx_bad+1)); }

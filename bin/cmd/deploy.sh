@@ -262,20 +262,32 @@ _deploy_rollback() {
         ${limit:+--limit "$limit"} "${@:2}" )
 }
 
+# [限制] 是 --limit 的值，不是旗標。cx 的全域旗標（--yes / --dry-run / --mode）
+# 必須放在動詞「之前」，寫成 cx deploy apply --yes 會讓 --yes 被當成主機樣式，
+# 而 ansible 對「比對不到任何主機」只印 warning、退出碼 0 ——
+# 於是 apply 會安靜地什麼都不做卻回報成功。這裡直接擋下來。
+_deploy_reject_flag() {
+    [[ ${1:-} == -* ]] || return 0
+    cx_error "「$1」看起來是旗標，不是主機樣式"
+    cx_dim "  全域旗標要放在動詞之前：cx --yes deploy ${_CX_DEPLOY_SUB:-apply}"
+    exit "$EX_USAGE"
+}
+
 cmd_deploy_main() {
     local sub=${1:-}
     [[ $# -gt 0 ]] && shift
+    _CX_DEPLOY_SUB=$sub
     case $sub in
         ''|-h|--help|help) _deploy_usage ;;
         syntax)   _deploy_syntax ;;
         lint)     _deploy_lint ;;
         galaxy)   _deploy_galaxy ;;
-        ping)     _deploy_ping "${1:-}" ;;
-        facts)    _deploy_facts "${1:-}" ;;
-        vars)     _deploy_vars "${1:-}" ;;
-        check)    _deploy_check "${1:-staging}" ;;
-        apply)    cx_lock deploy; _deploy_apply "${1:-}" site.yml ;;
-        app)      cx_lock deploy; _deploy_apply "${1:-}" playbooks/deploy-only.yml ;;
+        ping)     _deploy_reject_flag "${1:-}"; _deploy_ping "${1:-}" ;;
+        facts)    _deploy_reject_flag "${1:-}"; _deploy_facts "${1:-}" ;;
+        vars)     _deploy_reject_flag "${1:-}"; _deploy_vars "${1:-}" ;;
+        check)    _deploy_reject_flag "${1:-}"; _deploy_check "${1:-staging}" ;;
+        apply)    _deploy_reject_flag "${1:-}"; cx_lock deploy; _deploy_apply "${1:-}" site.yml ;;
+        app)      _deploy_reject_flag "${1:-}"; cx_lock deploy; _deploy_apply "${1:-}" playbooks/deploy-only.yml ;;
         rollback) cx_lock deploy; _deploy_rollback "$@" ;;
         *) cx_error "未知的子指令：$sub"; _deploy_usage; return "$EX_USAGE" ;;
     esac

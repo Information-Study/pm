@@ -53,6 +53,13 @@
 # host / port / user / password 全部來自 --defaults-file（見 db-backup.cnf.j2），
 # 命令列上沒有任何機密。--defaults-file 必須是 mysqldump 的第一個參數。
 #
+# ⚠ 折疊純量（>-）裡**不可以**把續行縮得比第一行深。
+# YAML 的折疊規則是「比區塊縮排更深的行保留換行」，於是
+#     && /usr/bin/mv -f A
+#        B
+# 會變成兩行，shell 收到的是 `mv -f A` 加上另一行 `B`：
+#   /usr/bin/mv: missing destination file operand after 'A'
+# 2026-09-04 實測踩到（第 336 個 task）。續行一律與第一行同縮排。
 # 先寫 .part 再 mv：中途失敗不會留下一個看起來完好的半截備份，
 # 而 creates: 指向最終檔名，讓同一個 release_id 重跑時不會重複備份。
 - name: DB | migrate 前 mysqldump 備份
@@ -72,7 +79,7 @@
       {{ '| /usr/bin/gzip -c' if backend_backup_gzip | bool else '' }}
       > {{ (backend_premigrate_dump_path ~ '.part') | quote }}
       && /usr/bin/mv -f {{ (backend_premigrate_dump_path ~ '.part') | quote }}
-         {{ backend_premigrate_dump_path | quote }}
+      {{ backend_premigrate_dump_path | quote }}
     executable: /bin/bash
     creates: "{{ backend_premigrate_dump_path }}"
   register: backend_dump

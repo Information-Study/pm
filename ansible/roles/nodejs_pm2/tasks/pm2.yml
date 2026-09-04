@@ -116,6 +116,53 @@
       {{ pm2_startup.stderr | default('') | trim }}
     quiet: true
 
+# ── 修正 pm2 startup 產生的 unit（PM2 v7）─────────────────────────────────
+# `pm2 startup systemd` 產生的單元是 Type=forking + PIDFile=$PM2_HOME/pm2.pid，
+# 但 PM2 v7 的 God Daemon **不會**寫那個檔（實測 v7.0.4：daemon 明明在跑，
+# $PM2_HOME 底下只有 pids/ 目錄，沒有 pm2.pid）。
+# 於是只要 daemon 是被部署流程的 `pm2 startOrReload` 先起來的，systemd 就會說
+#   Can't open PID file /home/deploy/.pm2/pm2.pid (yet?) after start
+#   pm2-deploy.service: Failed with result 'protocol'
+# 並在 Restart= 之下重試到 "Start request repeated too quickly"。
+#
+# 改成 oneshot + RemainAfterExit：ExecStart 只負責把 dump resurrect 回來，
+# 跑完就結束，daemon 的存活由 PM2 自己負責（healthcheck 另外驗 process 清單）。
+# 用 drop-in 而不是改 unit 本體 —— 下次 `pm2 startup` 重新產生時不會被蓋掉。
+# 2026-09-04 對真實目標實測踩到。
+- name: 建立 PM2 systemd drop-in 目錄
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ pm2_systemd_unit }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: 修正 PM2 unit 的 Type / PIDFile（PM2 v7 不寫 pm2.pid）
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ pm2_systemd_unit }}.service.d/10-{{ app_slug }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      # PM2 v7 的 God Daemon 不寫 $PM2_HOME/pm2.pid，
+      # 但 `pm2 startup` 產生的 unit 仍然是 Type=forking + PIDFile。
+      # 結果是 systemd 每次都判定 protocol 失敗，即使 daemon 明明在跑。
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      PIDFile=
+      Restart=no
+
+# 不寫成 handler：drop-in 必須在同一個 play 稍後的 deploy_frontend
+#（它會 systemctl start 這個單元）之前就生效，而 handler 要等 play 結束。
+# 也不寫 when: ... is changed —— 那正是 ansible-lint 的 no-handler 規則在抓的形狀，
+# 而 daemon-reload 本來就是冪等的、成本極低。
+- name: 重新載入 systemd（讓 drop-in 生效）
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  changed_when: false
+
 # 註：這裡刻意沒有 logrotate 任務。
 # common role 的 /etc/logrotate.d/{{ app_slug }} 已經涵蓋 {{ app_log_dir }}/*.log，
 # 再寫一份會讓 logrotate 報 "duplicate log entry"，

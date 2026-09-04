@@ -2,13 +2,27 @@
 # systemctl is-active。用 command + failed_when: false 而不是 service_facts：
 # service_facts 在有幾百個 unit 的機器上要跑好幾秒，而我們只關心這幾個。
 
+# ⚠ queue 的 unit 名稱用「直接字串串接」組，不要用 regex_replace 的反向參照。
+#   {{ ... | map("regex_replace", "^(.*)$", prefix ~ "\\1.service") }}
+# 在這個 role 的實際情境下產出的是字面的 pm-queue@\1.service
+#（prefix 本身是巢狀 template「{{ app_slug }}-queue@」，串接後反向參照沒有被展開）。
+# 症狀非常難認：systemctl is-active 對一個不存在的 unit 回非 0，
+# 於是 healthcheck 報「queue worker 掛了」，但 systemctl list-units 明明是 active。
+# 2026-09-04 對真實目標實測踩到。
+- name: Services | 組出 queue 的 unit 名稱（純字串串接，不用正則）
+  ansible.builtin.set_fact:
+    healthcheck_queue_units: >-
+      {{ (healthcheck_queue_units | default([])) + [backend_queue_unit_prefix ~ item ~ '.service'] }}
+  loop: "{{ range(1, (backend_queue_workers | int) + 1) | list }}"
+  when:
+    - healthcheck_check_queue_units | bool
+    - backend_queue_enabled | bool
+
 - name: Services | 組出要檢查的 unit 清單（A7）
   ansible.builtin.set_fact:
     healthcheck_units: >-
       {{ (healthcheck_core_units | default([]))
-         + ((range(1, (backend_queue_workers | int) + 1) | map('string')
-             | map('regex_replace', '^(.*)$', backend_queue_unit_prefix ~ '\\1.service') | list)
-            if ((healthcheck_check_queue_units | bool) and (backend_queue_enabled | bool)) else [])
+         + (healthcheck_queue_units | default([]))
          + ([backend_schedule_timer_unit]
             if ((healthcheck_check_schedule_timer | bool) and (backend_schedule_enabled | bool)) else [])
          + ([pm2_systemd_unit ~ '.service']

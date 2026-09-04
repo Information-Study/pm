@@ -31,7 +31,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | 2 | Docker 三模式 + 多階段映像 + edge + WAF | ✅ **完成並實測** | `cx verify all`（52 項全過） |
 | 3 | 前後端重建 + 三 Git 初始化 | ✅ 完成 | migration / 測試 / 端點皆已實跑 |
 | 4 | DevSecOps 四道防線 + `cx scan` | ✅ **四道全部跑得動** | 見下表 |
-| 5 | Ansible 12 role + playbook | ⚠ **靜態全綠，尚未上真機** | `cx deploy syntax` / `cx deploy lint` |
+| 5 | Ansible 12 role + playbook | ✅ **對真實 systemd 目標完整跑通**（475 task、failed=0） | `cx deploy apply`（見下方「Ansible 真機進度」） |
 | 6 | `README.md`、`ansible/README.md`、本文件 | ✅ 完成 | — |
 
 ---
@@ -81,10 +81,36 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 
 ## 仍未驗證的項目
 
-### 需要真實目標主機（Ansible）
+### Ansible 真機進度
 
-`cx deploy syntax` 與 `cx deploy lint` 都是全綠的，但那只證明「語法與規則正確」，
-不證明「在真機上跑得起來」。下列每一項都要對一台真的 staging 機器跑過才算數：
+驗證目標是一個 `pm/ansible-target:24.04` 容器（Ubuntu 24.04 + systemd + sshd +
+sudo NOPASSWD，SSH 在 `127.0.0.1:2222`）。它跑真的 systemd，
+`systemd_service`、handler、服務啟動順序全部是真的。
+
+**2026-09-04：`site.yml` 已在這個目標上完整跑通 —— 475 個 task、`failed=0`。**
+從 apt repo、MySQL 8.4、PHP 8.5、Node/PM2、nginx+ModSecurity 到 clone、
+composer install、migration、nuxt build、換 symlink、健康檢查，全程沒有人工介入。
+
+`cx deploy syntax` 與 `cx deploy lint`（production profile）全綠，
+但那只證明語法與規則正確。以下是把它從「連 syntax 都沒跑過」推到全綠的實跑進展
+（每一項都是只有真的裝起來才會現形的缺陷）：
+
+| 日期 | 走到第幾個 task | 卡在哪 | 處置 |
+|---|---|---|---|
+| 09-04 | 178 | MySQL 執行期設定驗證 | handler 通知不跨 play 保留 → `verify.yml` 改成依實際值自癒 |
+| 09-04 | 185 | 應用帳號 TCP 登入 | 目標機缺 `python3-cryptography`（8.4 的 `caching_sha2_password` 在非 socket 連線要 RSA）→ 加進 `common` 與 `mysql` 的套件清單 |
+| 09-04 | 179 | `assert` 的 `fail_msg` 求值 | 被 `when` 略過的任務照樣寫入 register → 改 register 到另一個變數再 `set_fact` |
+| 09-04 | 235 | `pm2-deploy.service` 起不來 | dump 是空的時候 `pm2 resurrect` 不留 pid file → `enabled` 與 `state: started` 拆開，只有 dump 裡真的有 process 才 start |
+| 09-04 | 278 | `nginx -t` emerg：`client_max_body_size` 重複 | 發行版 `nginx.conf` 的 `http{}` 已宣告 → `facts.yml` 讀出 `nginx_existing_directives`，模板逐一跳過 |
+| 09-04 | 308 | `regex_search` 丟 `'NoneType' object has no attribute 'group'` | 帶捕獲組時沒比對到會直接丟例外，`when` 也擋不住（args 在 finalization 求值）→ 改成純字串管線 |
+| 09-04 | 335 | `mv: missing destination file operand` | 折疊純量（`>-`）的續行縮得比第一行深 → YAML 保留換行，指令被切成兩行 |
+| 09-04 | 473 | healthcheck 4 項失敗 | ① queue unit 名稱被組成字面 `pm-queue@` + 未展開的反向參照 ② PM2 systemd 單元沒被接管 ③ 目標機解析不到 `app_domain` 卻重試 12 次 |
+| 09-04 | **475** | **failed=0，全部通過** | `/up` 200、`/` 200、`/admin` 302；queue×2 / pm2 / schedule.timer / nginx / php-fpm / mysql 全部 active |
+
+每一項的完整說明見 [`ansible-reference.md` §7–§8](ansible-reference.md) 與
+[`troubleshooting.md`](troubleshooting.md)。
+
+下列每一項仍要對**真的 staging 機器**（不是容器）跑過才算數：
 
 | 項目 | 怎麼驗 |
 |---|---|

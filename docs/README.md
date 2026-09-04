@@ -1,29 +1,42 @@
-# docs/ — 驗證需求文件
+# docs/ — pm 專案文件
 
-本目錄存放**需要另一個對話 / 另一位負責人驗證**的項目。
-每份文件都是「驗證需求規格」，不是實作說明 —— 實作原則見根目錄的 `claude.md`。
-
-| 文件 | 負責範圍 | 狀態 |
+| 文件 | 內容 | 讀者 |
 |---|---|---|
-| [docker-verification.md](docker-verification.md) | Docker 三模式架構、多階段映像、edge、WAF、掃描容器 | ⏳ 待驗證（交由另一對話） |
+| [`manual.md`](manual.md) | **完整操作說明書**。從零開始到三個階段全流程 | 所有人，先讀這份 |
+| [`cx-reference.md`](cx-reference.md) | `cx` 每一個動詞的完整參考：語法、參數、行為、退出碼、陷阱 | 日常操作 |
+| [`docker-reference.md`](docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF 設定 | 改 compose / Dockerfile 之前 |
+| [`ansible-reference.md`](ansible-reference.md) | play 結構、12 個 role、vault、MySQL 五個坑 | 改 Ansible / 上真機之前 |
+| [`devsecops.md`](devsecops.md) | 四道防線的原理、閘門定義、退出碼、報告格式 | 掃描與 CI |
+| [`troubleshooting.md`](troubleshooting.md) | 症狀 → 原因 → 解法。全部是實際踩過的坑 | 出事的時候 |
+| [`progress.md`](progress.md) | 進度追蹤與「還沒驗證什麼」 | 交接、規劃 |
+| [`docker-verification.md`](docker-verification.md) | Phase 2 的驗收需求與實測結果 | 稽核 |
 
-## 使用方式
+## 該讀哪一份
 
-接手的對話請：
+| 你想做的事 | 讀 |
+|---|---|
+| 第一次拿到這個專案 | `manual.md` §1–§3 |
+| 忘記某個指令怎麼用 | `cx help`，然後 `cx-reference.md` |
+| 三個模式為什麼可以同時跑 | `manual.md` §4 |
+| 改 `docker-compose.yml` | `docker-reference.md` §1–§2 |
+| 加一個 nginx location | `docker-reference.md` §6 |
+| 上真的伺服器 | `ansible-reference.md` 全部 |
+| CI 要怎麼串 | `devsecops.md` §9 |
+| 東西壞了 | `troubleshooting.md` |
+| 交接 / 知道還缺什麼 | `progress.md` |
 
-1. 先讀根目錄 `claude.md`（尤其是 §0 紅線、§4 Docker、§5 DevSecOps）。
-2. 再讀本目錄對應的驗證需求文件。
-3. 逐項驗證，把結果回填到該文件的「驗證結果」欄。
-4. 發現新問題就補進「追加發現」一節。
+## 這份文件集的原則
 
-## 先決條件
+**只寫實際驗證過的東西。** 沒跑過的一律標明「未驗證」，不用「應該」「理論上」帶過。
+每一個「不要這樣做」的警告後面都附著實際的失敗訊息 —— 因為看得懂錯誤訊息
+比記得住規則有用。
 
-**Docker daemon 目前在本機不可用** —— Docker Desktop 的 WSL integration 沒開啟。
-`docker` 在 PATH 裡但 `docker version --format '{{.Server.Version}}'` 會失敗：
+## 三份權威來源
 
-```
-The command 'docker' could not be found in this WSL 2 distro.
-```
+當文件彼此衝突時，以這個順序為準：
 
-任何 Docker 驗證都要先開啟 Docker Desktop → Settings → Resources → WSL Integration。
-`cx doctor` 的第一項檢查就是這個（用 `docker version` 而非 `command -v docker`，因為後者會騙人）。
+1. **`cx help` 的輸出** —— 動詞與參數的唯一權威。程式碼改了它就會跟著改。
+2. **`cx verify` 的報告**（`reports/verify/`）—— 驗收狀態的唯一權威。
+3. **根目錄的 `claude.md`** —— 設計原理與每個坑的來由。
+
+這裡的 `docs/` 是「怎麼用」，`claude.md` 是「為什麼這樣設計」。
