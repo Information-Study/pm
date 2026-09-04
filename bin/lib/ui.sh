@@ -49,7 +49,25 @@ cx_msg() {
 # 有沒有可讀的 tty 可以拿來問問題。
 # 必須在子 shell 裡探測：直接 exec 7</dev/tty 失敗時，bash 會自己把
 # "No such device or address" 印到 stderr，2>/dev/null 蓋不住（重導在錯誤發生前就套用了）。
+# 「/dev/tty 開得起來」不等於「有人在那一端」。WSL 底下即使整個 session
+# 完全非互動（例如 wsl.exe -- bash -s < script），/dev/tty 一樣開得起來，
+# 於是 read </dev/tty 會**永遠卡住**而不是失敗 —— 沒有輸出、沒有錯誤，
+# 看起來就像指令當掉了（實測：cx git push --force 卡了 6 分鐘無任何輸出）。
+# 所以所有 read 都加逾時，把「無限等待」變成「明確取消」。
+# 逾時往取消的方向倒，不會有「等太久就自動同意」這種事。
+CX_ASK_TIMEOUT=${CX_ASK_TIMEOUT:-120}
 _cx_can_ask() { ( exec </dev/tty ) >/dev/null 2>&1; }
+_cx_read_tty() {  # _cx_read_tty <變數名>
+    local __v=$1 __x
+    if read -r -t "$CX_ASK_TIMEOUT" __x </dev/tty; then
+        printf -v "$__v" %s "$__x"
+        return 0
+    fi
+    printf '\n' >&2
+    cx_error "等待輸入逾時（${CX_ASK_TIMEOUT}s）或讀不到終端機 —— 已取消"
+    cx_dim "  非互動環境請加 --yes（僅在你確定要跳過確認時）"
+    return 1
+}
 
 cx_confirm() {
     local danger=0
@@ -69,7 +87,7 @@ cx_confirm() {
             return 1
         fi
         printf '輸入 y 繼續，其他任意鍵取消: ' >&2
-        local a; read -r a </dev/tty || return 1
+        local a; _cx_read_tty a || return 1
         [[ $a == [Yy]* ]]
         return
     fi
@@ -92,7 +110,7 @@ cx_ask_typed() {
             return 1
         fi
         printf '請輸入 %s 以確認: ' "$expect" >&2
-        read -r got </dev/tty || return 1
+        _cx_read_tty got || return 1
     else
         local f; f=$(mktemp)
         _cx_dlg --title "$title" --inputbox "$body" 16 92 "" 2>"$f" 1>&8 || { rm -f "$f"; return 1; }
