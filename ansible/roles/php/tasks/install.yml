@@ -21,6 +21,13 @@
   register: php_pkg_probe
   changed_when: false
   failed_when: php_pkg_probe.rc != 0
+  # apt-cache policy 是唯讀查詢，check 模式下必須真的跑。
+  # 少了這一行，--check 會跳過它 → php_pkg_probe 沒有 stdout_lines →
+  # php_pkgs_available 變成空清單 → 下面的 assert 報
+  #   「下列必要 PHP 套件在目前的 APT 來源中找不到：php8.5-fpm, ...」
+  # 而目標機上其實 php8.5.10 早就裝好了。
+  # 訊息指向 APT 來源，真正的原因是 dry-run 沒有執行探測。
+  check_mode: false
 
 - name: 整理可用套件清單
   ansible.builtin.set_fact:

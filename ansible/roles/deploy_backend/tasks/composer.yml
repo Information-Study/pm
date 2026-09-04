@@ -27,7 +27,27 @@
 # 用 block/rescue 而不是「失敗任務 + when: is failed」：
 # failed_when 觸發時 play 會立刻中止，後面那個 debug 根本沒機會執行，
 # 使用者只會看到一大坨 composer 輸出而沒有任何指引。
+# --check 之下 release 目錄還沒被 clone 出來（git clone 只回報「會做」），
+# 於是 command 的 chdir 找不到路徑，模組在執行前就失敗並回一個沒有 rc 的 dict，
+# failed_when: ...rc != 0 接著噴
+#     object of type 'dict' has no attribute 'rc'
+# 然後 rescue 把它包裝成「composer install 失敗，本次不換版」——
+# 一個看起來很嚴重但完全是 dry-run 假象的訊息。
+#
+# 在尚不存在的目錄裡跑 composer 本來就無法 dry-run，所以直接跳過，
+# 並印一行說明它為什麼被跳過（靜默跳過會讓人以為這一步驗過了）。
+# 這與 appkey.yml / symlinks.yml / deploy_frontend/install.yml 的既有慣例一致。
+- name: Composer | --check 之下跳過（release 目錄尚未存在）
+  ansible.builtin.debug:
+    msg: >-
+      --check 模式：略過 composer install。
+      {{ backend_release_path }} 要等真的 clone 之後才存在，
+      在它裡面執行任何指令都無法乾跑。
+      這一步的驗證請用 cx deploy apply（或先在 staging 實跑）。
+  when: ansible_check_mode
+
 - name: Composer | 安裝相依
+  when: not ansible_check_mode
   block:
     - name: Composer | install --no-dev --optimize-autoloader
       become: true

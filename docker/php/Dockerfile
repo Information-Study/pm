@@ -85,7 +85,7 @@ RUN set -eux; \
     chmod +x /usr/local/bin/art /usr/local/bin/t
 
 RUN chmod +x /usr/local/bin/pm-entrypoint \
- && mkdir -p /var/www/html /var/log/supervisor /var/lib/nginx/tmp /var/run \
+ && mkdir -p /var/www/html /var/log/supervisor /etc/supervisor/conf.d /var/lib/nginx/tmp /var/run \
  && chown -R www-data:www-data /var/www/html /var/lib/nginx
 
 ENV COMPOSER_ALLOW_SUPERUSER=1 \

@@ -86,7 +86,7 @@ cx — pm 專案統一入口
   git guard install|status|remove   pre-push 白名單 hook（**選用**，預設未安裝）
 
 ── 其他 ─────────────────────────────────────────────────────────────────────
-  tui               互動選單（預設動詞）
+  tui               互動選單（預設動詞）—— 可切換模式／runner、整備環境、自訂選單
   lint [目錄]       Ansible 靜態檢查（沒裝 ansible 時的替代品）
   fresh             清理與重建（備份 → 驗證 → 確認閘門 → 刪除 → 重建）
   install [--rc]    建立 ~/.local/bin/cx symlink + 註冊 bash 補全

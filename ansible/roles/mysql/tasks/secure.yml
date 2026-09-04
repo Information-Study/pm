@@ -72,6 +72,11 @@
     config_file: "{{ mysql_defaults_file }}"
   register: mysql_remote_root
   changed_when: false
+  # changed_when: false 已宣告本 task 是唯讀查詢，那就必須在 --check 下也真的執行。
+  # 少了 check_mode: false，ansible 會跳過它，register 出來的變數沒有 stdout/status，
+  # 下游的 assert / set_fact 就會拿到 default 值並報出**指向錯誤方向**的訊息
+  #（實測：php8.5 明明裝好了，cx deploy check 卻說「APT 來源找不到 php8.5-fpm」）。
+  check_mode: false
   when: mysql_remove_remote_root | bool
 
 - name: 移除非 localhost 的 root 帳號（gate：mysql_remove_remote_root）

@@ -8,6 +8,11 @@
       - "import debian.deb822"
   register: php_pydebian
   changed_when: false
+  # changed_when: false 已宣告本 task 是唯讀查詢，那就必須在 --check 下也真的執行。
+  # 少了 check_mode: false，ansible 會跳過它，register 出來的變數沒有 stdout/status，
+  # 下游的 assert / set_fact 就會拿到 default 值並報出**指向錯誤方向**的訊息
+  #（實測：php8.5 明明裝好了，cx deploy check 卻說「APT 來源找不到 php8.5-fpm」）。
+  check_mode: false
   failed_when: false
 
 - name: python3-debian 缺失時給可行動訊息
@@ -42,6 +47,24 @@
 # ============================================================================
 # Ubuntu → ondrej/php PPA
 # ============================================================================
+# force: false 只保證「已存在就不重寫」，**不保證不連網**。
+# --check 之下 get_url 會先對 url 發一個 HEAD 去判斷「會不會改變」，
+# 而 keyserver.ubuntu.com 的 /pks/lookup 不支援 HEAD，回 405 Method Not Allowed：
+#     HTTP Error 405: Method Not Allowed
+#     url: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x...
+# 於是 `cx deploy check` 在一台**已經部署過**的機器上必定紅燈 ——
+# 而訊息看起來像金鑰壞了，其實只是 dry-run 用錯了 HTTP method。
+#
+# 解法是把「已經有了就不用抓」這個判斷改成在本地做（stat），
+# 而不是丟給 get_url 去問遠端。檔案在 → when 直接跳過，一個網路請求都不發。
+- name: 檢查 ondrej keyring 是否已存在（Ubuntu）
+  ansible.builtin.stat:
+    path: "{{ php_ondrej_keyring }}"
+  register: php_ondrej_keyring_stat
+  changed_when: false
+  check_mode: false
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
 - name: 下載 ondrej/php PPA 簽章金鑰（Ubuntu）
   ansible.builtin.get_url:
     url: "{{ php_ondrej_key_url }}"
@@ -51,7 +74,9 @@
     mode: "0644"
     force: false          # 已存在就不重抓，避免 keyserver 的 Comment header 造成假 changed
     timeout: 30
-  when: ansible_facts['distribution'] == 'Ubuntu'
+  when:
+    - ansible_facts['distribution'] == 'Ubuntu'
+    - not (php_ondrej_keyring_stat.stat.exists | default(false))
 
 - name: 讀出 ondrej 金鑰指紋（Ubuntu）
   ansible.builtin.shell:
@@ -99,6 +124,13 @@
   register: php_ppa_probe
   changed_when: false
   failed_when: false
+  # check_mode: false 是必要的，和上面 gpg 指紋那一個同理。
+  # --check 之下 uri 預設被跳過 → php_ppa_probe 沒有 status 欄位 →
+  # 下一個 assert 的 `| default(0)` 拿到 0，於是在一台**完全正常**的機器上
+  # 報「PPA 沒有為 codename noble 發佈套件（回 無回應）」。
+  # 訊息指向 PPA，真正的原因是 dry-run 沒有執行探測。
+  # HEAD 一個 Release 檔不改變任何狀態，在 check 模式執行它是安全的。
+  check_mode: false
   when:
     - ansible_facts['distribution'] == 'Ubuntu'
     - php_repo_probe | bool
@@ -193,6 +225,11 @@
     status_code: [200]
   register: php_sury_probe
   changed_when: false
+  # changed_when: false 已宣告本 task 是唯讀查詢，那就必須在 --check 下也真的執行。
+  # 少了 check_mode: false，ansible 會跳過它，register 出來的變數沒有 stdout/status，
+  # 下游的 assert / set_fact 就會拿到 default 值並報出**指向錯誤方向**的訊息
+  #（實測：php8.5 明明裝好了，cx deploy check 卻說「APT 來源找不到 php8.5-fpm」）。
+  check_mode: false
   failed_when: false
   when:
     - ansible_facts['distribution'] == 'Debian'

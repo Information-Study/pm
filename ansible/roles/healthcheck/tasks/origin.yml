@@ -24,6 +24,11 @@
   until: healthcheck_origin.status | default(0) == 200
   ignore_errors: true
   changed_when: false
+  # changed_when: false 已宣告本 task 是唯讀查詢，那就必須在 --check 下也真的執行。
+  # 少了 check_mode: false，ansible 會跳過它，register 出來的變數沒有 stdout/status，
+  # 下游的 assert / set_fact 就會拿到 default 值並報出**指向錯誤方向**的訊息
+  #（實測：php8.5 明明裝好了，cx deploy check 卻說「APT 來源找不到 php8.5-fpm」）。
+  check_mode: false
   when:
     - healthcheck_check_origin | bool
     - healthcheck_actual_mode in ['ssr', 'spa']

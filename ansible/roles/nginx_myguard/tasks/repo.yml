@@ -97,7 +97,14 @@
   register: nginx_myguard_key_norm
   changed_when: "'CHANGED' in nginx_myguard_key_norm.stdout"
   failed_when: nginx_myguard_key_norm.rc != 0
-  check_mode: false
+  # ⚠ 這裡曾經有 check_mode: false —— 那是錯的，而且只在 dry-run 造成傷害。
+  # 本 task 會**寫入** keyring（mv 到 dst），不是唯讀查詢。
+  # check_mode: false 對真實執行毫無影響（那時本來就不是 check 模式），
+  # 它唯一的效果是讓 --check 也照跑；而它依賴前一步 get_url 下載的暫存檔，
+  # get_url 在 --check 之下只回報「會下載」不會真的建檔，於是必然死在
+  #     grep: /tmp/.pm-myguard-key.download: No such file or directory
+  # 也就是 cx deploy check 永遠過不了。下游第 229 行用的是
+  # `nginx_myguard_key_norm.changed | default(false)`，跳過是安全的。
 
 - name: 來源 | 移除金鑰暫存檔
   ansible.builtin.file:
@@ -159,6 +166,11 @@
     status_code: [200]
   register: nginx_myguard_probe
   changed_when: false
+  # changed_when: false 已宣告本 task 是唯讀查詢，那就必須在 --check 下也真的執行。
+  # 少了 check_mode: false，ansible 會跳過它，register 出來的變數沒有 stdout/status，
+  # 下游的 assert / set_fact 就會拿到 default 值並報出**指向錯誤方向**的訊息
+  #（實測：php8.5 明明裝好了，cx deploy check 卻說「APT 來源找不到 php8.5-fpm」）。
+  check_mode: false
   failed_when: false
   when: nginx_myguard_repo_probe | bool
 

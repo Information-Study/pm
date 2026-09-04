@@ -77,7 +77,8 @@ xdebug.mode = ${XDEBUG_MODE}
 xdebug.start_with_request = ${XDEBUG_START:-trigger}
 xdebug.client_host = ${XDEBUG_CLIENT_HOST:-host.docker.internal}
 xdebug.client_port = ${XDEBUG_CLIENT_PORT:-9003}
-xdebug.log_level = 0
+xdebug.log_level = ${XDEBUG_LOG_LEVEL:-0}
+${XDEBUG_LOG_LEVEL:+xdebug.log = /var/log/xdebug.log}
 xdebug.connect_timeout_ms = 200
 XDEBUG
     fi
