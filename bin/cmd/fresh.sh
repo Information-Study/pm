@@ -304,8 +304,14 @@ cmd_fresh_main() {
     fi
     [[ $phase == backup ]] && { cx_ok "backup 階段完成"; cx_info "封存：$A"; return 0; }
 
-    _fresh_migrate
+    # 閘門必須在 _fresh_migrate **之前**。
+    # 原本順序是 migrate → gate，而 migrate 會把 docker-compose.yml /
+    # .dockerignore / README.md 複製成 docker/legacy/*.orig ——
+    # 那是三個進版控的檔案。於是使用者在確認畫面按取消，畫面印
+    # 「使用者取消，未變更任何檔案」，git status 卻多出三個 M。
+    # 訊息說謊比動到檔案更糟：下次沒人會相信那句話。
     _fresh_gate "$A" || return "$EX_ABORT"
+    _fresh_migrate
     _fresh_delete
 
     cx_ok "清理完成。重建階段尚未實作（見 claude.md §12）"

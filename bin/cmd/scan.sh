@@ -77,6 +77,35 @@ _scan_step() {
 
 _scan_max() { local a=$1 b=$2; (( a > b )) && printf '%s\n' "$a" || printf '%s\n' "$b"; }
 
+# npm audit 的輸出到底是「報告」還是「錯誤」。
+# 只認 auditReportVersion / metadata / vulnerabilities —— 有其中之一才算掃成功。
+# 從失敗的 npm audit 輸出裡挖出真正的原因。
+# 沒有這個，使用者只會看到「失敗」，不知道是離線、proxy 還是 registry 掛了。
+_scan_npm_audit_err() {
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("報告不是合法 JSON"); raise SystemExit
+print(d.get("message") or "npm 沒有產生 audit 報告")
+' "$1" 2>/dev/null || echo '讀不到報告'
+}
+
+_scan_npm_audit_is_report() {
+    [[ -s $1 ]] || return 1
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+ok = isinstance(d, dict) and any(
+    k in d for k in ("auditReportVersion", "metadata", "vulnerabilities"))
+raise SystemExit(0 if ok else 1)
+' "$1" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # ① Quality
 # ---------------------------------------------------------------------------
@@ -95,11 +124,18 @@ _scan_code() {
                 --error-format=json > "$CX_REPORT_DIR/quality/larastan.json" || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
         if [[ -s $CX_REPORT_DIR/quality/larastan.json ]]; then
-            # ⚠ 這個檔是 JSONL 不是單一 JSON 物件：phpstan 有 note 要說的時候
-            # （例如「Note: Using configuration file …」）會先吐一行 {"tool":…,"raw":[…]}，
-            # 結果行才在後面。原本寫 json.load(整個檔) 會 JSONDecodeError，
-            # 被 `|| echo '?'` 吞掉 —— 於是 errors= 永遠印成 ?，看起來像「讀不到」，
-            # 實際上是「讀法錯了」。逐行讀、取最後一個帶 errors 的物件。
+            # 這個檔要用兩層小心讀：
+            #
+            # ① 它是 JSONL 不是單一 JSON 物件。phpstan 有 note 要說的時候
+            #    （例如「Note: Using configuration file …」）會先吐一行
+            #    {"tool":…,"raw":[…]}，結果行才在後面。json.load(整個檔) 會
+            #    JSONDecodeError，被 `|| echo '?'` 吞掉 —— errors= 永遠印成 ?。
+            #
+            # ② 結果物件長這樣：{"totals":{"errors":N,"file_errors":M},
+            #    "files":{…},"errors":[…]}。頂層的 "errors" 是**通用錯誤的陣列**
+            #    （設定檔問題之類），不是計數；檔案裡的問題數在 totals.file_errors。
+            #    取 d["errors"] 的結果是印出 errors=[] —— 而且 100 個檔案錯誤時
+            #    它**still** 印 []，看起來永遠乾淨。要的是 totals 的兩個數字相加。
             local n; n=$(python3 -c '
 import json, sys
 n = "?"
@@ -111,8 +147,9 @@ for line in sys.stdin:
         d = json.loads(line)
     except Exception:
         continue
-    if isinstance(d, dict) and "errors" in d:
-        n = d["errors"]
+    if isinstance(d, dict) and isinstance(d.get("totals"), dict):
+        t = d["totals"]
+        n = int(t.get("file_errors", 0)) + int(t.get("errors", 0))
 print(n)
 ' < "$CX_REPORT_DIR/quality/larastan.json" 2>/dev/null || echo '?')
             cx_dim "報告：reports/quality/larastan.json（errors=$n）"
@@ -274,11 +311,33 @@ _scan_sca() {
     fi
 
     # npm audit（原生可用）
+    #
+    # ⚠ npm audit 的 exit 1 有兩種完全不同的意思：
+    #     a) 真的找到漏洞
+    #     b) 連不到 registry（網路逾時、離線、proxy 擋掉）
+    #   實測 b 的輸出是 {"message":"network timeout at: …","error":{…}}，
+    #   而 _scan_step 只看退出碼，於是把「掃不成」報成「有 finding」，
+    #   CI 拿到的是 22（SCA 有問題）而不是 3（環境問題）——
+    #   一個網路抖動就會變成一份假的資安報告。
+    #   成功的報告一定有 auditReportVersion / metadata；錯誤的只有 message+error。
     if cx_have npm && [[ -f $CX_ROOT/frontend/package-lock.json ]]; then
-        rc=0
-        _scan_step "$EX_SCAN_SCA" "npm audit" \
-            env -C "$CX_ROOT/frontend" npm audit --audit-level=high --json \
-            > "$CX_REPORT_DIR/sca/npm-audit.json" || rc=$?
+        # 這裡不能用 _scan_step —— 它只看退出碼就先印結論了，
+        # 於是網路失敗的時候畫面會先出現「⚠ 有 finding」再出現
+        # 「✘ 沒跑成」，兩句互相矛盾。判斷必須在印出結論之前做完。
+        local nrc=0 nout="$CX_REPORT_DIR/sca/npm-audit.json"
+        cx_info "npm audit …"
+        env -C "$CX_ROOT/frontend" npm audit --audit-level=high --json \
+            > "$nout" 2>/dev/null || nrc=$?
+        if (( nrc == 0 )); then
+            cx_ok "npm audit：乾淨"
+        elif _scan_npm_audit_is_report "$nout"; then
+            cx_warn "npm audit：有 finding"
+            rc=$EX_SCAN_SCA
+        else
+            cx_error "npm audit 沒跑成，不是掃出問題：$(_scan_npm_audit_err "$nout")"
+            cx_dim "  這是環境問題（退出碼 $EX_PRECOND），不是 SCA finding"
+            rc=$EX_PRECOND
+        fi
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     fi
 
@@ -333,8 +392,9 @@ _scan_dast() {
         esac
     done
 
+    # 順序有意義：主動探測是**攔截率的真實量測**，先跑先印。
+    # 被動 baseline 的 alert 差異放後面，而且不能叫「攔截率」。
     _scan_dast_probe "$net"
-    cx_info "產生 WAF 攔截率對照 …"
     _scan_dast_compare
     return "$_lane_worst"
 }
@@ -356,7 +416,13 @@ _scan_dast_probe() {
         python3 "$CX_ROOT/bin/lib/waf_probe.py" "$out" || return 0
 }
 
+# 被動 baseline 的 alert 差異。
+# 這個數字**不是** WAF 攔截率 —— 見 _scan_dast_probe 上面那段說明。
+# 保留它是因為「Blocking 模式下多出來的 alert」仍然有意義
+#（代表 WAF 自己引入了新的回應標頭問題），但標題必須誠實，
+# 否則它會跟主動探測的 100% 在同一畫面上互相打臉。
 _scan_dast_compare() {
+    cx_info "被動掃描 alert 對照（非攔截率）…"
     local d="$CX_REPORT_DIR/dast"
     [[ -f $d/detect/report.json && -f $d/blocking/report.json ]] || {
         cx_warn "缺少其中一份報告，無法比對"; return 0; }
@@ -381,7 +447,11 @@ leaked  = sorted(set(blk))
     'blocked_by_waf': [{'pluginid': p, 'alert': a} for p, a in blocked],
     'still_reachable': [{'pluginid': p, 'alert': a} for p, a in leaked],
 }, ensure_ascii=False, indent=2))
-print(f"  DetectionOnly {len(det)} 項 → Blocking {len(blk)} 項，WAF 擋下 {len(blocked)} 項")
+print(f"  被動 alert：DetectionOnly {len(det)} 項 → Blocking {len(blk)} 項"
+      f"（差 {len(blocked)} 項）")
+print("  ※ 這不是攔截率。zap-baseline 是被動掃描，不送攻擊 payload，")
+print("    兩個模式看到的回應標頭本來就一樣，差值恆為 0 也是正常的。")
+print("    真正的攔截率看上面那行「主動攻擊探測」。")
 PY
 }
 

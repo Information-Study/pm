@@ -48,6 +48,25 @@ esac
 在 CI 上長得一模一樣。第一種情況會被當成「修一下 CI 設定」，
 第二種是真的要擋人。
 
+### 反過來也一樣危險：把「掃不成」報成「掃乾淨了」或「有問題」
+
+工具的退出碼常常一碼多義。`npm audit` 的 `exit 1` 同時代表
+「找到漏洞」與「連不到 registry」——
+
+```json
+{"message":"network timeout at: https://registry.npmjs.org/…","error":{…}}
+```
+
+只看退出碼的話，一次網路抖動就會變成一份假的資安報告：CI 拿到 22
+（SCA 有問題），有人去查 npm-audit.json，裡面根本沒有漏洞清單。
+
+所以 `cx scan sca` 跑完會再看報告本身：成功的 audit 一定有
+`auditReportVersion` / `metadata` / `vulnerabilities`，
+沒有就改判 `EX_PRECOND`(3) 並印出真正的原因。
+
+同樣的邏輯也適用於 ZAP（見 §5 的退出碼映射）與 Larastan
+（報告是 JSONL，而且計數在 `totals.file_errors`，不是頂層的 `errors`）。
+
 ---
 
 ## 2. ① Quality

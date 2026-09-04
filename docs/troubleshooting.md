@@ -690,6 +690,72 @@ preflight 會斷言。
 
 ---
 
+## 測試
+
+### 在容器裡直接跑 `php artisan test`，結果打到真的開發資料庫
+
+`backend/phpunit.xml` 裡每一個 `<env>` 都寫了 `force="true"`，看起來已經把
+`DB_CONNECTION` 釘死成 `sqlite`。**在容器裡它是無效的。**
+
+PHPUnit 的 `force` 只寫 `putenv()` 與 `$_ENV`，不寫 `$_SERVER`；
+Laravel 的 `Env` 讀取順序是 `ServerConstAdapter($_SERVER)` 先於
+`EnvConstAdapter($_ENV)`。compose 的 `environment:` 讓 `$_SERVER` 一定有值，
+所以 `$_SERVER` 的 `mysql` / `database` 永遠贏過 phpunit.xml 的 `sqlite` / `array`。
+
+怎麼確認你中了這一招：
+
+```bash
+cx dc exec -T app php -r 'echo $_SERVER["DB_CONNECTION"], " / ", $_ENV["DB_CONNECTION"], "\n";'
+```
+
+兩邊都印 `mysql` 就是了。真正擋住這件事的是 `bin/cmd/test.sh` 的
+`_test_env_pairs` —— `cx test` 會把同一份設定用 `-e` 傳進去蓋掉 `$_SERVER`。
+
+**所以：跑測試一律用 `cx test back`，不要在容器裡裸跑 `php artisan test`。**
+目前的測試都沒有用 `RefreshDatabase`，所以還沒有造成損失；
+一旦有人加了一個，裸跑就會清空開發資料庫。
+
+### `cx test coverage` 明明有測試失敗卻回傳 0
+
+2026-09-04 修掉。原因是函式最後一個指令是 `docker cp` / `cx_ok`，
+測試的退出碼被覆蓋掉 —— 在 CI 上就是一個永遠綠的步驟。
+
+現在會印 `✘ 後端測試失敗（rc=N）—— 覆蓋率報告仍已產生` 並回傳該碼。
+報告仍然會搬出來，因為**測試失敗的時候 junit 報告才是最有用的**。
+
+自己驗一次（放一個故意失敗的測試，看 rc）：
+
+```bash
+printf '<?php\nnamespace Tests\\Unit;\nuse PHPUnit\\Framework\\TestCase;\nclass TmpFailTest extends TestCase { public function test_x(): void { $this->assertTrue(false); } }\n' > backend/tests/Unit/TmpFailTest.php && cx test coverage; echo "rc=$?"; rm backend/tests/Unit/TmpFailTest.php
+```
+
+### `cx test coverage` 噴 `fopen(/tmp/junit-backend.xml): Permission denied`，rc=255
+
+舊版把報告寫到容器裡固定的 `/tmp/<檔名>`。`/tmp` 是 `1777`，
+之前以 root 跑過留下的同名檔，uid 1000 既不能覆蓋也不能刪。
+更糟的是後面的 `docker cp` 仍然會成功，把**上一次的舊報告**複製出來並印 ✔。
+
+現在每次執行用獨立目錄 `/tmp/cx-cov-$$`，跑完刪掉。
+如果你還留著舊的殘骸：
+
+```bash
+docker exec -u 0 $(cx dc ps -q app) rm -f /tmp/coverage-backend.xml /tmp/junit-backend.xml
+```
+
+### `--runner native` 跑測試噴 `.phpunit.result.cache: Permission denied`
+
+容器路徑以 root 在 bind mount 的 `backend/` 裡留下 `root:root` 的檔案，
+原生 runner 以 uid 1000 執行就寫不進去。同樣的原因也會讓
+`backend/storage/` 多出 root 擁有的 `coverage-backend.xml` / `junit-backend.xml`，
+在 submodule 裡變成刪不掉的未提交變更（`cx fresh` 的 preflight 會抓到）。
+
+現在容器路徑用 `-u $(id -u):$(id -g)` 執行 —— `backend/storage` 與
+`bootstrap/cache` 本來就屬於 uid 1000，所以是安全的。清掉舊殘骸：
+
+```bash
+docker exec -u 0 $(cx dc ps -q app) sh -c 'rm -f /var/www/html/.phpunit.result.cache /var/www/html/storage/*-backend.xml'
+```
+
 ## 掃描
 
 ### Semgrep 掃描很慢、finding 很多

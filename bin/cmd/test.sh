@@ -51,6 +51,15 @@ _test_env_pairs() {
         QUEUE_CONNECTION=sync
 }
 
+# 同一份清單的 docker 版（-e K=V）。原本容器路徑與覆蓋率各自抄了一份，
+# 而且覆蓋率那份只抄了前三個 —— 少掉的 SESSION_DRIVER=array 讓 session
+# 走 database driver，測試就死在「no such table: sessions」。
+# 三個地方都必須讀同一個來源，否則下次還是會漂移。
+_test_env_docker_args() {
+    local kv
+    while IFS= read -r kv; do printf '%s\n%s\n' -e "$kv"; done < <(_test_env_pairs)
+}
+
 # 原生路徑跑 php artisan test。
 # sqlite :memory: 需要 pdo_sqlite —— 缺了它 Laravel 的錯誤是
 #   could not find driver
@@ -79,21 +88,27 @@ _test_php() {
     cx_runner_banner "容器內的 php"
     cx_compose_init "$mode"
 
-    # 明確覆蓋資料庫設定。phpunit.xml 已經有 force="true"，這裡是第二道保險：
-    # 就算有人不小心把 force 拿掉，也不會打到真的資料庫。
-    local -a envs=(
-        -e DB_CONNECTION=sqlite
-        -e DB_DATABASE=:memory:
-        -e APP_ENV=testing
-        -e CACHE_STORE=array
-        -e SESSION_DRIVER=array
-        -e QUEUE_CONNECTION=sync
-    )
+    # 這些 -e 不是「第二道保險」，它是**唯一**一道。
+    # phpunit.xml 的 <env force="true"> 在這個環境下是無效的：
+    # PHPUnit 的 force 只寫 putenv() 與 $_ENV，不寫 $_SERVER；
+    # 而 Laravel 的 Env 讀取順序是 ServerConstAdapter($_SERVER) 先於
+    # EnvConstAdapter($_ENV)，compose 的 environment: 又讓 $_SERVER 一定有值，
+    # 於是 $_SERVER 的 mysql/database 永遠贏過 phpunit.xml 的 sqlite/array。
+    # 實測：容器裡裸跑 php artisan test（不帶 -e）會打到真的 dev MySQL。
+    # 拿掉這些 -e，任何用 RefreshDatabase 的測試都會清空開發資料庫。
+    local -a envs=(); mapfile -t envs < <(_test_env_docker_args)
+
+    # 以 host 的 uid 執行。backend/ 是 bind mount，容器預設以 root 跑，
+    # phpunit 會在裡面留下 root:root 的 .phpunit.result.cache，
+    # 之後 --runner native 跑同一套測試就會噴
+    #   file_put_contents(.phpunit.result.cache): Permission denied
+    # backend/storage 與 bootstrap/cache 本來就屬於 uid 1000，所以這樣是安全的。
+    local -a asuser=(-u "$(id -u):$(id -g)")
     if cx_dc_q ps --status running --services 2>/dev/null | grep -qx app; then
-        cx_dc exec -T "${envs[@]}" app "$@"
+        cx_dc exec -T "${asuser[@]}" "${envs[@]}" app "$@"
     else
         cx_info "app 容器沒在跑 → 用 run --rm --no-deps"
-        cx_dc run --rm --no-deps "${envs[@]}" --entrypoint "$1" app "${@:2}"
+        cx_dc run --rm --no-deps "${asuser[@]}" "${envs[@]}" --entrypoint "$1" app "${@:2}"
     fi
 }
 
@@ -117,24 +132,51 @@ _test_coverage() {
         "cx test coverage 只有容器路徑（需要 test 映像裡的 xdebug）—— 改用 cx --runner docker test coverage"
     cx_runner_need_docker "cx test coverage"
     cx_compose_init "$CX_MODE"
-    cx_dc exec -T \
-        -e XDEBUG_MODE=coverage \
-        -e DB_CONNECTION=sqlite -e DB_DATABASE=:memory: -e APP_ENV=testing \
+
+    # 與 cx test back 讀同一份環境變數清單。曾經只抄了 DB_CONNECTION /
+    # DB_DATABASE / APP_ENV 三個，少掉 SESSION_DRIVER=array，
+    # 於是 session 走 database driver 而 sqlite :memory: 沒跑過 migration，
+    # 每次都死在 no such table: sessions —— 但 cx test back 是好的，
+    # 看起來像「覆蓋率壞掉」，其實是兩份清單漂移。
+    local -a envs=(); mapfile -t envs < <(_test_env_docker_args)
+
+    # 產物寫到容器裡「每次執行都不一樣」的目錄，不要寫 /var/www/html/storage
+    # 也不要寫固定的 /tmp/<檔名>：
+    #   * storage 是 bind mount —— 以 root 跑的話會在 backend/ 留下 root:root
+    #     的檔案，submodule 多出未提交變更而且 uid 1000 刪不掉
+    #   * 固定路徑 —— /tmp 是 1777，別人（例如舊版以 root 跑過）留下的同名檔
+    #     刪不掉也覆蓋不了，phpunit 直接 exit 255；更糟的是後面的 docker cp
+    #     仍然會成功，把**上一次的舊報告**複製出來並印 ✔
+    local -a asuser=(-u "$(id -u):$(id -g)")
+    local tmpd="/tmp/cx-cov-$$"
+    local rc=0
+    cx_dc exec -T "${asuser[@]}" app mkdir -p "$tmpd" \
+        || cx_die "$EX_FAIL" "容器內建不出暫存目錄 $tmpd"
+    cx_dc exec -T "${asuser[@]}" -e XDEBUG_MODE=coverage "${envs[@]}" \
         app php artisan test \
-            --coverage-clover=/var/www/html/storage/coverage-backend.xml \
-            --log-junit=/var/www/html/storage/junit-backend.xml "$@"
-    # sonar-project.properties 指定的是 reports/quality/ 底下的路徑，
-    # 所以要把報告從容器搬出來。
+            --coverage-clover="$tmpd/coverage-backend.xml" \
+            --log-junit="$tmpd/junit-backend.xml" "$@" || rc=$?
+
+    # 先搬報告再回傳 rc —— 測試失敗的時候 junit 報告才是最有用的，
+    # 不能因為 rc 非 0 就跳過。
     local c
     c=$(cx_dc_q ps -q app 2>/dev/null | head -1)
     if [[ -n $c ]]; then
-        docker cp "$c:/var/www/html/storage/coverage-backend.xml" \
+        docker cp "$c:$tmpd/coverage-backend.xml" \
                   "$CX_ROOT/reports/quality/coverage-backend.xml" 2>/dev/null \
             && cx_ok "reports/quality/coverage-backend.xml"
-        docker cp "$c:/var/www/html/storage/junit-backend.xml" \
+        docker cp "$c:$tmpd/junit-backend.xml" \
                   "$CX_ROOT/reports/quality/junit-backend.xml" 2>/dev/null \
             && cx_ok "reports/quality/junit-backend.xml"
+        cx_dc_q exec -T "${asuser[@]}" app rm -rf "$tmpd" 2>/dev/null || true
     fi
+
+    # ⚠ 這個 return 是重點。原本函式最後一個指令是 docker cp / cx_ok，
+    # 於是「測試失敗但報告搬成功」會回傳 0 ——
+    # 實測 1 failed 1 passed 的情況下 cx test coverage rc=0，
+    # 在 CI 上就是一個永遠綠的步驟。
+    (( rc == 0 )) || cx_error "後端測試失敗（rc=$rc）—— 覆蓋率報告仍已產生"
+    return "$rc"
 }
 
 _test_front() {

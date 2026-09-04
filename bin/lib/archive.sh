@@ -126,22 +126,50 @@ cx_backup() {
     # ---- 資料庫 ----
     cx_step "封存資料庫"
     if cx_docker_ok; then
-        local cid; cid=$(docker ps -q --filter "name=mysql" | head -1)
+        # 容器要**限定在本專案**。原本是 --filter name=mysql，
+        # 三個模式（dev/test/prod）同時在跑的時候會隨機挑一個，
+        # 而且同一台機器上的別的專案也會被挑中 —— 備份到別人的資料庫，
+        # 或是備份到 test 的空庫然後把 dev 刪掉。
+        local cid=''
+        local mo
+        for mo in "${CX_MODE:-dev}" dev prod test; do
+            cid=$(docker ps -q \
+                    --filter "label=com.docker.compose.project=$(cx_project_for "$mo")" \
+                    --filter "label=com.docker.compose.service=mysql" | head -1)
+            [[ -n $cid ]] && break
+        done
         if [[ -n $cid ]]; then
-            local dbname="${CX_DB_DATABASE:-pwg}" rootpw="${MYSQL_ROOT_PASSWORD:-password}"
-            if docker exec -i "$cid" mysqldump -uroot -p"$rootpw" \
-                 --single-transaction --routines --triggers --databases "$dbname" \
-                 2>/dev/null | gzip > "$A/db-$dbname.sql.gz"; then
+            # 名稱與密碼都問容器自己，不要寫死。
+            # 原本是 ${CX_DB_DATABASE:-pwg} 與 ${MYSQL_ROOT_PASSWORD:-password} ——
+            # pwg 是別的專案留下來的名字，password 也不是這裡的密碼，
+            # 兩個 fallback 都會生效（外層 shell 沒有這兩個變數），
+            # 於是 mysqldump 必定失敗，然後只印一行「mysqldump 失敗」就繼續刪。
+            # 封存是刪除前的唯一安全網，它不該靠猜。
+            local dbname
+            dbname=$(docker exec "$cid" printenv MYSQL_DATABASE 2>/dev/null) \
+                || dbname=''
+            [[ -n $dbname ]] || dbname=$(cx_project)
+            # 密碼用容器內的環境變數展開，不進 host 的行程列表
+            #（/proc/<pid>/cmdline 全機器可讀）。
+            local err="$A/.mysqldump.err"
+            if docker exec -i "$cid" sh -c \
+                 "exec mysqldump -uroot -p\"\$MYSQL_ROOT_PASSWORD\" \
+                      --single-transaction --routines --triggers \
+                      --databases '$dbname'" \
+                 2>"$err" | gzip > "$A/db-$dbname.sql.gz"; then
                 gzip -t "$A/db-$dbname.sql.gz" \
-                    && { cx_ok "db-$dbname.sql.gz"; echo "db_dump=db-$dbname.sql.gz" >> "$m"; } \
-                    || cx_die "mysqldump 產出損毀"
+                    && { cx_ok "db-$dbname.sql.gz"; echo "db_dump=db-$dbname.sql.gz" >> "$m"; rm -f "$err"; } \
+                    || cx_die "$EX_FAIL" "mysqldump 產出損毀"
             else
                 rm -f "$A/db-$dbname.sql.gz"
-                cx_warn "mysqldump 失敗"
+                # 原本 2>/dev/null 把原因整個丟掉，使用者只看到「失敗」
+                # 卻不知道是密碼錯、資料庫不存在還是容器不是 mysql。
+                cx_error "mysqldump 失敗（資料庫 $dbname）—— 這次封存沒有資料庫備份"
+                [[ -s $err ]] && cx_dim "  $(head -3 "$err" | tr '\n' ' ')"
                 echo "db_dump=<failed>" >> "$m"
             fi
         else
-            cx_warn "找不到執行中的 mysql 容器 → 無資料庫備份"
+            cx_warn "找不到本專案執行中的 mysql 容器 → 無資料庫備份"
             echo "db_dump=<no-container>" >> "$m"
         fi
     else

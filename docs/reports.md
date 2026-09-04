@@ -96,7 +96,11 @@ ls -t reports/verify | head -3 # 最近三份
 - 兩份的**差集** = 「WAF 現在幫你擋著、但應用本身還沒修」的清單
 - 只看 `On` 那一份會讓 WAF 變成遮羞布：應用的漏洞還在，但掃描是綠的
 
-`reports/dast/compare/waf-probe.json` 記錄攔截率（攻擊擋掉幾項、正常請求誤擋幾項）。
+攔截率看 `reports/dast/compare/waf-probe.json`（主動攻擊探測：攻擊擋掉幾項、
+正常請求誤擋幾項）。**不要**拿 `waf-effectiveness.json` 的差值當攔截率 ——
+`zap-baseline.py` 是被動掃描，不送攻擊 payload，兩個模式看到的回應標頭本來就一樣，
+所以那個差值恆為 0。畫面上會同時出現「主動探測擋下 100%」與「被動 alert 差 0 項」，
+兩個都對，量的是不同東西。
 
 ### ZAP 的退出碼不是「0 成功 / 非 0 失敗」
 
@@ -123,6 +127,15 @@ cx test coverage    # 覆蓋率（只有容器路徑，需要 test 映像的 xde
 `cx test back` 的結果直接印在終端機；只有 `coverage` 會產生檔案。
 覆蓋率報告會從容器 `docker cp` 出來放到 `reports/quality/`，
 因為 `sonar-project.properties` 指定的是那個路徑。
+
+`cx test coverage` **測試失敗時回傳測試的退出碼，但報告照樣產生** ——
+測試失敗的時候 junit 報告才是最有用的，不能因為 rc 非 0 就跳過。
+（2026-09-04 之前它一律回傳 0，在 CI 上是一個永遠綠的步驟。）
+
+⚠ 跑測試請一律用 `cx test`，不要在容器裡裸跑 `php artisan test` ——
+`phpunit.xml` 的 `force="true"` 擋不住 compose 注入的環境變數，
+裸跑會打到真正的開發資料庫。原因見
+[`troubleshooting.md`](troubleshooting.md) 的「測試」一節。
 
 ```bash
 # 覆蓋率總計（Clover XML 的根節點就有全專案數字）
@@ -162,9 +175,13 @@ rm -rf reports && cx setup dirs     # 重建空的目錄骨架
 
 ```bash
 # ① Larastan：有幾個錯、分別在哪
-#    ⚠ 這個檔是 JSONL（一行一個 JSON），不是單一物件 —— json.load(整個檔) 會炸。
-python3 -c 'import json;[print(k,v) for l in open("reports/quality/larastan.json") if l.strip() for k,v in json.loads(l).items() if k in ("result","errors")]'
-python3 -c 'import json;[print(f, e["line"], e["message"]) for l in open("reports/quality/larastan.json") if l.strip() for f,es in (json.loads(l).get("error_details") or {}).items() for e in es]'
+#    ⚠ 兩個坑。第一，這個檔可能是 JSONL（phpstan 有 note 要說的時候會多吐一行），
+#      json.load(整個檔) 會炸。第二，**不要看頂層的 "errors"** ——
+#      那是「通用錯誤」的陣列（設定檔問題之類），不是計數；
+#      100 個檔案錯誤時它仍然是 []，看起來永遠乾淨。
+#      要看的是 totals.file_errors。
+python3 -c 'import json;[print("file_errors=%s generic=%s"%(d["totals"]["file_errors"],d["totals"]["errors"])) for l in open("reports/quality/larastan.json") if l.strip() for d in [json.loads(l)] if isinstance(d.get("totals"),dict)]'
+python3 -c 'import json;[print(f,m["line"],m["message"]) for l in open("reports/quality/larastan.json") if l.strip() for d in [json.loads(l)] if isinstance(d.get("files"),dict) for f,v in d["files"].items() for m in v["messages"]]'
 
 # ② Semgrep：只列 ERROR 等級（那才是會擋 CI 的）
 python3 -c 'import json;d=json.load(open("reports/sast/semgrep.sarif"));[print(r["level"],r["ruleId"],r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]) for run in d["runs"] for r in run["results"] if r.get("level")=="error"]'

@@ -240,9 +240,22 @@ cx test <back|front|all|coverage|larastan>
 | `coverage` | 後端覆蓋率，報告搬到 `reports/quality/` | 臨時打開 `XDEBUG_MODE=coverage` |
 | `larastan` | 等同 `cx scan code` 的第一段 | |
 
-`cx test back` 會額外傳 `-e DB_CONNECTION=sqlite -e DB_DATABASE=:memory:`。
-這是第二道保險 —— `phpunit.xml` 已經有 `force="true"`，但就算有人把它拿掉，
-測試也不會打到真的資料庫。
+容器路徑會傳六個 `-e`（`DB_CONNECTION` `DB_DATABASE` `APP_ENV`
+`CACHE_STORE` `SESSION_DRIVER` `QUEUE_CONNECTION`），來源是
+`bin/cmd/test.sh` 的 `_test_env_pairs`，原生路徑讀同一份。
+
+⚠ 這些 `-e` 不是「第二道保險」，是**唯一**一道。
+`phpunit.xml` 的 `force="true"` 在容器裡無效 —— PHPUnit 的 force 只寫
+`putenv()` 與 `$_ENV`，不寫 `$_SERVER`，而 Laravel 的 `Env` 讀 `$_SERVER`
+優先，compose 的 `environment:` 永遠贏。**在容器裡裸跑 `php artisan test`
+會打到真正的開發資料庫。** 詳見 claude.md §0 紅線 5。
+
+容器路徑以 `-u $(id -u):$(id -g)` 執行，這樣 phpunit 在 bind mount 的
+`backend/` 裡寫出來的 `.phpunit.result.cache` 才屬於你，
+不會讓 `--runner native` 之後噴 `Permission denied`。
+
+`cx test coverage` 在測試失敗時**回傳測試的退出碼**，報告照樣產生
+（測試失敗的時候 junit 報告才是最有用的）。
 
 ---
 

@@ -5,11 +5,11 @@
 
 | 子目錄 | 產生者 | 主要檔案 |
 |---|---|---|
-| `quality/` | `cx scan code`、`cx test coverage` | `larastan.json`（**JSONL**）、`coverage-backend.xml`、`junit-backend.xml` |
+| `quality/` | `cx scan code`、`cx test coverage` | `larastan.json`（**JSONL**，計數看 `totals.file_errors` 不是頂層 `errors`）、`coverage-backend.xml`、`junit-backend.xml` |
 | `sast/` | `cx scan sast` | `semgrep.sarif` |
 | `sca/` | `cx scan sca` | `trivy-fs.json`、`composer-audit.json`、`npm-audit.json` |
 | `secrets/` | `cx scan secrets` | `gitleaks-{pm,backend,frontend}.json` |
-| `dast/` | `cx scan dast` | `detect/`、`blocking/` 各一份 `report.json` + `report.html`，`compare/` 是兩者的對照 |
+| `dast/` | `cx scan dast` | `detect/`、`blocking/` 各一份 `report.json` + `report.html`。`compare/waf-probe.json` 是**攔截率**（主動送攻擊量出來的）；`compare/waf-effectiveness.json` 只是被動 alert 差異，**不是攔截率** |
 | `waf/` | 手動擷取 ModSecurity audit log | `cx --mode test logs waf \| grep '^{' > reports/waf/audit.jsonl` |
 | `verify/` | `cx verify` | `<UTC 時間戳>.md`（PASS / FAIL / SKIP 逐項表） |
 | `db/` | `cx db dump` | `<mode>-<時間>.sql.gz` |

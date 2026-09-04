@@ -155,6 +155,45 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 
 詳見 [`template.md`](template.md) 與 [`troubleshooting.md`](troubleshooting.md)。
 
+## 掃描與測試的實跑（2026-09-04）
+
+刪除重建通過之後把每一道都實際跑了一次，抓到 **8 個缺陷**，
+其中 4 個的共同特徵是**會顯示成功**——這類最貴，因為沒人會去查。
+
+### 會假裝通過的
+
+| 缺陷 | 症狀 | 為什麼危險 |
+|---|---|---|
+| `cx test coverage` 吞掉退出碼 | 1 failed 1 passed，rc 仍是 `0` | 函式最後一個指令是 `docker cp` / `cx_ok`。CI 上是一個永遠綠的步驟 |
+| Larastan 摘要取錯欄位 | 印 `errors=[]` | 頂層 `errors` 是「通用錯誤」陣列，不是計數。**100 個檔案錯誤時它仍然是 `[]`**。計數在 `totals.file_errors` |
+| `npm audit` 網路失敗 | 報成「有 finding」，CI 收到 22 | `exit 1` 一碼兩義。一次網路抖動就變成一份假的資安報告 |
+| 覆蓋率報告用固定的 `/tmp` 路徑 | phpunit exit 255，但 `docker cp` 仍成功並印 ✔ | 複製出來的是**上一次的舊報告** |
+
+### 會說謊的訊息
+
+| 缺陷 | 症狀 |
+|---|---|
+| `cx fresh` 的確認閘門在 `_fresh_migrate` **之後** | 使用者按取消，畫面印「未變更任何檔案」，`git status` 卻多出 3 個 `M` |
+| WAF「攔截率」對照 | 同一畫面上「主動探測擋下 100%」與「WAF 擋下 0 項」並列。後者量的是被動掃描的 alert 差異，恆為 0 |
+
+### 真正的安全問題
+
+| 缺陷 | 說明 |
+|---|---|
+| `phpunit.xml` 的 `force="true"` 在容器裡無效 | PHPUnit 的 force 只寫 `putenv()` 與 `$_ENV`，不寫 `$_SERVER`；Laravel 讀 `$_SERVER` 優先。**實測容器裡裸跑 `php artisan test` 打的是真的 dev MySQL**。目前沒有測試用 `RefreshDatabase`，所以還沒造成損失。已列入 claude.md §0 紅線 |
+| `cx fresh` 封存資料庫必定失敗 | `${CX_DB_DATABASE:-pwg}` 與 `${MYSQL_ROOT_PASSWORD:-password}` 兩個 fallback 都會生效（外層 shell 沒有這兩個變數），而且 `--filter name=mysql` 不分專案／模式。封存是刪除前的唯一安全網，它不該靠猜。修正後實測 dump 出 10 個 table |
+
+### 順手清掉的
+
+- 容器路徑以 root 在 bind mount 的 `backend/` 留下 `root:root` 的
+  `.phpunit.result.cache` 與 `storage/*-backend.xml` ——
+  原生 runner 寫不進去，submodule 多出刪不掉的未提交變更。
+  改成 `-u $(id -u):$(id -g)` 執行。
+- `_test_env_pairs` / `_test_php` / `_test_coverage` 三份環境變數清單，
+  後兩份各自抄了一遍而且漂移（6 個 vs 3 個）。現在都讀同一個來源。
+
+---
+
 ## 四道防線
 
 | 防線 | 工具 | 狀態 | 最後結果 |
@@ -256,7 +295,7 @@ cx deploy apply staging         # 真的跑（會列出目標主機並要求確�
 | 項目 | 狀態 | 影響 |
 |---|---|---|
 | Docker daemon | ✅ 29.7.2 | — |
-| host 的 `pdo_sqlite` | ✘ 未安裝 | 只影響「在 host 上直接跑 `php artisan test`」。容器內已有，`cx test back` 不受影響 |
+| host 的 `pdo_sqlite` | ✅ 已安裝 | `cx --runner native test back` 可用（2026-09-04 實測 rc=0） |
 | SonarQube | 未啟動 | `cx scan code` 會略過 scanner 並警告 |
 | 目標主機 | 無 | 整個 Phase 5 的執行期驗證 |
 

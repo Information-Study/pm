@@ -31,7 +31,15 @@
 4. **不要用 `--ignore-platform-reqs` 或 `-W` 硬過相依衝突。**
    正確診斷是 `composer why-not <pkg> <ver>`。
 
-5. **Agent 併發上限：同時最多 5 個，同類型最多 3 個。**
+5. **不要在容器裡裸跑 `php artisan test`，一律用 `cx test`。**
+   `backend/phpunit.xml` 的 `<env force="true">` 在容器裡**是無效的**：
+   PHPUnit 的 force 只寫 `putenv()` 與 `$_ENV`，不寫 `$_SERVER`，
+   而 Laravel 的 `Env` 讀 `$_SERVER` 優先 —— compose 的 `environment:`
+   永遠贏。實測裸跑會打到真正的 dev MySQL，而不是 `sqlite :memory:`。
+   目前沒有測試用 `RefreshDatabase`，一旦有人加了，裸跑就會清空開發資料庫。
+   真正的保護在 `bin/cmd/test.sh` 的 `_test_env_pairs`（用 `-e` 蓋掉 `$_SERVER`）。
+
+6. **Agent 併發上限：同時最多 5 個，同類型最多 3 個。**
    使用 Workflow 時要把 `parallel()` / `pipeline()` 的項目分批送出，每批不超過 5；
    同一批內相同角色（例如多個 `verify:*`）不超過 3。
 
