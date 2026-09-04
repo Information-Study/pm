@@ -49,3 +49,7 @@ Thumbs.db
 /.cx-*.sh
 /.cx-*.py
 /.cx-*.txt
+
+# Python 編譯產物（bin/lib/*.py 被當成腳本執行時會產生）
+__pycache__/
+*.py[cod]

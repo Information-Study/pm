@@ -49,7 +49,11 @@ TXT
 # ---------------------------------------------------------------------------
 _scan_ensure_dirs() {
     local d
-    for d in quality sast sca dast/detect dast/blocking dast/compare waf; do
+    # secrets 曾經漏掉。gitleaks 的輸出從 sca/ 搬到 secrets/ 的時候只改了寫入路徑，
+    # 沒有把目錄加進這張清單 —— 在乾淨的樹上（或 rm -rf reports 之後）
+    # gitleaks 寫不出報告而 exit 1，_scan_step 把它判成「有 finding」，
+    # 於是「目錄不存在」會顯示成「掃到祕密」，rc=22。
+    for d in quality sast sca secrets dast/detect dast/blocking dast/compare waf; do
         mkdir -p "$CX_REPORT_DIR/$d"
     done
     for d in trivy semgrep phpstan; do
@@ -138,6 +142,15 @@ _scan_code() {
             #    它**still** 印 []，看起來永遠乾淨。要的是 totals 的兩個數字相加。
             local n; n=$(python3 -c '
 import json, sys
+# 兩種格式都要吃：
+#   * PHPStan --error-format=json 的標準輸出
+#       {"totals":{"errors":N,"file_errors":M},"files":{...},"errors":[...]}
+#     這裡頂層的 "errors" 是**通用錯誤的陣列**（設定檔問題之類）不是計數，
+#     檔案裡的問題數在 totals.file_errors —— 取錯欄位會永遠印 []。
+#   * 某些包裝層會改寫成扁平的 {"result":"failed","errors":N}
+#     這時 "errors" 就是整數計數。
+# 只認一種的話，另一種環境會靜靜印出 "?" 或永遠的 "[]"，兩種都是假的乾淨。
+# 檔案本身是 JSONL：phpstan 有 note 要說的時候會先吐一行，所以逐行讀。
 n = "?"
 for line in sys.stdin:
     line = line.strip()
@@ -147,9 +160,13 @@ for line in sys.stdin:
         d = json.loads(line)
     except Exception:
         continue
-    if isinstance(d, dict) and isinstance(d.get("totals"), dict):
-        t = d["totals"]
+    if not isinstance(d, dict):
+        continue
+    t = d.get("totals")
+    if isinstance(t, dict):
         n = int(t.get("file_errors", 0)) + int(t.get("errors", 0))
+    elif isinstance(d.get("errors"), int):
+        n = d["errors"]
 print(n)
 ' < "$CX_REPORT_DIR/quality/larastan.json" 2>/dev/null || echo '?')
             cx_dim "報告：reports/quality/larastan.json（errors=$n）"
@@ -467,11 +484,29 @@ _scan_secrets() {
         rc=0
         # gitleaks 8.30 起 `detect` 已被 `git` / `dir` 取代。
         # 用 `git` 掃「整個歷史」——祕密一旦進過 commit，改掉當前檔案是不夠的。
-        _scan_step "$EX_SCAN_SCA" "gitleaks: $slug（含歷史）" \
-            gitleaks git "$r" --no-banner --redact \
-                --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
-                --report-format json \
-                --report-path "$CX_REPORT_DIR/secrets/gitleaks-$slug.json" || rc=$?
+        local out="$CX_REPORT_DIR/secrets/gitleaks-$slug.json"
+        rm -f "$out"
+        cx_info "gitleaks: $slug（含歷史）…"
+        gitleaks git "$r" --no-banner --redact \
+            --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
+            --report-format json \
+            --report-path "$out" || rc=$?
+        # ⚠ 不能只看退出碼。gitleaks 的 exit 1 同時代表「找到祕密」與
+        #   「跑不起來」（最常見的是報告目錄不存在 → Report path is not writable）。
+        #   實測把 reports/secrets/ 移走之後跑 cx scan secrets：
+        #   三個 repo 全部顯示「有 finding」、rc=22 —— 也就是把
+        #   「寫不出報告」報成「掃到祕密」。在最不能誤報的這一道上尤其不能接受。
+        #   跑成功一定會留下一份 JSON（乾淨時是 []）；沒有檔案就是工具出錯。
+        if (( rc == 0 )); then
+            cx_ok "gitleaks: $slug（含歷史）：乾淨"
+        elif [[ -f $out ]]; then
+            cx_warn "gitleaks: $slug（含歷史）：有 finding"
+            rc=$EX_SCAN_SCA
+        else
+            cx_error "gitleaks: $slug 沒跑成，不是掃到東西 —— 沒有產生 $out"
+            cx_dim "  這是環境問題（退出碼 $EX_PRECOND），不是祕密外洩"
+            rc=$EX_PRECOND
+        fi
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     done
     # 這裡曾經 return "$worst" —— 那個變數在本函式裡不存在。

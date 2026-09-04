@@ -136,6 +136,20 @@ cx dev restart nuxt                   容器當時在跑，一定要重啟
 | `cx git remote-init` 建立的三個 repo 名 | `bin/cmd/git.sh` |
 | `cx fresh` 的確認字串 `DESTROY <專案>` | `bin/cmd/fresh.sh` |
 | `.env` 的 `PROJECT_SLUG` / `IMAGE_PREFIX` → compose 網路名與映像前綴 | `cx setup env` |
+| `cx verify` 建 config 快取用的 `-p <專案>_<mode>` | `bin/cmd/verify.sh` |
+| `cx verify` 檢查 2.5 期待的網路名 `<專案>_<mode>_net` | `bin/lib/verify_checks.py`（讀 `CX_PROJECT_NAME`） |
+| WAF 主動探測的 `docker compose -p <專案>_test` | `bin/lib/waf_probe.py`（讀 `CX_PROJECT_NAME`） |
+| `cx up` / `cx down -v` / `cx db` 的訊息與**危險確認**所寫的專案名 | `cx_project_for()` |
+
+> 這五項是 2026-09-04 的推送前審查抓出來的漏網之魚 —— 前面幾項早就接上
+> `.cxroot` 了，這幾處還寫死 `pm_`。其中 `verify.sh` 與 `verify_checks.py`
+> 那兩處是功能性的：改名後的專案 `cx verify` 的檢查 2.5 會三個模式全部 FAIL
+>（拿 `pm_<mode>_net` 去比對真實的 `<專案>_<mode>_net`），
+> 也就是一個全新的範本專案**開箱就報驗證失敗**。
+> `cx down -v` 與 `cx db` 那兩處是安全性的：確認對話框會寫出**錯的專案名**。
+>
+> `bin/lib/*.py` 是子行程，看不到只被 source 的變數 ——
+> 所以 `cx` 現在把 `CX_PROJECT_NAME` 一起 `export`。
 
 > ⚠ `.cxroot` 改完之後要重跑 **`cx setup guard`**（hook 是產生出來的檔案，
 > 白名單在安裝當下就被烤進去，不會自己更新）。

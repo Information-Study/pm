@@ -17,7 +17,7 @@ cx — pm 專案統一入口
 
 ── 第一階段：建立與開發 ─────────────────────────────────────────────────────
   setup             一鍵初始化（.env、目錄、push guard，並盤點工具鏈）
-    setup native [名稱...]  ★ 一行裝完整套原生工具鏈 = system + tools + deps
+    setup native            ★ 一行裝完整套原生工具鏈 = system + tools + deps
     setup system [名稱...]  需要 root 的系統套件（php / nginx / git / docker
                             〔含 compose v2〕/ mysql-client / php-sqlite）。
                             sudo 不可用時只印指令並回傳 3，不會替你輸入密碼
@@ -96,7 +96,7 @@ cx — pm 專案統一入口
   fresh --rollback                          見 claude.md §12
   fresh --mode carryover|scaffold 的重建階段  見 claude.md §12
 
-三個模式可以同時運行：不同的 compose project（-p pm_dev|pm_test|pm_prod）隔離
+三個模式可以同時運行：不同的 compose project（-p <專案>_dev|_test|_prod）隔離
 容器／網路／volume，不同的 host 埠段（docker/env/<mode>.env）隔離埠。
 -p 不隔離 host 埠 —— 只做前者不做後者，第二個模式會 port is already allocated。
 

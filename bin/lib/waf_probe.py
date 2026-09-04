@@ -38,12 +38,17 @@ CASES = [
 
 ENGINES = ["DetectionOnly", "On"]
 
+# 專案名一律從 .cxroot 推導（cx 會 export CX_PROJECT_NAME）。
+# 這裡曾經寫死 "pm_test"，於是專案改名之後 compose 專案前綴對不上，
+# 探測會打到別的專案的 test 堆疊、或是根本找不到容器。
+PROJECT = os.environ.get("CX_PROJECT_NAME") or "pm"
+
 
 def compose(root, *args):
     base = [
         "docker", "compose",
         "--project-directory", root,
-        "-p", "pm_test",
+        "-p", f"{PROJECT}_test",
         "-f", os.path.join(root, "docker-compose.yml"),
         "-f", os.path.join(root, "docker/compose/test.yml"),
     ]

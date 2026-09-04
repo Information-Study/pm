@@ -15,7 +15,7 @@ cx setup [子指令]
   dirs             建立 reports/ 與 .cx/ 的葉目錄（必須由你的身分建立，不能讓 Docker 建）
   guard            安裝三個 repo 的 pre-push 白名單 hook（白名單讀 .cxroot）
 
-  native [名稱...] ★ 一行裝完整套原生工具鏈 = system + tools + deps
+  native           ★ 一行裝完整套原生工具鏈 = system + tools + deps（不吃名稱）
                    順序固定 system → tools → deps（composer 的安裝器需要 php）
 
   system [名稱...] 需要 root 的系統套件（apt）
@@ -684,10 +684,33 @@ _setup_all() {
 # 這裡把它記下來但**繼續**跑 tools —— 免 root 的那一半仍然裝得起來，
 # 沒有理由因為使用者等一下才要貼 sudo 指令就整個停掉。
 _setup_native() {
+    # native 不吃名稱過濾器，而且必須自己攔 --help。兩個原因都是實測踩到的：
+    #
+    #   1. 分派表寫的是 `native) _setup_native "$@"`，沒有攔 -h/--help。
+    #      而 _setup_system 收到 --help 會印說明並 **return 0** ——
+    #      對 _setup_native 來說那是成功，於是它繼續往下跑 _setup_tools（無參數
+    #      ＝ 安裝全部六個工具）再跑 _setup_deps。
+    #      也就是說 `cx setup native --help` 會**真的開始安裝**。
+    #
+    #   2. usage 曾經寫成 `native [名稱...]`，但那個過濾器是假的：名稱只會被
+    #      傳給 _setup_system，_setup_tools 是裸呼叫。更糟的是兩份清單
+    #      （CX_SETUP_SYSTEM_TOOLS vs CX_SETUP_TOOLS）**互斥**，
+    #      所以 `cx setup native semgrep` 會在第①段就 cx_error 中止。
+    #      要裝單一項目就用 cx setup system / cx setup tools，不要走 native。
+    case ${1:-} in
+        -h|--help|help) _setup_usage; return 0 ;;
+        '') : ;;
+        *)  cx_error "cx setup native 不接受參數（收到：$*）"
+            cx_dim "  它是「三段一次跑完」：system → tools → deps"
+            cx_dim "  要裝單一項目： cx setup system <名稱>  或  cx setup tools <名稱>"
+            cx_dim "  可用清單：     cx setup system --help"
+            return "$EX_USAGE" ;;
+    esac
+
     local rc=0 sys_rc=0
 
     cx_step "① 需要 root 的系統套件"
-    _setup_system "$@" || sys_rc=$?
+    _setup_system || sys_rc=$?
     (( sys_rc == 0 )) || rc=$sys_rc
 
     cx_step "② 免 root 的工具鏈（~/.local）"

@@ -59,7 +59,11 @@ case $CX_RUNNER in
     auto|docker|native) : ;;
     *) printf 'cx: --runner 只接受 docker|native|auto（收到 %s）\n' "$CX_RUNNER" >&2; exit 2 ;;
 esac
-export CX_DRY_RUN CX_ASSUME_YES CX_UI CX_RUNNER CX_INVOKE_PWD
+# CX_PROJECT_NAME 也要 export —— bin/lib/*.py 是子行程，看不到只被 source 的變數。
+# 漏掉它的症狀是 python 那邊只能寫死 "pm"（waf_probe.py 的 -p pm_test、
+# verify_checks.py 的 pm_<mode>_net 都曾經是這樣），
+# 於是專案改名之後 shell 這一半跟著 .cxroot 走，python 那一半還指著 pm。
+export CX_DRY_RUN CX_ASSUME_YES CX_UI CX_RUNNER CX_INVOKE_PWD CX_PROJECT_NAME
 
 # ---- 定位根目錄 ----
 if [[ -n $CX_ROOT_OVERRIDE ]]; then

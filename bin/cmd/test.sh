@@ -28,19 +28,26 @@ test 模式的容器操作（等同 cx --mode test <動作>）
   cx test all
   cx test coverage
 
-後端測試的資料庫：backend/phpunit.xml 把它導向 sqlite :memory:，
-所以 cx test back 不需要 MySQL。那個檔的每個 <env> 都有 force="true" ——
-沒有它的話 compose 傳進來的 DB_CONNECTION=mysql 會蓋掉 sqlite 設定，
-測試會打到真正的開發資料庫，而 RefreshDatabase 會把它清空。
+後端測試的資料庫：走 sqlite :memory:，所以 cx test back 不需要 MySQL。
+
+⚠ 導向 sqlite 的是 cx，不是 phpunit.xml。那個檔的 <env force="true">
+  在容器裡**沒有作用** —— PHPUnit 的 force 只寫 putenv() 與 $_ENV，
+  不寫 $_SERVER，而 Laravel 的 Env 讀 $_SERVER 優先，
+  compose 的 environment: 讓 $_SERVER 一定有值。
+  實測：容器裡裸跑 php artisan test 打的是真的 dev MySQL。
+  請一律用 cx test（它用 -e 蓋掉 $_SERVER）—— 見 claude.md §0 紅線 5。
 TXT
 }
 
 # 跑測試用的容器：優先用「已經起來的 app」，沒有就開一個 run --rm。
 # 用 run --rm 時要 --no-deps —— sqlite in-memory 不需要 MySQL，
 # 不加的話會為了跑一個單元測試而把整個資料庫拉起來。
-# 後端測試的環境變數。兩條路共用同一份 —— 這是第二道保險：
-# phpunit.xml 的每個 <env> 已經有 force="true"，但就算有人把它拿掉，
-# 測試也不會打到真的資料庫。
+# 後端測試的環境變數。兩條路共用同一份，而且這是**唯一**一道保險 ——
+# 不是「第二道」。phpunit.xml 的 <env force="true"> 在容器裡無效：
+# PHPUnit 的 force 只寫 putenv() 與 $_ENV，不寫 $_SERVER，而 Laravel 的 Env
+# 讀 $_SERVER 優先，compose 的 environment: 讓 $_SERVER 一定有值。
+# 實測容器裡裸跑 php artisan test 打的是真的 dev MySQL（claude.md §0 紅線 5）。
+# 拿掉這份清單，任何用 RefreshDatabase 的測試都會清空開發資料庫。
 _test_env_pairs() {
     printf '%s\n' \
         DB_CONNECTION=sqlite \
@@ -168,7 +175,10 @@ _test_coverage() {
         docker cp "$c:$tmpd/junit-backend.xml" \
                   "$CX_ROOT/reports/quality/junit-backend.xml" 2>/dev/null \
             && cx_ok "reports/quality/junit-backend.xml"
-        cx_dc_q exec -T "${asuser[@]}" app rm -rf "$tmpd" 2>/dev/null || true
+        # 用 cx_dc（會遵守 --dry-run）而不是 cx_dc_q ——
+        # cx_dc_q 直接呼叫 docker compose，所以 cx --dry-run test coverage
+        # 會真的在容器裡執行 rm -rf。--dry-run 執行破壞性動作是不可接受的。
+        cx_dc exec -T "${asuser[@]}" app rm -rf "$tmpd" 2>/dev/null || true
     fi
 
     # ⚠ 這個 return 是重點。原本函式最後一個指令是 docker cp / cx_ok，

@@ -311,7 +311,11 @@ cmd_fresh_main() {
     # 「使用者取消，未變更任何檔案」，git status 卻多出三個 M。
     # 訊息說謊比動到檔案更糟：下次沒人會相信那句話。
     _fresh_gate "$A" || return "$EX_ABORT"
-    _fresh_migrate
+    # migrate 的 rc 一定要檢查。閘門移到它前面之後，這裡已經過了不可逆點 ——
+    # 遷移失敗卻繼續 _fresh_delete，等於把 docker 自定義設定連同原處一起刪掉，
+    # 而 docker/legacy/ 底下沒有可用的副本。
+    _fresh_migrate || cx_die "$EX_FAIL" \
+        "遷移失敗 —— 已中止，未刪除任何東西（封存在 $A）"
     _fresh_delete
 
     cx_ok "清理完成。重建階段尚未實作（見 claude.md §12）"

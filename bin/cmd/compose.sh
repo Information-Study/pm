@@ -39,7 +39,7 @@ cx <模式> <動作> [參數...]      模式 = dev | test | prod（省略則用 
   cx --mode test sh waf         進 WAF 容器
   cx dev down -v                砍掉開發環境連資料庫（需確認）
 
-三個模式可以同時運行：靠不同的 compose project（-p pm_dev|pm_test|pm_prod）
+三個模式可以同時運行：靠不同的 compose project（-p <專案>_dev|_test|_prod）
 隔離容器／網路／volume，靠 docker/env/<mode>.env 的不同埠段隔離 host 埠。
 -p 不隔離 host 埠 —— 只做前者不做後者，第二個模式會 port is already allocated。
 TXT
@@ -90,7 +90,7 @@ _compose_up() {
     # bind mount 來源不存在時 Docker 會靜默建立 root:root 空目錄再掛上去，
     # 於是 CRS 排除規則從未載入、WAF 悄悄失效，而且沒有任何線索。
     cx_assert_mount_sources "$CX_DC_MODE"
-    cx_info "啟動 pm_${CX_DC_MODE}（$(_compose_port_summary)）"
+    cx_info "啟動 $(cx_project_for "$CX_DC_MODE")（$(_compose_port_summary)）"
     cx_dc up "$@"
 }
 
@@ -116,8 +116,8 @@ _compose_down() {
     done
     if (( wipe )); then
         # 紅線 2：任何刪除必須有互動確認。-v 會刪掉 MySQL 的 volume，資料不可回復。
-        cx_confirm --danger "刪除 pm_${CX_DC_MODE} 的 volume" \
-"這會移除 compose project pm_${CX_DC_MODE} 的**所有 volume**，包含：
+        cx_confirm --danger "刪除 $(cx_project_for "$CX_DC_MODE") 的 volume" \
+"這會移除 compose project $(cx_project_for "$CX_DC_MODE") 的**所有 volume**，包含：
 
   • mysql-data   —— 資料庫的全部內容
   • app-storage / app-vendor / nuxt-* （若該模式有）

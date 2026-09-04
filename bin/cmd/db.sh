@@ -69,7 +69,7 @@ _db_mysql() {
 
 _db_wait() {
     local i=0
-    cx_info "等待 pm_${CX_DC_MODE} 的 MySQL 就緒"
+    cx_info "等待 $(cx_project_for "$CX_DC_MODE") 的 MySQL 就緒"
     until cx_dc_q exec -T mysql mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; do
         i=$((i + 1))
         (( i >= 60 )) && cx_die "$EX_PRECOND" "等待 MySQL 逾時（60 × 2s）"
@@ -83,7 +83,7 @@ _db_status() {
     while IFS= read -r line; do
         [[ $line == DB_DATABASE=* ]] && dbname=${line#*=}
     done < <(_db_env)
-    cx_step "pm_${CX_DC_MODE} 資料庫"
+    cx_step "$(cx_project_for "$CX_DC_MODE") 資料庫"
     cx_info "資料庫：${dbname:-?}"
     cx_info "資料表："
     _db_mysql -N -e "SHOW TABLES" 2>/dev/null | sed 's/^/    /' || cx_warn "查不到資料表（容器沒起來？）"
@@ -151,13 +151,13 @@ _db_restore() {
 
     cx_confirm --danger "從 dump 還原資料庫" \
 "來源  ：$src
-目標  ：pm_${CX_DC_MODE} 的 $dbname
+目標  ：$(cx_project_for "$CX_DC_MODE") 的 $dbname
 
 還原會**覆蓋**目標資料庫的現有內容。這個動作不可逆。
 建議先跑 cx db dump 留一份現況。" || return "$EX_ABORT"
 
     cx_ask_typed "確認還原" \
-"這會覆蓋 pm_${CX_DC_MODE} 的 $dbname。
+"這會覆蓋 $(cx_project_for "$CX_DC_MODE") 的 $dbname。
 
 請輸入 RESTORE ${CX_DC_MODE} 以確認。" "RESTORE ${CX_DC_MODE}" || return "$EX_ABORT"
 
@@ -174,7 +174,7 @@ _db_restore() {
 
 _db_fresh() {
     cx_confirm --danger "重建資料庫 schema" \
-"這會對 pm_${CX_DC_MODE} 執行：
+"這會對 $(cx_project_for "$CX_DC_MODE") 執行：
 
     php artisan migrate:fresh --seed --force
 

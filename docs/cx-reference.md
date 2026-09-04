@@ -57,7 +57,7 @@ cx setup [子指令]
 | `env` | 從 `.env.example` 產生 `.env`（隨機密碼、你的 UID/GID、`PROJECT_SLUG`）。**不覆蓋既有的** |
 | `dirs` | 建立 `reports/` 與 `.cx/` 的葉目錄，並補回 `reports/.gitignore` |
 | `guard` | 安裝三個 repo 的 pre-push hook（白名單從 `.cxroot` 產生） |
-| **`native [名稱...]`** | **一行裝完整套原生工具鏈** = `system` → `tools` → `deps` |
+| **`native`** | **一行裝完整套原生工具鏈** = `system` → `tools` → `deps`。不吃名稱過濾器 —— `system` 與 `tools` 的清單互斥，要裝單一項目請直接用那兩個子指令 |
 | `system [名稱...]` | **需要 root** 的系統套件：`php nginx git docker mysql-client php-sqlite` |
 | `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep` |
 | `deps` | backend 的 `composer install` + `npm ci` + `vite build`、frontend 的 `npm ci` |

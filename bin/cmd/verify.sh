@@ -61,7 +61,11 @@ _vf_config() {
     local mode=$1 out="$CX_ROOT/.cx/verify-config-$1.json"
     [[ -f $out ]] && { printf '%s' "$out"; return 0; }
     cx_ensure_host_dirs "$CX_ROOT/.cx" >/dev/null 2>&1
-    local -a a=(--project-directory "$CX_ROOT" -p "pm_${mode}"
+    # -p 必須跟 cx_compose_init 一致。寫死 pm_ 的話，改名後的專案會把
+    # config 快取建在別的 compose project 底下，接著 check 2.5 會拿
+    # pm_<mode>_net 去比對真實的 <專案>_<mode>_net，全部判 FAIL ——
+    # 一個全新的範本專案開箱就報驗證失敗。
+    local -a a=(--project-directory "$CX_ROOT" -p "$(cx_project_for "$mode")"
                 -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/docker/compose/${mode}.yml")
     local f
     for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do

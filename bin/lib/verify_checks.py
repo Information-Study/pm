@@ -9,6 +9,7 @@ base 與 overlay 合併之後的結果才是 Docker 真正會用的東西，而 
 每個檢查印一行：<PASS|FAIL>\t<編號>\t<標題>\t<備註>
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -91,21 +92,27 @@ def check_base_has_no_ports(root):
 def check_network_named(cfgs):
     """2.5：網路名會被命名空間化成 <project>_<key>。
 
-    cx scan dast 要用 `docker run --network pm_test_net` 把 ZAP 塞進 WAF 的網路，
-    留給 compose 自動命名就會變成 pm_test_app_net。
+    cx scan dast 要用 `docker run --network <專案>_test_net` 把 ZAP 塞進 WAF 的網路，
+    留給 compose 自動命名就會變成 <專案>_test_app_net。
+
+    專案名從 CX_PROJECT_NAME（.cxroot）來，不能寫死 pm ——
+    否則專案改名之後 docker-compose.yml 的 name: 跟著 PROJECT_SLUG 變了，
+    這個檢查卻還在期待 pm_<mode>_net，會把正確的設定判成 FAIL。
     """
+    proj = os.environ.get("CX_PROJECT_NAME") or "pm"
     problems = []
     for mode, doc in cfgs.items():
         for key, net in (doc.get("networks") or {}).items():
             nm = (net or {}).get("name")
             if not nm:
                 problems.append(f"{mode}/{key} 沒有明寫 name:")
-            elif nm != f"pm_{mode}_net":
-                problems.append(f"{mode}/{key} name={nm}（預期 pm_{mode}_net）")
+            elif nm != f"{proj}_{mode}_net":
+                problems.append(f"{mode}/{key} name={nm}（預期 {proj}_{mode}_net）")
     if problems:
         out("FAIL", "2.5", "網路明寫 name:", "; ".join(problems))
     else:
-        out("PASS", "2.5", "網路明寫 name:", "pm_dev_net / pm_test_net / pm_prod_net")
+        out("PASS", "2.5", "網路明寫 name:",
+            f"{proj}_dev_net / {proj}_test_net / {proj}_prod_net")
 
 
 def check_image_tag_has_mode(cfgs):

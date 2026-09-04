@@ -184,7 +184,16 @@ python3 -c 'import json;[print("file_errors=%s generic=%s"%(d["totals"]["file_er
 python3 -c 'import json;[print(f,m["line"],m["message"]) for l in open("reports/quality/larastan.json") if l.strip() for d in [json.loads(l)] if isinstance(d.get("files"),dict) for f,v in d["files"].items() for m in v["messages"]]'
 
 # ② Semgrep：只列 ERROR 等級（那才是會擋 CI 的）
-python3 -c 'import json;d=json.load(open("reports/sast/semgrep.sarif"));[print(r["level"],r["ruleId"],r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]) for run in d["runs"] for r in run["results"] if r.get("level")=="error"]'
+#    ⚠ 等級**不在** result 上。SARIF 的 result 沒有 level 欄位（實測 18 個 result
+#      的 r.get("level") 全是 None），等級掛在規則表：
+#      runs[].tool.driver.rules[<ruleId>].defaultConfiguration.level。
+#      寫成 r["level"]=="error" 會一個都印不出來而且 exit 0 ——
+#      本 repo 的報告實際有 3 個 error、15 個 warning。
+#      bin/lib/sarif_gate.py 用的就是規則表這條路。
+python3 -c 'import json;d=json.load(open("reports/sast/semgrep.sarif"));[[print(rules.get(r["ruleId"],{}).get("defaultConfiguration",{}).get("level","warning"),r["ruleId"],r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]) for r in run["results"] if rules.get(r["ruleId"],{}).get("defaultConfiguration",{}).get("level","warning")=="error"] for run in d["runs"] for rules in [{x["id"]:x for x in run["tool"]["driver"].get("rules",[])}]]'
+
+#    等級分佈一眼看完
+python3 -c 'import json,collections;d=json.load(open("reports/sast/semgrep.sarif"));[print(collections.Counter(rules.get(r["ruleId"],{}).get("defaultConfiguration",{}).get("level","warning") for r in run["results"])) for run in d["runs"] for rules in [{x["id"]:x for x in run["tool"]["driver"].get("rules",[])}]]'
 
 # ③ Trivy：只列 HIGH / CRITICAL
 python3 -c 'import json;d=json.load(open("reports/sca/trivy-fs.json"));[print(v["Severity"],v["VulnerabilityID"],v.get("PkgName")) for r in (d.get("Results") or []) for v in (r.get("Vulnerabilities") or []) if v["Severity"] in ("HIGH","CRITICAL")]'
