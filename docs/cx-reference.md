@@ -425,6 +425,70 @@ detached HEAD 之下會先 `git checkout -q -B <追蹤分支> HEAD` 再推
 
 ---
 
+---
+
+## `cx git` 的驗證紀錄（2026-09-04）
+
+每一條都是對**真實遠端**（`github.com/Information-Study/*`）實跑的，
+不是 `--dry-run`。
+
+### 退出碼
+
+| 指令 | rc | 期望 |
+|---|---|---|
+| `cx git status` | 0 | ✔ |
+| `cx git fetch` | 0 | ✔ |
+| `cx git fetch --oops` | 2 | ✔ `EX_USAGE` |
+| `cx git pull --rebase` | 2 | ✔ `EX_USAGE`（只支援 `--ff-only` / `--allow-merge`） |
+| `cx git pull`（工作區髒） | 3 | ✔ `EX_PRECOND` |
+| `cx git sync` | 0 | ✔ |
+| `cx git branch list` | 0 | ✔ |
+| `cx git bogus` | 2 | ✔ `EX_USAGE` |
+| `cx git guard status` | 0 | ✔ |
+| `cx git scan-secrets` | 0 | ✔ |
+
+### `pull` 的四條路徑
+
+| 情境 | 結果 |
+|---|---|
+| 落後 1（本地 rewind 一個 commit） | 快轉到 `origin/main`，子模組對齊 gitlink 並接回 `main`，檔案內容確實回來（`docs/manual.md` 525 行） |
+| 已是最新 | `✔ 主庫已是最新（領先 0）`，rc=0 |
+| 分岔（領先 1、落後 1） | rc=3，列出三條路：看差異 / `--allow-merge` / `reset --hard` |
+| 子模組遠端比 gitlink 新 | **警告但不自動採用**，rc=0，`backend` 的 HEAD 仍停在 gitlink |
+
+最後一條是用一個臨時的本地 bare remote 測的 —— 一開始想用
+`git update-ref` 直接偽造 `refs/remotes/origin/main`，但 `pull` 內部的
+`fetch --prune` 會把它改回真值，警告因此不會觸發。
+**這代表那個 fetch 是有效的**，偽造的 ref 騙不過它。
+
+### 紅線：黑名單遠端
+
+把 `backend` 的 origin 暫時改成 `team-of-P/PSYOP_DutyManager.git`：
+
+| 指令 | rc | 訊息 |
+|---|---|---|
+| `cx git fetch` | 3 | `origin 在永久黑名單，拒絕連線` |
+| `cx git pull` | 3 | 同上 |
+| `cx git push` | 3 | `origin 在永久黑名單` |
+
+三個入口都在**任何網路動作之前**擋下。
+`fetch` / `pull` 也要擋的理由：拉下來就等於把舊專案的內容帶進工作區。
+
+不在白名單但也不在黑名單的遠端（例如本地路徑）只警告、不阻擋 ——
+唯讀操作允許刻意加的 upstream / fork。
+
+### `branch` 的完整生命週期
+
+`new` → `switch main` → `list` → `delete` → 拒絕刪除 `main`(rc=2)，
+三個 repo 全程同進同出，結束後工作區乾淨、測試分支已清除。
+
+### 從子目錄執行
+
+`backend/`、`frontend/`、`ansible/roles/mysql/tasks/`、`bin/lib/`、`docs/`
+五個位置各跑 `status` / `fetch` / `pull`，全部 rc=0。
+
+---
+
 ## `cx fresh` — 清理與重建
 
 ```
