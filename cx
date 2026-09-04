@@ -13,6 +13,7 @@ CX_MODE_OVERRIDE=''
 CX_DRY_RUN=0
 CX_ASSUME_YES=0
 CX_UI=auto
+CX_RUNNER=auto
 
 while (( $# )); do
     case $1 in
@@ -25,6 +26,9 @@ while (( $# )); do
         --ui)       [[ -n ${2:-} ]] || { printf 'cx: --ui 需要 whiptail|dialog|plain\n' >&2; exit 2; }
                     CX_UI=$2; shift 2 ;;
         --ui=*)     CX_UI=${1#*=}; shift ;;
+        --runner)   [[ -n ${2:-} ]] || { printf 'cx: --runner 需要 docker|native|auto\n' >&2; exit 2; }
+                    CX_RUNNER=$2; shift 2 ;;
+        --runner=*) CX_RUNNER=${1#*=}; shift ;;
         --dry-run)  CX_DRY_RUN=1; shift ;;
         --yes|-y)   CX_ASSUME_YES=1; shift ;;
         -h|--help)  set -- help; break ;;
@@ -47,7 +51,15 @@ case $CX_MODE_OVERRIDE in
     ''|dev|test|prod) : ;;
     *) printf 'cx: --mode 只接受 dev|test|prod（收到 %s）\n' "$CX_MODE_OVERRIDE" >&2; exit 2 ;;
 esac
-export CX_DRY_RUN CX_ASSUME_YES CX_UI CX_INVOKE_PWD
+# --runner 決定「用容器還是用原生工具鏈」。被指定的那一邊不可用時一律硬失敗，
+# 不會偷偷退回另一邊 —— 允許靜默 fallback 的話，
+#「原生路徑可以獨立運作」這件事就永遠無法被驗證：你以為在測原生，
+# 實際上跑的是容器。
+case $CX_RUNNER in
+    auto|docker|native) : ;;
+    *) printf 'cx: --runner 只接受 docker|native|auto（收到 %s）\n' "$CX_RUNNER" >&2; exit 2 ;;
+esac
+export CX_DRY_RUN CX_ASSUME_YES CX_UI CX_RUNNER CX_INVOKE_PWD
 
 # ---- 定位根目錄 ----
 if [[ -n $CX_ROOT_OVERRIDE ]]; then
@@ -95,6 +107,9 @@ export CX_MODE
 # 有些動詞的實作與檔名不同名，用對照表處理
 declare -A CX_CMD_FILE_OF=(
     [uninstall]=install
+    # cx php 與 cx art 共用一個檔：兩者的 runner 判斷與前置檢查完全一樣，
+    # 拆成兩個檔只會讓那段邏輯有兩份、然後漂移。
+    [php]=art
     [dc]=compose
     [up]=compose [down]=compose [restart]=compose [ps]=compose [logs]=compose [sh]=compose [build]=compose
     # dev / prod 只是「把 CX_MODE 設好再往下傳」的前綴動詞，實作同在 compose.sh。

@@ -9,6 +9,9 @@ cx — pm 專案統一入口
   --root <path>     指定專案根目錄（預設向上搜尋 .cxroot）
   --mode <m>        dev | test | prod（預設 dev）
   --ui <u>          whiptail | dialog | plain
+  --runner <r>      docker | native | auto（預設 auto）
+                    強制用容器或原生工具鏈。被指定的那一邊不可用時硬失敗，
+                    不會偷偷退回另一邊 —— 例：cx --runner native composer install
   --dry-run         只印出指令，不執行
   --yes, -y         略過互動確認（非互動環境專用，請謹慎）
 
@@ -18,15 +21,21 @@ cx — pm 專案統一入口
                             gitleaks / semgrep 到 ~/.local（每個都核對 SHA256）
     setup deps              backend 的 composer install + frontend 的 npm ci
     setup env|dirs|guard     只做其中一項
+    setup system [名稱...]  需要 root 的系統套件（php / nginx / git / docker /
+                            mysql-client / php-sqlite）。sudo 不可用時只印指令
   doctor            檢查工具鏈、Docker daemon、埠、子模組、執行位元
 
   dev up -d --build 起開發環境（bind mount + HMR + xdebug + phpMyAdmin）
   dev down [-v]     關閉（-v 連資料庫一起刪，會要求確認）
   dev ps|logs|sh|restart|build|config|dc
-  art <參數>        php artisan
-  composer <參數>   composer（在 backend/）
-  npm <參數>        npm（在 frontend/）
+  art <參數>        php artisan（容器或原生，看 --runner）
+  php <參數>        直接跑 php（-v / -m / -r / 一次性腳本）
+  composer <參數>   composer（在 backend/；容器或原生）
+  npm <參數>        npm（在 frontend/；容器或原生）
+    npm --backend <參數>  在 backend/ 執行（Laravel 端的 Vite 資產）
   db status|shell|migrate|fresh|seed|dump|restore|admin|wait
+  pma [--url]       開啟 phpMyAdmin（只有 dev 模式有）
+  code [路徑]       用 VS Code 開啟專案（預設開專案根）
 
 ── 第二階段：測試與掃描 ─────────────────────────────────────────────────────
   test up -d        起測試環境（不可變映像 + ModSecurity WAF）

@@ -13,11 +13,11 @@ _cx_completion() {
         cword=$COMP_CWORD
     fi
 
-    local global_flags='--root --mode --ui --dry-run --yes -y -h --help'
+    local global_flags='--root --mode --ui --runner --dry-run --yes -y -h --help'
     # 這份清單就是「cx 到底做得到什麼」的權威來源之一 ——
     # 新增動詞時四個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
     #（只有檔名與動詞不同名時才需要）、這裡、以及 bin/cmd/help.sh。
-    local verbs='help doctor setup lint scan verify git fresh tui install uninstall
+    local verbs='help doctor setup lint scan verify git fresh tui install uninstall code pma php
                  art composer npm db test sonar deploy
                  dev prod up down restart ps logs sh build config dc'
 
@@ -25,8 +25,8 @@ _cx_completion() {
     local i=1 verb='' sub='' argn=0
     while (( i < cword )); do
         case ${words[i]} in
-            --root|--mode|--ui) ((i+=2)); continue ;;
-            --root=*|--mode=*|--ui=*|--dry-run|--yes|-y) ((i++)); continue ;;
+            --root|--mode|--ui|--runner) ((i+=2)); continue ;;
+            --root=*|--mode=*|--ui=*|--runner=*|--dry-run|--yes|-y) ((i++)); continue ;;
             -*) ((i++)); continue ;;
             *)  if [[ -z $verb ]]; then verb=${words[i]}
                 elif [[ -z $sub ]]; then sub=${words[i]}; ((argn++))
@@ -68,6 +68,8 @@ _cx_completion() {
             COMPREPLY=($(compgen -W "all env dirs guard tools deps --help -h" -- "$cur")) ;;
         setup_tools_names)
             COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep" -- "$cur")) ;;
+        system)
+            COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite" -- "$cur")) ;;
         db)
             COMPREPLY=($(compgen -W "status shell wait migrate fresh seed dump restore admin --help -h" -- "$cur")) ;;
         sonar)

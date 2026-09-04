@@ -6,8 +6,11 @@
 | [`cx-reference.md`](cx-reference.md) | `cx` 每一個動詞的完整參考：語法、參數、行為、退出碼、陷阱 | 日常操作 |
 | [`docker-reference.md`](docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF 設定 | 改 compose / Dockerfile 之前 |
 | [`ansible-reference.md`](ansible-reference.md) | play 結構、12 個 role、vault、MySQL 五個坑 | 改 Ansible / 上真機之前 |
+| [`runners.md`](runners.md) | **兩條 runner**：容器與原生各自需要什麼、產出為何不可互換 | 沒有 Docker、或要驗證原生路徑 |
 | [`devsecops.md`](devsecops.md) | 四道防線的原理、閘門定義、退出碼、報告格式 | 掃描與 CI |
 | [`troubleshooting.md`](troubleshooting.md) | 症狀 → 原因 → 解法。全部是實際踩過的坑 | 出事的時候 |
+| [`reports.md`](reports.md) | **測試與掃描的報告怎麼看**：目錄結構、退出碼、SKIP 不等於 PASS | 跑完掃描之後 |
+| [`template.md`](template.md) | 拿這個 repo 當**新專案範本**：哪些能刪、哪些不可重建、換名字要改哪裡 | 開新專案 |
 | [`progress.md`](progress.md) | 進度追蹤與「還沒驗證什麼」 | 交接、規劃 |
 | [`docker-verification.md`](docker-verification.md) | Phase 2 的驗收需求與實測結果 | 稽核 |
 
@@ -22,6 +25,9 @@
 | 加一個 nginx location | `docker-reference.md` §6 |
 | 上真的伺服器 | `ansible-reference.md` 全部 |
 | CI 要怎麼串 | `devsecops.md` §9 |
+| 想完全不用 Docker | `runners.md` |
+| 掃描跑完了要看哪裡 | `reports.md` |
+| 要拿這個 repo 開新專案 | `template.md` |
 | 東西壞了 | `troubleshooting.md` |
 | 交接 / 知道還缺什麼 | `progress.md` |
 

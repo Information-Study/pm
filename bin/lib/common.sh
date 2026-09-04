@@ -88,6 +88,82 @@ cx_docker_ok() {
     return "$_CX_DOCKER_OK"
 }
 
+# ── runner：docker 還是原生 ───────────────────────────────────────────────────
+# 專案的每一個功能都要能「完全用 Docker」或「完全用原生工具鏈」跑完，
+# 兩條路各自獨立、不互相依賴。
+#
+# 預設 auto（有 Docker 就用 Docker），但一定要能**強制**：
+#   cx --runner native composer install
+#   cx --runner docker  npm ci
+#
+# ⚠ 被強制的那一邊如果不可用，一律**硬失敗**，絕不偷偷退回另一邊。
+# 這是整件事的重點：只要允許靜默 fallback，「原生路徑可以獨立運作」
+# 就永遠無法被驗證 —— 你以為在測原生，實際上跑的是容器。
+cx_runner() {
+    case ${CX_RUNNER:-auto} in
+        docker) printf 'docker\n' ;;
+        native) printf 'native\n' ;;
+        *)      cx_docker_ok && printf 'docker\n' || printf 'native\n' ;;
+    esac
+}
+
+# 這個動詞是不是被使用者「明確指定」了 runner？
+# auto 之下允許降級，明確指定之下不允許。
+cx_runner_forced() { [[ ${CX_RUNNER:-auto} != auto ]]; }
+
+# docker runner 的前置條件。訊息要講清楚是「被指定」還是「自動選到」的。
+cx_runner_need_docker() {
+    local what=${1:-這個動作}
+    cx_docker_ok || {
+        cx_error "$what 需要 Docker，但 Docker daemon 不可用"
+        if cx_runner_forced; then
+            cx_dim "  你指定了 --runner docker。要改用原生工具鏈： --runner native"
+        else
+            cx_dim "  1) systemctl is-active docker"
+            cx_dim "  2) id -nG | grep -q docker（沒有就 sudo usermod -aG docker \$USER）"
+            cx_dim "  3) 加完群組後必須 wsl --shutdown（Windows 端）再重開"
+        fi
+        exit "$EX_PRECOND"
+    }
+    [[ -f $CX_ROOT/docker-compose.yml ]] || cx_die "$EX_PRECOND" \
+        "$what 需要 docker-compose.yml，但檔案不存在"
+}
+
+# native runner 的前置條件：逐一檢查必要指令，一次列出全部缺的，
+# 而不是讓使用者修一個再撞下一個。
+# cx_runner_need_native <什麼動作> <指令>...
+cx_runner_need_native() {
+    local what=$1; shift
+    local t missing=()
+    for t in "$@"; do cx_have "$t" || missing+=("$t"); done
+    (( ${#missing[@]} == 0 )) && return 0
+    cx_error "$what 的原生路徑缺少：${missing[*]}"
+    for t in "${missing[@]}"; do
+        case $t in
+            composer) cx_dim "  composer → cx setup tools composer" ;;
+            node|npm) cx_dim "  $t → cx setup tools node" ;;
+            php)      cx_dim "  php → 系統套件（sudo apt install php8.5-cli），cx 不代裝需要 root 的東西" ;;
+            mysql|mysqldump)
+                      cx_dim "  $t → 系統套件（sudo apt install mysql-client）" ;;
+            *)        cx_dim "  $t → 請自行安裝" ;;
+        esac
+    done
+    if cx_runner_forced; then
+        cx_dim "  你指定了 --runner native。要改用容器： --runner docker"
+    else
+        cx_dim "  或改用容器： --runner docker（需要 Docker daemon）"
+    fi
+    exit "$EX_PRECOND"
+}
+
+# 每個雙路徑動詞開頭都印一行，讓「這次到底跑在哪裡」永遠不必用猜的。
+cx_runner_banner() {
+    local r; r=$(cx_runner)
+    local how=自動
+    cx_runner_forced && how=指定
+    cx_dim "runner: $r（$how）${1:+ — $1}"
+}
+
 cx_need() {
     cx_have "$1" && return 0
     local msg="缺少必要工具：$1"

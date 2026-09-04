@@ -93,6 +93,25 @@ _setup_dirs() {
         "$CX_ROOT/.cx/cache/semgrep" \
         "$CX_ROOT/.cx/cache/phpstan" \
         "$CX_ROOT/.cx/toolchain"
+    # reports/verify 是 cx verify 的落點，漏了它報告會寫不出去。
+    cx_ensure_host_dirs "$CX_ROOT/reports/verify" "$CX_ROOT/reports/db" "$CX_ROOT/reports/secrets"
+
+    # reports/.gitignore 是**進版控的檔案**，不是目錄。
+    # rm -rf reports 會把它一起帶走，而 cx_ensure_host_dirs 只建目錄 ——
+    # 於是重建之後 reports/ 底下所有掃描產出都會變成待提交的檔案。
+    # 這裡把它補回來，讓「刪掉 reports/ 再用 cx 重建」真的能還原到可用狀態，
+    # 不必依賴 git checkout。
+    if [[ ! -f $CX_ROOT/reports/.gitignore ]]; then
+        cat > "$CX_ROOT/reports/.gitignore" <<'GITIGNORE'
+# reports/ 目錄本身要進版控，內容不進。
+# 這樣 fresh clone 才有這個目錄，Docker 不會以 root:root 自動建立它，
+# 掃描器（uid 1000）也就不會 EACCES。
+*
+!.gitignore
+!README.md
+GITIGNORE
+        cx_ok "已補回 reports/.gitignore"
+    fi
     cx_ok "reports/ 與 .cx/ 的葉目錄已就緒（擁有者：$(id -un)）"
     cx_dim "  這些目錄必須由你建立。讓 Docker 自動建立會是 root:root 0755，"
     cx_dim "  之後以 uid 1000 執行的 Trivy / Semgrep / PHPStan / ZAP 全部 EACCES。"
@@ -287,6 +306,119 @@ _setup_tool_gitleaks() {
 
 CX_SETUP_TOOLS='composer node ansible trivy gitleaks semgrep'
 
+# ── 需要 root 的系統工具 ────────────────────────────────────────────────────
+#
+# 上面那些（composer / node / ansible / trivy / gitleaks / semgrep）全部裝在
+# ~/.local，不需要 root，所以 cx 可以直接動手。
+#
+# php / nginx / git / docker / mysql-client 是**系統套件**，一定要 root。
+# cx 對這種東西的原則是：
+#   1. 絕不偷偷跑 sudo。要用 root 就明講，而且要有確認閘門。
+#   2. sudo 不可用（沒密碼、非互動）時，把「你該自己貼哪一行」印出來，
+#      而不是丟一個 permission denied 就結束。
+# 這是紅線 2 的延伸：會改變系統狀態的動作都要看得見、可預期。
+CX_SETUP_SYSTEM_TOOLS='php nginx git docker mysql-client php-sqlite'
+
+# 工具 → apt 套件名。php 相關的要帶版本號，所以用函式而不是靜態表。
+_setup_pkgs_for() {
+    local t=$1 v
+    v=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)
+    [[ -n $v ]] || v=${CX_PHP_SERIES:-8.5}
+    case $t in
+        php)          printf 'php%s-cli php%s-mbstring php%s-xml php%s-curl php%s-zip php%s-intl php%s-bcmath php%s-gd php%s-mysql\n' "$v" "$v" "$v" "$v" "$v" "$v" "$v" "$v" "$v" ;;
+        php-sqlite)   printf 'php%s-sqlite3\n' "$v" ;;
+        nginx)        printf 'nginx\n' ;;
+        git)          printf 'git\n' ;;
+        mysql-client) printf 'mysql-client\n' ;;
+        docker)       printf 'docker.io docker-compose-v2\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# 這個工具「已經在」了嗎？用實際的執行檔／擴充判斷，不看套件資料庫 ——
+# 使用者可能是用別的方式裝的（PPA、手動、Docker Desktop 的 WSL integration）。
+_setup_system_have() {
+    case $1 in
+        php)          cx_have php ;;
+        php-sqlite)   php -m 2>/dev/null | grep -qix pdo_sqlite ;;
+        nginx)        cx_have nginx ;;
+        git)          cx_have git ;;
+        mysql-client) cx_have mysql ;;
+        docker)       cx_have docker ;;
+        *) return 1 ;;
+    esac
+}
+
+_setup_system() {
+    cx_have apt-get || cx_die "$EX_PRECOND" \
+        "只支援 Debian/Ubuntu 系（找不到 apt-get）。請自行安裝：$CX_SETUP_SYSTEM_TOOLS"
+
+    local -a want=("$@")
+    (( ${#want[@]} )) || read -r -a want <<< "$CX_SETUP_SYSTEM_TOOLS"
+
+    local t
+    for t in "${want[@]}"; do
+        case " $CX_SETUP_SYSTEM_TOOLS " in
+            *" $t "*) : ;;
+            *) cx_die "$EX_USAGE" "未知的系統工具：$t（可用：$CX_SETUP_SYSTEM_TOOLS）" ;;
+        esac
+    done
+
+    # 已經有的就不要列進去 —— 重跑這個指令應該是安靜的（冪等）。
+    local -a pkgs=() todo=()
+    for t in "${want[@]}"; do
+        if _setup_system_have "$t"; then
+            cx_ok "$t 已存在，略過"
+        else
+            todo+=("$t")
+            local p
+            for p in $(_setup_pkgs_for "$t"); do pkgs+=("$p"); done
+        fi
+    done
+
+    if (( ${#pkgs[@]} == 0 )); then
+        cx_ok "系統工具都齊了，沒有東西要裝"
+        return 0
+    fi
+
+    cx_step "需要 root 的系統套件"
+    cx_info "工具：${todo[*]}"
+    cx_info "套件：${pkgs[*]}"
+
+    # sudo 不可用就只印指令。這不是失敗 —— 使用者自己貼上去執行是完全正常的流程，
+    # 尤其在 CI 或不給 sudo 的機器上。
+    if ! sudo -n true 2>/dev/null; then
+        cx_warn "sudo 需要密碼或不可用 —— cx 不會替你輸入密碼"
+        cx_dim "  請自行執行："
+        cx_dim "    sudo apt-get update && sudo apt-get install -y ${pkgs[*]}"
+        cx_dim "  裝完再跑一次 cx doctor 確認"
+        return "$EX_PRECOND"
+    fi
+
+    cx_confirm --danger "以 root 安裝系統套件" \
+        "將以 sudo 執行：\n\n  apt-get install -y ${pkgs[*]}\n\n這會改變系統狀態（不只是這個專案）。\n\n繼續嗎？" \
+        || return "$EX_ABORT"
+
+    cx_run sudo apt-get update || cx_die "$EX_FAIL" "apt-get update 失敗"
+    cx_run sudo apt-get install -y "${pkgs[@]}" || cx_die "$EX_FAIL" "apt-get install 失敗"
+
+    # 裝完要驗，不能只看 apt 的退出碼 —— 套件裝了不代表你要的東西就在
+    #（最典型的是 php 擴充：套件裝了但 .ini 沒啟用）。
+    local bad=0
+    for t in "${todo[@]}"; do
+        if _setup_system_have "$t"; then cx_ok "$t 已就緒"
+        else cx_error "$t 裝完之後仍然不可用"; bad=1; fi
+    done
+    (( bad == 0 )) || return "$EX_FAIL"
+
+    if [[ " ${todo[*]} " == *" docker "* ]]; then
+        cx_warn "docker 剛裝好：要加入 docker 群組才能免 sudo 使用"
+        cx_dim "  sudo usermod -aG docker \$USER"
+        cx_dim "  然後 WSL 端必須 wsl --shutdown（Windows）再重開，"
+        cx_dim "  usermod 只影響「之後才建立」的登入 session。"
+    fi
+}
+
 _setup_tools() {
     local -a want=("$@")
     local t rc=0
@@ -427,6 +559,7 @@ cmd_setup_main() {
         dirs)    _setup_dirs ;;
         guard)   _setup_guard ;;
         tools)   cx_lock setup; _setup_tools "$@" ;;
+        system)  cx_lock setup; _setup_system "$@" ;;
         deps)    cx_lock setup; _setup_deps ;;
         *) cx_error "未知的子指令：$sub"; _setup_usage; return "$EX_USAGE" ;;
     esac

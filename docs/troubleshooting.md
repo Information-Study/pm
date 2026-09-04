@@ -226,6 +226,23 @@ nginx 的 `add_header` **不是累加的**。任何一個 `location` 只要有�
 
 ---
 
+### 刪掉 node_modules 之後，dev 的 `/` 變 500 但 `/admin` 正常
+
+```
+[nitro] ERROR RollupError: Could not resolve entry module
+        "node_modules/nitropack/dist/presets/_nitro/runtime/nitro-dev"
+```
+
+在 dev 容器**正在跑**的時候刪掉 host 的 `frontend/node_modules` 造成的。
+`/admin` 走 PHP 所以不受影響，很容易誤判成「前端的程式碼壞了」。
+
+```bash
+cx setup deps          # 先把 node_modules 裝回來
+cx dev restart nuxt    # 再讓 dev server 重新解析模組
+```
+
+---
+
 ### `ViteManifestNotFoundException`
 
 `welcome.blade.php` 有 Vite 指令，但 `backend/public/build/manifest.json`

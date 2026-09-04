@@ -102,6 +102,59 @@ cmd_doctor_main() {
     done < <(cx_guard_repos)
     (( n == tot )) && _ok "push guard" "$n/$tot 個 repo" || _fl "push guard" "只有 $n/$tot —— 執行 cx git guard install"
 
+    # ── 兩條路各自能不能獨立跑完 ────────────────────────────────────────
+    # 專案的要求是「完全用 Docker」或「完全用原生工具鏈」都要能走完，
+    # 兩條路互不依賴。doctor 必須把兩邊分開報，否則
+    # 「auto 之下看起來一切正常」會把原生路徑的缺口整個蓋掉 ——
+    # 直到有人在沒有 Docker 的機器上 clone 下來才發現。
+    cx_step "兩條 runner 各自的完整性"
+
+    local dk_ok=1
+    if cx_docker_ok; then
+        local p
+        for p in docker-compose.yml docker/compose/dev.yml docker/php/Dockerfile docker/nuxt/Dockerfile; do
+            [[ -e $CX_ROOT/$p ]] || dk_ok=0
+        done
+        if (( dk_ok )); then _ok "docker runner" "daemon 可用、compose 與 Dockerfile 齊全"
+        else _fl "docker runner" "daemon 可用但 compose/Dockerfile 不齊"; fi
+    else
+        dk_ok=0
+        _wr "docker runner" "daemon 不可用 —— cx --runner docker 會硬失敗"
+    fi
+
+    # 原生路徑逐項列：缺哪一個就只有哪一個動詞不能用，其他照常。
+    local nt_missing=()
+    cx_have php      || nt_missing+=(php)
+    cx_have composer || nt_missing+=(composer)
+    cx_have npm      || nt_missing+=(npm)
+    if (( ${#nt_missing[@]} == 0 )); then
+        _ok "native runner" "php / composer / npm 齊全"
+    else
+        _wr "native runner" "缺 ${nt_missing[*]} —— 相關動詞的 --runner native 會硬失敗"
+    fi
+
+    # 原生的 vendor / node_modules：容器路徑不需要它們（映像自帶），
+    # 但原生路徑少了就什麼都跑不動。
+    [[ -f $CX_ROOT/backend/vendor/autoload.php ]] \
+        && _ok "native backend/vendor" "已安裝" \
+        || _wr "native backend/vendor" "缺（cx --runner native composer install）"
+    [[ -d $CX_ROOT/frontend/node_modules ]] \
+        && _ok "native frontend/node_modules" "已安裝" \
+        || _wr "native frontend/node_modules" "缺（cx --runner native npm ci）"
+
+    # 原生的 cx test back 走 sqlite :memory:，缺了 pdo_sqlite 的錯誤是
+    # "could not find driver"，完全不會提到套件名。
+    if cx_have php; then
+        php -m 2>/dev/null | grep -qix pdo_sqlite \
+            && _ok "native pdo_sqlite" "cx --runner native test back 可用" \
+            || _wr "native pdo_sqlite" "缺 —— 原生後端測試不可用（sudo apt install php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null)-sqlite3）"
+    fi
+
+    # 原生的 cx db 用 host 的 mysql client 打 backend/.env 指到的那台。
+    cx_have mysql \
+        && _ok "native mysql client" "cx --runner native db 可用" \
+        || _wr "native mysql client" "缺 —— 原生 cx db 不可用（sudo apt install mysql-client）"
+
     cx_step "可執行位元"
     # 這個 repo 的進入點必須可執行。git index 曾經把 cx 的模式記成 100644
     # 而磁碟是 755 —— 內容零差異，git diff 看不出來，但一旦提交，

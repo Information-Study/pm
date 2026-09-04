@@ -265,8 +265,11 @@ pm/
 | [`docs/cx-reference.md`](docs/cx-reference.md) | `cx` 每一個動詞的完整參考 |
 | [`docs/docker-reference.md`](docs/docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF |
 | [`docs/ansible-reference.md`](docs/ansible-reference.md) | play 結構、12 個 role、vault、實測踩過的坑 |
+| [`docs/runners.md`](docs/runners.md) | 兩條 runner：容器與原生各自獨立運作 |
 | [`docs/devsecops.md`](docs/devsecops.md) | 四道防線的原理、閘門定義、退出碼 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症狀 → 原因 → 解法 |
+| [`docs/reports.md`](docs/reports.md) | 測試與掃描的報告怎麼看 |
+| [`docs/template.md`](docs/template.md) | 拿這個 repo 當新專案範本 |
 | [`docs/progress.md`](docs/progress.md) | 進度追蹤與「還沒驗證什麼」 |
 | [`claude.md`](claude.md) | 設計原理（`docs/` 是「怎麼用」，這份是「為什麼這樣設計」） |
 

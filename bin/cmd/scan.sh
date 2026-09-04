@@ -48,13 +48,8 @@ _scan_ensure_dirs() {
     [[ -O $CX_REPORT_DIR ]] || cx_warn "reports/ 擁有者不是 $(id -un) —— 掃描器可能寫不進去"
 }
 
-_scan_runner() {
-    case ${CX_RUNNER:-auto} in
-        docker) printf 'docker\n' ;;
-        native) printf 'native\n' ;;
-        *)      cx_docker_ok && printf 'docker\n' || printf 'native\n' ;;
-    esac
-}
+# 與 cx_runner 是同一件事，保留名字是因為本檔到處在用。
+_scan_runner() { cx_runner; }
 
 # _scan_step <EX_CODE> <名稱> <指令...>
 # 回傳：0 = 乾淨，$EX_CODE = 有 finding，EX_PRECOND = 工具本身出錯
@@ -390,7 +385,8 @@ _scan_secrets() {
 # ---------------------------------------------------------------------------
 cmd_scan_main() {
     local lane=${1:-}; shift || true
-    CX_RUNNER=auto
+    # 預設沿用全域的 --runner；cx scan 自己的 --runner 可以再覆寫（更靠近的贏）。
+    CX_RUNNER=${CX_RUNNER:-auto}
     while (( $# )); do
         case $1 in
             --runner)   [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--runner 需要一個值"

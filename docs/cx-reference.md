@@ -55,6 +55,7 @@ cx setup [子指令]
 | `dirs` | 建立 `reports/` 與 `.cx/` 的葉目錄 |
 | `guard` | 安裝三個 repo 的 pre-push hook |
 | `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep` |
+| `system [名稱...]` | **需要 root** 的系統套件：`php nginx git docker mysql-client php-sqlite` |
 | `deps` | backend 的 `composer install`、backend/frontend 的 npm |
 
 **為什麼目錄要由你建立**：掛在「image 中不存在的路徑」上的具名 volume 一律被
@@ -66,6 +67,84 @@ Docker 建成 `root:root 0755`，之後以 uid 1000 執行的 Trivy / Semgrep / 
 一小時後才以 `Access denied` 現形。
 
 冪等：跑第二次不會覆蓋 `.env`，也不會重裝已經對版的工具。
+
+---
+
+## `cx code` — 用 VS Code 開啟
+
+```
+cx code [路徑] [VS Code 參數...]
+```
+
+不給路徑就開**專案根**，不是你所在的子目錄 —— 這正是它存在的理由：
+從 `backend/` 打 `code .` 開的是 `backend/`，而你多半想要整個工作區。
+
+給了路徑則以**呼叫者的 cwd** 解析（`cd backend && cx code .` 開 `backend/`）。
+
+執行檔依序找 `$CX_CODE_BIN` → `code` → `code-insiders` → `codium`。
+都找不到時會告訴你 WSL 要裝哪個擴充，而不是丟 `command not found`。
+
+---
+
+## `cx pma` — 開啟 phpMyAdmin
+
+```
+cx pma            # 印出網址、帳號，並嘗試用瀏覽器開啟
+cx pma --url      # 只印網址（給腳本用）
+cx pma --no-open  # 印資訊但不開瀏覽器
+```
+
+**只有 dev 模式有。** test / prod 刻意不放管理介面（額外的攻擊面，
+而且 prod 的 MySQL 根本不發布埠）。在別的模式打會被擋下並告訴你用
+`cx --mode <m> db shell`。
+
+埠是從**合併後**的 compose 設定讀出來的，不是寫死 8891 ——
+`docker/env/dev.env` 可以覆寫，寫死就會給出錯的網址。
+
+容器沒在跑時會告訴你怎麼起，而不是給一個開不起來的連結。
+
+> 密碼不會印在終端機上（scrollback 與 tmux buffer 會留著），
+> 只印出長度與「去哪裡看」。
+
+---
+
+## `cx php` — 直接跑 php
+
+```
+cx php -v
+cx php -m
+cx php -r 'echo PHP_VERSION;'
+```
+
+`cx art` 只涵蓋 artisan；很多時候要問的是 php 本身。
+兩條 runner 都支援，而且會印出跑的是哪一個：
+
+```
+$ cx --runner docker php -r 'echo PHP_VERSION;'
+runner: docker（指定） — 容器內的 php
+8.5.10
+$ cx --runner native php -r 'echo PHP_VERSION;'
+runner: native（指定） — php 8.5.4
+8.5.4
+```
+
+版本不同是正常的：容器裡是映像釘住的版本，原生是系統套件的版本。
+
+
+### `cx setup system` 對 root 的態度
+
+那六個是系統套件，一定要 root。cx 的原則是：
+
+1. **絕不偷偷跑 sudo。** 要用 root 就明講，而且有確認閘門（會先列出
+   完整的 `apt-get install` 指令再問你）。
+2. **sudo 不可用時不算失敗** —— 把「你該自己貼哪一行」印出來就好。
+   在 CI 或不給 sudo 的機器上，那才是正常流程。
+3. **裝完要驗**，不能只看 apt 的退出碼。套件裝了不代表你要的東西就在
+   （最典型的是 php 擴充：套件裝了但 .ini 沒啟用）。
+
+已經有的工具會被略過，所以重跑是安靜的（冪等）。
+判斷「有沒有」看的是實際的執行檔／擴充，不是套件資料庫 ——
+使用者可能是用 PPA、手動、或 Docker Desktop 的 WSL integration 裝的。
 
 ---
 
