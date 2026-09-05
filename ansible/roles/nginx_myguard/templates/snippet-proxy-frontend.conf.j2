@@ -35,3 +35,9 @@ proxy_buffers 8 16k;
 proxy_busy_buffers_size 32k;
 # Nitro 自己會處理快取標頭；這裡不要用 proxy_hide_header 把它們拿掉。
 proxy_redirect off;
+
+# Nitro 自己會送 X-Powered-By。Docker 側（pm-security-headers.inc）一直有藏，
+# 原生側只在 PHP 路徑藏（snippet-fastcgi-php.conf.j2 的 fastcgi_hide_header）。
+# proxy_hide_header 不是 add_header，所以不受 A14 的繼承規則影響。
+proxy_hide_header X-Powered-By;
+proxy_hide_header X-AspNet-Version;

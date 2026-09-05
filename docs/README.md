@@ -3,6 +3,10 @@
 | 文件 | 內容 | 讀者 |
 |---|---|---|
 | [`manual.md`](manual.md) | **完整操作說明書**。從零開始到三個階段全流程 | 所有人，先讀這份 |
+| [`guide-developer.md`](guide-developer.md) | **開發者指南**：clone → setup → 三個模式 → 日常動詞 → gitflow → 除錯 | 寫功能的人 |
+| [`guide-tester.md`](guide-tester.md) | **測試者指南**：cx test / verify / scan、報告怎麼讀、放行條件 | 品質把關的人 |
+| [`guide-deployer.md`](guide-deployer.md) | **部署者指南**：主機規劃 → 祕密 → check → apply → rollback | 上真機的人 |
+| [`nginx-reference.md`](nginx-reference.md) | **Docker 與原生的 nginx 逐項對照**：路由、大小、逾時、安全標頭、WAF | 改 nginx 或查「為什麼上線才壞」 |
 | [`cx-reference.md`](cx-reference.md) | `cx` 每一個動詞的完整參考：語法、參數、行為、退出碼、陷阱 | 日常操作 |
 | [`docker-reference.md`](docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF 設定 | 改 compose / Dockerfile 之前 |
 | [`ansible-reference.md`](ansible-reference.md) | play 結構、12 個 role、vault、MySQL 五個坑 | 改 Ansible / 上真機之前 |
@@ -24,7 +28,11 @@
 | 忘記某個指令怎麼用 | `cx help`，然後 `cx-reference.md` |
 | 三個模式為什麼可以同時跑 | `manual.md` §4 |
 | 改 `docker-compose.yml` | `docker-reference.md` §1–§2 |
-| 加一個 nginx location | `docker-reference.md` §6 |
+| 加一個 nginx location | `nginx-reference.md` §2.1，然後 `docker-reference.md` §6 |
+| 「Docker 好好的，上線就壞了」 | `nginx-reference.md` §2（逐項對照） |
+| 我是新來的開發者 | `guide-developer.md` |
+| 我要決定這個 PR 能不能合 | `guide-tester.md` |
+| 我要把它放上真的伺服器 | `guide-deployer.md` |
 | 上真的伺服器 | `ansible-reference.md` 全部 |
 | CI 要怎麼串 | `devsecops.md` §9 |
 | 想完全不用 Docker | `runners.md` |
