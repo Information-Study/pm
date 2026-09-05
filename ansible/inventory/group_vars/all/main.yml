@@ -399,17 +399,34 @@ waf_packages:
   - "libnginx-mod-http-modsecurity"
   - "libmodsecurity3"
   - "modsecurity-crs"
+#
+# ⚠ 形狀必須是 **mapping**：主要名稱 → 備選名稱清單。
+#   這裡曾經寫成 list of {name, packages}（「備選套件組」），而
+#   nginx_myguard/tasks/packages.yml 是用 `| dict2items` 與
+#   `waf_packages_alternates[item]` 去讀它的 —— 兩邊對資料形狀的認知不同。
+#   後果不是報錯而是**整個備選機制從來沒有生效過**：group_vars 的優先序高於
+#   role defaults，所以 role 自己那份正確的 dict 一直被這份 list 蓋掉，
+#   而 waf_enabled 預設在 staging 是 false，於是沒有人踩到。
+#   2026-09-05 第一次把 waf_enabled 打開就炸了（dict2items 對 list 丟例外，
+#   ansible-core 2.19+ 會包成 CapturedExceptionMarker，錯誤訊息是
+#   「can only concatenate list (not "CapturedExceptionMarker") to list」，
+#   完全看不出真正的原因）。packages.yml 現在有形狀斷言擋這件事。
 waf_packages_alternates:
-  - name: "coraza"
+  libnginx-mod-http-modsecurity:
+    - "libnginx-mod-http-modsecurity3"
     # "OWASP Coraza WAF embedded in NGINX, libmodsecurity-compatible, CRS-ready"
-    packages:
-      - "libnginx-mod-http-coraza"
-      - "modsecurity-crs"
-  - name: "modsecurity-nginx"
-    packages:
-      - "libnginx-mod-security"
-      - "libmodsecurity3"
-      - "modsecurity-crs"
+    - "libnginx-mod-http-coraza"
+    - "libnginx-mod-security"
+  libmodsecurity3:
+    # noble 的 time_t 64-bit 轉換套件名
+    - "libmodsecurity3t64"
+    - "libcoraza"
+    - "libmodsecurity"
+  modsecurity-crs:
+    # 部分發行版把 CRS 改名為這個
+    - "coreruleset"
+    - "owasp-modsecurity-crs"
+    - "modsecurity-crs-extra"
 
 # ---- WAF 行為 ---------------------------------------------------------------
 waf_enabled: true

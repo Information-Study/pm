@@ -277,18 +277,54 @@ composer install、migration、nuxt build、換 symlink、健康檢查，全程�
 每一項的完整說明見 [`ansible-reference.md` §7–§8](ansible-reference.md) 與
 [`troubleshooting.md`](troubleshooting.md)。
 
+**2026-09-05：把 `waf_enabled` 打開之後又跑通了一輪 —— 533 個 task、`failed=0`。**
+打開 WAF 這件事本身就抓到一個「存在了整段時間、但因為預設關閉所以沒人踩到」的缺陷
+（下表 W-1）。
+
+#### 2026-09-05 打開 WAF 與冪等性驗證抓到的缺陷（全部已修）
+
+| # | 缺陷 | 為什麼一直沒被發現 |
+|---|---|---|
+| W-1 | `waf_packages_alternates` 有**兩套不相容的形狀**：role defaults 是 mapping（主要名稱 → 備選清單，`packages.yml` 用 `dict2items` 讀），而 `group_vars/all/main.yml` 寫成 list of `{name, packages}`。group_vars 優先序較高 → **整個備選機制從來沒有生效過** | `staging.yml` 的 `waf_enabled` 預設 false。打開的第一秒就炸，而且 ansible-core 2.19+ 只回一句 `can only concatenate list (not "CapturedExceptionMarker") to list`，完全指不到真正的原因。已改成 mapping，並在 `packages.yml` 加上形狀斷言，訊息直接說明該改 group_vars 哪一份 |
+| W-2 | **用同一個 `release_id` 重跑必定失敗** —— clone 之後還有 composer install / npm ci / symlink 等寫入，工作目錄對 git 必然 dirty，git 模組回 `Local modifications exist (force=no)` | 平常 `release_id` 是每次新的時間戳。但「用同一個 id 重跑」正是**部署失敗後重試**最自然的動作。改成把 release 當**不可變產物**：`.git` 與 `artisan`（前端是 `package.json`）都在就不重新 clone，改讀既有 commit。前後端各一份 |
+| W-3 | `'CHANGED' in stdout` —— 而金鑰正規化在沒變時 echo 的是 **`UNCHANGED`**，子字串包含恆真 | 於是 keyring 永遠回報 changed，掛在它上面的 `apt update` 每次部署都白跑一次。改成完全比對；nodejs 那份原本是寫死的 `changed_when: true`，改成用 `cmp` 比對並用**互不為子字串**的 `KEY_SAME` / `KEY_REPLACED` |
+| W-4 | `common` 的 `file`（mode `02750`）與 `acl` 在 `/srv/pm` 上**互相覆蓋** —— mode 的群組三位元顯示的是 **ACL mask** 而不是 `group::`，而 ACL 給了 deploy `rwx` → mask 必為 `rwx` → stat 讀出 `02770` ≠ `02750` | 不只是 changed 數字難看：`file` 設回 `02750` 的當下 **mask 被縮成 `r-x`，deploy 對 `app_root` 的寫入權限就沒了**，要等 `acl.yml` 再跑一次才恢復。同一次執行會收斂，但用 `--tags` 只跑其中一個就會留下壞掉的權限 |
+| W-5 | `/var/log/pm` 被 `common`、`mysql`、`nodejs_pm2` **三個 role 同時管**，各自要不同的 owner/group/mode → 每次部署互相翻轉 | mysql 改成「不存在才建、已存在就完全不碰屬性」 |
+| W-6 | `command` + `creates:` 命中時回的是 `rc=0` + stdout `skipped, since ...`，**不是 task 層級的 skip**，所以 `changed_when: rc == 0` 照樣求值為真 | PM2 的 systemd 單元每次都謊報 changed。`changed_when` 補上 `'skipped, since' not in stdout` |
+| W-7 | `find ... -delete` **不論有沒有刪到都回 0**，所以 `changed_when: rc == 0` 恆真 | 舊備份清理每次都回報 changed，實際上多數時候一個檔案都沒刪。改成 `-print -delete` 並看 stdout |
+| W-8 | `mysql_user` 用 `plugin_auth_string` 時，MySQL 存的是加鹽雜湊，模組**無法比對**，`update_password: always` 等於每次重設密碼 | 預設改為 `on_create`。輪替密碼變成明說的動作：`-e mysql_app_password_update=always` |
+| W-9 | `debconf` 的 password 型別是**唯寫**的（`debconf-get-selections` 不回傳密碼值），模組永遠比對不出有沒有變 | 標成 `changed_when: false` —— 真正的狀態收斂是套件安裝本身 |
+
+#### 冪等性實測（`-e release_id=` 釘死，連跑）
+
+必須釘住 `release_id`，否則它預設是每次新的時間戳，deploy role 本來就會 changed。
+
+| 輪次 | changed | 說明 |
+|---|---|---|
+| 全新機第一次 | 127 | `failed=0`、533 個 task |
+| 修 W-1..W-9 之前的第二次 | 16 + **failed=1** | 失敗的就是 W-2 |
+| 修完之後 | **9**、連兩次相同 | 已收斂 |
+
+剩下的 9 項**全部是「每次部署本來就要做事」**，不是缺陷：
+migrate 前的 mysqldump、`config:cache` / `view:cache` / `event:cache` /
+`filament:optimize`、`npm ci`、Nuxt 建置、`pm2 startOrReload`、`pm2 save`。
+對一支會重建並重新上線的部署 playbook 來說，`changed=0` 本來就不是正確的目標 ——
+**基礎設施收斂的部分要冪等，重新部署的部分不該冪等**。
+
 下列每一項仍要對**真的 staging 機器**（不是容器）跑過才算數：
 
 | 項目 | 怎麼驗 |
 |---|---|
-| MyGuard 套件名歧異 | `packages.yml` 會用 `apt-cache policy` 逐一探測，全落空時 fail 並附上 `apt-cache search` 的實際輸出 —— **這段邏輯本身也沒跑過** |
+| ~~MyGuard 套件名歧異~~ | ✅ 2026-09-05 已驗：三個主要名稱全部第一輪命中（`libnginx-mod-http-modsecurity 3:1.31.5-1myguard1~noble`、`libmodsecurity3 3.0.16-3myguard1~noble`、`modsecurity-crs 4.29.0+5.260831-3myguard1~noble`），不需要 alternates |
 | MySQL 8.4 from Oracle repo | 真機安裝（Debian 的 `default-mysql-server` 是 MariaDB） |
 | PHP 8.5 from ondrej PPA / sury | 真機安裝 |
 | certbot snakeoil bootstrap（A5） | 全新機第一次部署，觀察 vhost 是否從 snakeoil 正確切到真憑證 |
-| CRS 排除規則在原生 nginx 的載入順序 | Docker 側已實測；原生側的 `nginx_myguard` 是另一套路徑 |
-| 安全標頭在 location 內的繼承 | `curl -I` 打 `/storage/x` 與 `/_nuxt/x` |
-| release prune 不刪 current | 部署三次 + rollback 後再部署一次 |
+| ~~CRS 排除規則在原生 nginx 的載入順序~~ | ✅ 2026-09-05 已驗：`/etc/nginx/waf/main.conf` 的順序是 crs-setup → exclusions-before → CRS 本體 → exclusions-after，實際載入 **684 條** CRS 規則，`exclusions-before` 的 Livewire 樣式是 `@rx ^/livewire(-[0-9a-zA-Z]+)?/`（前綴由 APP_KEY 推導，不能寫死），`nginx -t` 通過、服務 active |
+| ~~安全標頭在 location 內的繼承~~ | ✅ 2026-09-05 已驗：`/`、`/up`、`/_nuxt/x.js`、`/storage/x` 四處都帶到標頭 |
+| ~~Ansible 冪等性~~ | ✅ 2026-09-05 已驗，見上表 |
+| ~~release prune 不刪 current~~ | ✅ 2026-09-05 已驗，完整走過「部署三次 → rollback 到**最舊**的那個 → 再部署一次」：<br>① `RELEASE01/02/03` 依序部署，第三次觸發 prune（共 4 個 → 刪掉最舊的 `IDEMPOTENCY_A`）<br>② rollback 到 `RELEASE01`（刻意挑最舊的 —— 那正是 `prune.yml` 檔頭警告的情境 (a)：「按 mtime 排序又不排除 current，rollback 之後 current 指的是比較舊的」），`current -> RELEASE01`、`/up` 回 200<br>③ 部署 `RELEASE04`，prune 印出「保護：RELEASE04｜current 與本次 release 都在保護名單內」，刪掉 `RELEASE01`<br>④ 結束後 `current -> RELEASE04` 解析得到、`/up` 回 200，沒有懸空 symlink |
 | PM2 fork 跑 Nuxt `.output` | 真機或本機裝 pm2 後試跑 |
+| 多主機 `serial` 滾動 | 需要兩台以上的目標機 |
 
 流程：
 

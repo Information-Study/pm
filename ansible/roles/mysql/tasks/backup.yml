@@ -12,13 +12,27 @@
     group: root
     mode: "0700"
 
-- name: 建立備份記錄檔目錄
+# ⚠ mysql_backup_log 預設落在 /var/log/{{ app_slug }}，而那個目錄是 common role
+#   建的（deploy:web_group 0770），nodejs_pm2 也會確保它存在。三個 role 搶同一個
+#   目錄的話，每次執行都會互相把 owner/group/mode 改回自己要的值 ——
+#   實測 mysql（root:adm 0750）與 nodejs_pm2（deploy:www-data 0770）
+#   會在每一次部署互相翻轉。
+#
+#   所以這裡只負責「不存在就建出來」（讓 mysql role 單獨使用時仍然可用），
+#   已經存在就完全不碰屬性 —— 目錄的擁有者是 common role，不是這裡。
+- name: 備份 | 探測記錄檔目錄是否已存在
+  ansible.builtin.stat:
+    path: "{{ mysql_backup_log | dirname }}"
+  register: mysql_backup_log_dir
+
+- name: 備份 | 目錄不存在才建立（存在就不碰屬性，避免與 common/nodejs_pm2 互搶）
   ansible.builtin.file:
     path: "{{ mysql_backup_log | dirname }}"
     state: directory
     owner: root
     group: adm
     mode: "0750"
+  when: not mysql_backup_log_dir.stat.exists
 
 - name: 安裝備份腳本
   ansible.builtin.template:

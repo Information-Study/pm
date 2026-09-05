@@ -44,6 +44,32 @@
         waf_pkg_resolved: []
         waf_pkg_missing: []
 
+    # group_vars 的優先序高於 role defaults，所以這三個變數的**形狀**是由
+    # inventory 決定的，而不是由這個 role 決定的。形狀錯掉的時候，
+    # ansible-core 2.19+ 只會回一句
+    #   can only concatenate list (not "CapturedExceptionMarker") to list
+    # —— 那句話不會告訴任何人是哪個變數、也不會告訴任何人該長什麼樣。
+    # 2026-09-05 真的發生過（group_vars 把 alternates 寫成 list of
+    # {name, packages}，而這裡是用 dict2items 讀的），而且因為 staging 的
+    # waf_enabled 預設是 false，這個洞存在了整段時間都沒有被踩到。
+    - name: 套件 | 先確認三個候選變數的形狀（形狀錯的錯誤訊息完全不可讀）
+      ansible.builtin.assert:
+        that:
+          - waf_packages is sequence and waf_packages is not string
+          - waf_packages_alternates is mapping
+          - waf_packages_optional is sequence and waf_packages_optional is not string
+        quiet: true
+        fail_msg: >-
+          WAF 套件候選變數的形狀不對。
+          waf_packages 目前是 {{ waf_packages | type_debug }}（要 list）、
+          waf_packages_alternates 目前是 {{ waf_packages_alternates | type_debug }}（要 dict）、
+          waf_packages_optional 目前是 {{ waf_packages_optional | type_debug }}（要 list）。
+          waf_packages_alternates 的形狀是「主要名稱 → 備選名稱清單」的 mapping，例如
+          {'libmodsecurity3': ['libmodsecurity3t64', 'libcoraza']}，
+          不是 list of {name, packages}。
+          注意 inventory/group_vars 的優先序高於本 role 的 defaults/main.yml，
+          所以請改 group_vars 那一份。
+
     - name: 套件 | 展開候選清單（主要名稱 + 備選名稱 + 可選套件）
       ansible.builtin.set_fact:
         waf_pkg_candidates: >-

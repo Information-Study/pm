@@ -7,7 +7,22 @@
 # 否則 deploy 以 deploy 身分 clone 時，父目錄還是 root:root 0755 →
 # "could not create work tree dir: Permission denied"。
 common_core_directories:
+  # ⚠ app_root 的 mode 必須跟 ACL mask 一致，否則 directories.yml 與 acl.yml
+  #   會每次執行互相覆蓋。機制：mode 的**群組三位元顯示的是 ACL mask**，
+  #   不是 group:: 本身。common_acl_root_entries 給了 deploy rwx，
+  #   所以 mask 必然是 rwx、stat 讀出來就是 02770；
+  #   而 common_dir_mode 是 02750 → file 模組每次都覺得要改回去。
+  #
+  #   這不只是 changed 數字難看而已：file 把 mode 設成 02750 的當下，
+  #   **mask 被縮成 r-x，deploy 對 app_root 的寫入權限就沒了**，
+  #   要等到 acl.yml 再跑一次才恢復。同一次執行裡 directories.yml 在
+  #   acl.yml 之前，所以最後會收斂 —— 但只要有人用 --tags 只跑其中一個
+  #   （或 acl.yml 因 common_manage_acl=false 被跳過），就會留下壞掉的權限。
+  #
+  #   others 仍然是 0，安全需求沒有放寬；中間那個 7 是 ACL mask，
+  #   group:: 本身還是 r-x（getfacl 看得到）。
   - path: "{{ app_root }}"
+    mode: "{{ '02770' if (common_manage_acl | bool) else common_dir_mode }}"
   # nodejs_pm2 的 pm2_ecosystem_dir 是 {{ app_root }}/shared/pm2，
   # 這一層必須先由 deploy 擁有，否則 pm2 role 以 deploy 身分寫檔會 EACCES。
   - path: "{{ app_shared_dir }}"

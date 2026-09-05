@@ -70,7 +70,7 @@
     msg: >-
       backend release={{ release_id }}
       | path={{ backend_release_path }}
-      | commit={{ backend_git_result.after | default('n/a') }}
+      | commit={{ backend_release_commit | default(backend_git_result.after | default('n/a'), true) }}
       | current → {{ backend_release_path }}
       | migration={{ '已執行' if (backend_migrate | bool)
                      and (inventory_hostname in (groups['db_primary'] | default([])))

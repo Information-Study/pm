@@ -6,6 +6,21 @@
 # 因為 <release>/storage 已經是指向 shared/storage 的 symlink，
 # 這條連結最後會落在 shared/storage/app/public，換版不會遺失上傳檔。
 # --force 讓既有連結被重建（每個 release 都是新目錄，所以每次都要做）。
+# storage:link --force 每次都會重建 symlink，於是 command 每次都回報 changed。
+# 先探測連結是否已經正確，正確就不用跑 —— 這樣 changed 才代表「真的接上了」。
+#
+# ⚠ register 名稱結尾的 _probe 不能省：backend_storage_link 是 defaults 裡的
+#   **布林開關**，register 到同一個名字會用 host facts（優先權更高）把它蓋成
+#   一個 dict，下面 `backend_storage_link | bool` 就會永遠是 true。
+#   同一份檔案第 34 行的註解已經記過這個坑一次了。
+- name: Optimize | 探測 public/storage 是否已正確連到 shared/storage/app/public
+  ansible.builtin.stat:
+    path: "{{ backend_release_path }}/public/storage"
+  register: backend_storage_link_probe
+  when:
+    - backend_storage_link | bool
+    - not ansible_check_mode
+
 - name: Optimize | artisan storage:link
   become: true
   become_user: "{{ deploy_user }}"
@@ -30,6 +45,11 @@
   when:
     - backend_storage_link | bool
     - not ansible_check_mode
+    # 連結已經正確就不用重跑（storage:link --force 每次都會重建）
+    - >-
+      not (backend_storage_link_probe.stat.islnk | default(false))
+      or (backend_storage_link_probe.stat.lnk_target | default(''))
+         is not search('storage/app/public$')
 
 - name: Optimize | config:cache
   become: true

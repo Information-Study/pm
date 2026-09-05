@@ -102,7 +102,12 @@
     PM2_HOME: /root/.pm2
     HOME: /root
   register: pm2_startup
-  changed_when: (pm2_startup.rc | default(0)) == 0
+  # ⚠ creates: 命中時 command 模組回的是 rc=0 + stdout "skipped, since ... exists"，
+  #   **不是** task 層級的 skip —— 所以 changed_when 照樣會被求值。
+  #   原本只寫 `rc == 0`，於是「什麼都沒做」也一律回報 changed，永遠不冪等。
+  changed_when:
+    - (pm2_startup.rc | default(0)) == 0
+    - "'skipped, since' not in (pm2_startup.stdout | default(''))"
   failed_when: (pm2_startup.rc | default(0)) != 0
 
 - name: 確認 systemd unit 已產生

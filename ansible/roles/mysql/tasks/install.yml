@@ -29,6 +29,11 @@
     - mysql-community-server/re-root-pass
   no_log: true
   when: mysql_repo_source == 'oracle'
+  # debconf 的 password 型別是**唯寫**的：debconf-get-selections 不會回傳
+  # 密碼值，所以模組永遠比對不出「有沒有變」，每次執行都回報 changed。
+  # 這一步只是替 apt 安裝預先填答案，真正的狀態收斂是後面的套件安裝，
+  # 所以這裡的 changed 沒有任何資訊量 —— 標成 false 才不會蓋掉真正的訊號。
+  changed_when: false
 
 - name: 設定 debconf：使用強式密碼加密（caching_sha2_password）
   ansible.builtin.debconf:
@@ -63,6 +68,11 @@
     - mysql_repo_source == 'oracle'
     - mysql_purge_debconf_password | bool
     - mysql_apt_install is not skipped
+  # debconf 的 password 型別是**唯寫**的：debconf-get-selections 不會回傳
+  # 密碼值，所以模組永遠比對不出「有沒有變」，每次執行都回報 changed。
+  # 這一步只是替 apt 安裝預先填答案，真正的狀態收斂是套件安裝本身，
+  # 所以這裡的 changed 沒有任何資訊量 —— 標成 false 才不會蓋掉真正的訊號。
+  changed_when: false
 
 
 # 這兩個任務標成 always：後面的 config / secure / databases / verify 都以

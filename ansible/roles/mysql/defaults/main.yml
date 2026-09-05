@@ -155,8 +155,19 @@ mysql_password_min_length: 12
 # always = 每次執行都把密碼收斂到 vault 的值（MySQL 8 的 caching_sha2 雜湊
 # 有 salt，模組無法比對，所以這個任務每次都會報 changed —— 那是正常的）。
 # 不想要噪音就設成 on_create，但輪替密碼時要記得改回 always。
-mysql_root_password_update: always
-mysql_app_password_update: always
+# ⚠ on_create 而不是 always。
+#
+# 用 plugin + plugin_auth_string 時，模組送的是
+#   ALTER USER ... IDENTIFIED WITH caching_sha2_password BY '<明文>'
+# 而 MySQL 存的是加鹽雜湊 —— 模組**沒有辦法**比對兩者是否相同，
+# 於是 always 代表「每次部署都重設一次密碼並回報 changed」，永遠不會冪等。
+#
+# 改成 on_create 的代價：改了 vault 裡的密碼不會自動套用到既有帳號。
+# 要輪替密碼時明確覆寫這個變數：
+#   cx deploy apply production -e mysql_app_password_update=always
+# 這是刻意的取捨 —— 讓「輪替」變成一個明說的動作，而不是每次部署的副作用。
+mysql_root_password_update: on_create
+mysql_app_password_update: on_create
 
 # ── 安全強化（皆為 gate；刪除類預設保守）────────────────────────────
 mysql_remove_anonymous_users: true

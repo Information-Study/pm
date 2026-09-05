@@ -59,6 +59,12 @@
     timeout: 30
   register: nodejs_key_dl
   when: nodejs_repo_manage | bool
+  # ⚠ 暫存檔是**手段**，不是被管理的狀態。force: true 保證抓到上游輪替後的
+  #   新金鑰（見上面的註解），代價是每次都會下載 → 每次都回報 changed。
+  #   真正的狀態收斂在下一步「正規化」：只有 keyring 內容真的變了才回報
+  #   changed（它自己用 cmp 比對過）。這裡標成 false，才不會讓一個註定
+  #   每次都亮的燈把真正的訊號蓋掉。
+  changed_when: false
 
 # ⚠ ASCII armor 存成 .gpg，apt 會直接拒絕整個來源。
 #
@@ -77,17 +83,32 @@
 # 對已經是二進位的 keyring 再 dearmor 一次會失敗。
 - name: 依實際格式正規化 NodeSource 金鑰（armor 就 dearmor）
   ansible.builtin.shell:
-    cmd: >-
-      set -o pipefail;
-      if head -c 40 /tmp/.nodesource-key.download | grep -q 'BEGIN PGP PUBLIC KEY BLOCK'; then
-        gpg --batch --yes --dearmor -o {{ nodejs_keyring | quote }} /tmp/.nodesource-key.download;
+    cmd: |
+      set -Eeuo pipefail
+      src=/tmp/.nodesource-key.download
+      dst={{ nodejs_keyring | quote }}
+      tmp="${dst}.new"
+      if head -c 40 "$src" | grep -q 'BEGIN PGP PUBLIC KEY BLOCK'; then
+        gpg --batch --yes --dearmor -o "$tmp" "$src"
       else
-        install -m 0644 -o root -g root /tmp/.nodesource-key.download {{ nodejs_keyring | quote }};
-      fi;
-      chmod 0644 {{ nodejs_keyring | quote }}
+        install -m 0644 -o root -g root "$src" "$tmp"
+      fi
+      chmod 0644 "$tmp"
+      # 先比對再決定要不要換：無條件覆寫的話 changed 永遠是 true，
+      # 而 keyring 內容其實從第一次之後就沒再變過。
+      if [ -f "$dst" ] && cmp -s "$tmp" "$dst"; then
+        rm -f "$tmp"
+        echo KEY_SAME
+      else
+        mv -f "$tmp" "$dst"
+        echo KEY_REPLACED
+      fi
     executable: /bin/bash
   register: nodejs_key_norm
-  changed_when: true
+  # 刻意選了兩個**互不為子字串**的標記。nginx_myguard 那邊用
+  # CHANGED / UNCHANGED，而 'CHANGED' in 'UNCHANGED' 是 True ——
+  # 那個 bug 讓它整段時間都在謊報 changed。這裡連踩的機會都不留。
+  changed_when: (nodejs_key_norm.stdout | trim) == 'KEY_REPLACED'
   when: nodejs_repo_manage | bool
 
 - name: 移除金鑰暫存檔
@@ -95,6 +116,8 @@
     path: /tmp/.nodesource-key.download
     state: absent
   when: nodejs_repo_manage | bool
+  # 同上：刪掉的是自己剛建的暫存檔，不是被管理的狀態。
+  changed_when: false
 
 - name: 讀出 NodeSource 金鑰指紋
   ansible.builtin.shell:

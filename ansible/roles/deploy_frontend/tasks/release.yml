@@ -8,7 +8,27 @@
     group: "{{ web_group }}"
     mode: "02750"
 
+# release 是不可變產物 —— 理由與 deploy_backend/tasks/release.yml 完全相同
+# （clone 之後還會 npm ci / nuxt build，工作目錄對 git 必然是 dirty，
+#  用同一個 release_id 重跑會死在 "Local modifications exist"）。
+- name: Release | 探測 releases/{{ release_id }} 是否已經材料化過
+  ansible.builtin.stat:
+    path: "{{ frontend_release_path }}/{{ item }}"
+  register: frontend_release_probe
+  loop:
+    - ".git"
+    - "package.json"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Release | 整理探測結果（.git 與 package.json 都在才算材料化完成）
+  ansible.builtin.set_fact:
+    frontend_release_materialized: >-
+      {{ (frontend_release_probe.results
+          | map(attribute='stat.exists') | select | list | length) == 2 }}
+
 - name: Release | clone {{ frontend_repo_url }}（{{ frontend_repo_version }}）
+  when: not (frontend_release_materialized | bool)
   become: true
   become_user: "{{ deploy_user }}"
   ansible.builtin.git:
@@ -26,12 +46,34 @@
     GIT_TERMINAL_PROMPT: "0"
   register: frontend_git_result
 
+- name: Release | 已材料化就讀出現有 commit（不重新 clone）
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ frontend_release_path }}"
+      - rev-parse
+      - HEAD
+  register: frontend_release_head
+  changed_when: false
+  when: frontend_release_materialized | bool
+
+- name: Release | 統一 commit 來源
+  ansible.builtin.set_fact:
+    frontend_release_commit: >-
+      {{ frontend_git_result.after
+         | default(frontend_release_head.stdout | default('') | trim, true)
+         | default('（check mode，未 clone）', true) }}
+
 - name: Release | 記錄 commit
   ansible.builtin.debug:
     msg: >-
       {{ frontend_repo_url }}@{{ frontend_repo_version }}
-      → {{ frontend_git_result.after | default('（check mode，未 clone）') }}
+      → {{ frontend_release_commit }}
       （{{ frontend_release_path }}）
+      {{ '［沿用既有 release，未重新 clone］' if (frontend_release_materialized | bool) else '' }}
 
 - name: Release | 確認 clone 出來的內容真的是這個 Nuxt 專案
   ansible.builtin.stat:

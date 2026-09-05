@@ -141,9 +141,14 @@
       - "{{ app_slug }}-premigrate-*.sql*"
       - -mtime
       - "+{{ backend_backup_retention_days | int }}"
+      # -print 要在 -delete 之前：這樣才印得出「真的被刪掉的那幾個」。
+      - -print
       - -delete
   register: backend_backup_prune
-  changed_when: backend_backup_prune.rc == 0
+  # ⚠ find -delete **不論有沒有刪到東西都回 0**，所以原本的 `rc == 0`
+  #   等於恆真 —— 每次部署都回報 changed，而多數時候一個檔案都沒刪。
+  #   改成看真的刪了什麼。
+  changed_when: (backend_backup_prune.stdout | default('') | trim) | length > 0
   failed_when: backend_backup_prune.rc != 0
   when:
     - backend_is_db_primary | bool

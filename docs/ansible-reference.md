@@ -499,6 +499,65 @@ object of type 'dict' has no attribute 'query_result'
 
 ---
 
+## 8.5 冪等性：兩個會改變你操作方式的決定
+
+2026-09-05 對目標機連跑同一份 playbook 量測冪等性，抓到 9 個缺陷（完整清單見
+[`progress.md`](progress.md) 的 W-1..W-9）。其中兩項改了**預設行為**，值得單獨講。
+
+### release 是不可變產物
+
+`releases/<release_id>` 一旦材料化（`.git` 與 `artisan` / `package.json` 都在），
+**就不再重新 clone**，改為讀出既有的 commit。
+
+為什麼要這樣：clone 之後還有 `composer install`（寫 `vendor/`）、`.env` 與
+storage 的連結，於是那個工作目錄對 git 而言必然是 dirty。用**同一個 release_id**
+再跑一次，`ansible.builtin.git` 會直接失敗：
+
+```
+Local modifications exist in the destination: /srv/pm/backend/releases/<id> (force=no)
+```
+
+平常 `release_id` 是每次新的時間戳，所以沒有人踩到。但「用同一個 id 重跑」正是
+**部署失敗後想重試**時最自然的動作 —— 而那個情境原本是壞的。
+
+> 用 `force: true` 修是錯的：那會默默丟掉這個 release 已經做過的工作。
+
+要強制重新 clone，就刪掉那個 release 目錄，或換一個 `release_id`。
+
+### 資料庫密碼預設不再每次重設
+
+`mysql_root_password_update` 與 `mysql_app_password_update` 的預設值從
+`always` 改成 **`on_create`**。
+
+原因是 `mysql_user` 在使用 `plugin_auth_string` 時，MySQL 存的是加鹽雜湊，
+模組**沒有辦法**比對明文與雜湊是否相同 —— `always` 的實際效果是「每次部署都
+重設一次密碼」，永遠不會冪等。
+
+代價是**改了 vault 裡的密碼不會自動套用到既有帳號**。要輪替時明確覆寫：
+
+```bash
+cx deploy apply production -e mysql_app_password_update=always
+```
+
+這是刻意的取捨：讓輪替變成一個明說的動作，而不是每次部署的副作用。
+
+### rollback 的兩道閘門
+
+`cx deploy rollback` 有兩層，`cx --yes` 只能穿過第一層：
+
+| 沒帶什麼 | 會發生什麼 |
+|---|---|
+| 沒帶 `-e rollback_to=<id>` | **只列出可用的 release 就結束**（rc=0，什麼都不改）。這是「先看看有哪些」模式 |
+| 沒帶 `-e rollback_confirm=true` | playbook 內的 `pause` 會要求打字輸入 `yes`；非互動環境沒有輸入 → 中止且不改任何東西 |
+
+所以 CI／非互動的完整寫法是：
+
+```bash
+cx --yes deploy rollback staging -e rollback_to=20260903-181200 -e rollback_confirm=true
+```
+
+---
+
 ## 9. 本機驗證用的目標
 
 `ansible/inventory/hosts.yml`（不進版控）指向一個

@@ -70,6 +70,12 @@
     timeout: 30
     force: true
   register: nginx_myguard_key_dl
+  # ⚠ 暫存檔是**手段**，不是被管理的狀態。force: true 保證抓到上游輪替後的
+  #   新金鑰（見上面的註解），代價是每次都會下載 → 每次都回報 changed。
+  #   真正的狀態收斂在下一步「正規化」：只有 keyring 內容真的變了才回報
+  #   changed（它自己用 cmp 比對過）。這裡標成 false，才不會讓一個註定
+  #   每次都亮的燈把真正的訊號蓋掉。
+  changed_when: false
 
 # ASCII armor 存成 .gpg 會讓 apt 忽略整個來源並在每次 apt update 印警告；
 # 反過來把二進位 keyring 再 dearmor 一次則會失敗。所以先判斷格式。
@@ -95,7 +101,11 @@
       fi
     executable: /bin/bash
   register: nginx_myguard_key_norm
-  changed_when: "'CHANGED' in nginx_myguard_key_norm.stdout"
+  # ⚠ 一定要用「等於」而不是「包含」：**'CHANGED' in 'UNCHANGED' 是 True**。
+  #   這一行原本寫成 `'CHANGED' in ...stdout`，於是 keyring 明明沒變也永遠
+  #   回報 changed，而第 244 行的 apt update 就掛在這個值上 —— 每次部署都
+  #   白跑一次 apt update，而且沒有任何跡象顯示原因。2026-09-05 實測抓到。
+  changed_when: (nginx_myguard_key_norm.stdout | trim) == 'CHANGED'
   failed_when: nginx_myguard_key_norm.rc != 0
   # ⚠ 這裡曾經有 check_mode: false —— 那是錯的，而且只在 dry-run 造成傷害。
   # 本 task 會**寫入** keyring（mv 到 dst），不是唯讀查詢。
@@ -110,6 +120,8 @@
   ansible.builtin.file:
     path: "/tmp/.{{ app_slug }}-myguard-key.download"
     state: absent
+  # 同上：刪掉的是自己剛建的暫存檔，不是被管理的狀態。
+  changed_when: false
 
 - name: 來源 | 讀出金鑰指紋
   ansible.builtin.shell:

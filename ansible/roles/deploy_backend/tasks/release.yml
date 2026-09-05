@@ -14,12 +14,42 @@
     group: "{{ web_group }}"
     mode: "02750"
 
+# ── release 是**不可變產物** ────────────────────────────────────────────────
+# releases/<release_id> 一旦材料化就不再重新 clone。理由不是效能，是正確性：
+# clone 之後還會有 composer install（寫 vendor/）、.env 連結、storage 連結
+# 等等寫入，於是這個工作目錄對 git 而言必然是 dirty。第二次用**同一個**
+# release_id 執行時，git 模組會直接失敗：
+#     Local modifications exist in the destination: ... (force=no)
+#
+# 平常 release_id 是每次新的時間戳，所以沒有人踩到。但「用同一個 release_id
+# 重跑」正是**部署失敗後想重試**時最自然的動作（也是驗證冪等性的做法），
+# 而那個情境原本是壞的。2026-09-05 實測確認。
+#
+# 用 force: true 修是錯的 —— 那會默默丟掉這個 release 已經做過的工作。
+- name: Release | 探測 releases/{{ release_id }} 是否已經材料化過
+  ansible.builtin.stat:
+    path: "{{ backend_release_path }}/{{ item }}"
+  register: backend_release_probe
+  loop:
+    - ".git"
+    - "artisan"
+  loop_control:
+    label: "{{ item }}"
+
+# 兩者都在才算數：只有 .git 代表上一次 clone 到一半就死了，那種要重來。
+- name: Release | 整理探測結果（.git 與 artisan 都在才算材料化完成）
+  ansible.builtin.set_fact:
+    backend_release_materialized: >-
+      {{ (backend_release_probe.results
+          | map(attribute='stat.exists') | select | list | length) == 2 }}
+
 # git 模組跑在目標端。repo 是 public https，不需要 deploy key，
 # 也不需要 accept_hostkey（那只對 ssh:// 有意義）。
 #
 # 本 role 從頭到尾只讀遠端、不寫遠端：ansible.builtin.git 只做 clone/fetch/checkout，
 # 底下也沒有任何 command/shell 去呼叫會寫遠端的 git 子命令。
 - name: Release | clone {{ backend_repo_url }}（{{ backend_repo_version }}）
+  when: not (backend_release_materialized | bool)
   become: true
   become_user: "{{ deploy_user }}"
   ansible.builtin.git:
@@ -39,12 +69,35 @@
     GIT_TERMINAL_PROMPT: "0"
   register: backend_git_result
 
+- name: Release | 已材料化就讀出現有 commit（不重新 clone）
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ backend_release_path }}"
+      - rev-parse
+      - HEAD
+  register: backend_release_head
+  changed_when: false
+  when: backend_release_materialized | bool
+
+# 兩條路徑都要能講出 commit，否則 main.yml 的部署紀錄會出現 n/a。
+- name: Release | 統一 commit 來源
+  ansible.builtin.set_fact:
+    backend_release_commit: >-
+      {{ backend_git_result.after
+         | default(backend_release_head.stdout | default('') | trim, true)
+         | default('（check mode，未 clone）', true) }}
+
 - name: Release | 記錄 commit
   ansible.builtin.debug:
     msg: >-
       {{ backend_repo_url }}@{{ backend_repo_version }}
-      → {{ backend_git_result.after | default('（check mode，未 clone）') }}
+      → {{ backend_release_commit }}
       （{{ backend_release_path }}）
+      {{ '［沿用既有 release，未重新 clone］' if (backend_release_materialized | bool) else '' }}
 
 - name: Release | 確認 clone 出來的內容真的是這個 Laravel 專案
   ansible.builtin.stat:
