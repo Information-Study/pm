@@ -109,6 +109,7 @@ cx — pm 專案統一入口
                     ansible 裝好之後請改用 cx deploy lint
   fresh             清理與重建（備份 → 驗證 → 確認閘門 → 刪除 → 重建 → 三 Git 初始化）
     fresh --phase preflight   只做前置檢查，完全不動任何東西
+    fresh --resume-from rebuild --from <封存>  重建失敗後接續（不重跑破壞性流程）
     fresh --mode backup-only  只封存
     fresh --mode scaffold     全新骨架
     fresh --mode carryover    全新骨架 + 把你的程式碼疊回去（預設）

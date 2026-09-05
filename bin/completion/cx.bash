@@ -48,7 +48,7 @@ _cx_completion() {
         --ui)   COMPREPLY=($(compgen -W 'whiptail dialog plain' -- "$cur")); return ;;
         --root) COMPREPLY=($(compgen -d -- "$cur")); return ;;
         --runner) COMPREPLY=($(compgen -W 'docker native auto' -- "$cur")); return ;;
-        --phase)  COMPREPLY=($(compgen -W 'preflight backup migrate delete all' -- "$cur")); return ;;
+        --phase)  COMPREPLY=($(compgen -W 'preflight backup migrate delete rebuild verify git-init all' -- "$cur")); return ;;
         -m|--message) return ;;
     esac
 
@@ -134,7 +134,7 @@ _cx_completion() {
             esac
             ;;
         fresh)
-            COMPREPLY=($(compgen -W '--phase --mode --rollback --from --help -h' -- "$cur"))
+            COMPREPLY=($(compgen -W '--phase --mode --rollback --resume-from --from --help -h' -- "$cur"))
             ;;
         lint)
             [[ $cur != -* ]] && COMPREPLY=($(compgen -d -- "$cur")) ;;

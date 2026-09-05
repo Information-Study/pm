@@ -10,20 +10,39 @@
 FRESH_PRESERVE=(
     bin cx .cxroot templates docs claude.md
     .vscode reports ansible .env .env.example .gitignore
-    docker sonar-project.properties
+    docker sonar-project.properties .semgrepignore
 )
 # ── 遷移：搬到 docker/ 之後才刪除原處（使用者要求保留 docker 自定義設定）──
 FRESH_MIGRATE=( php nuxt docker-compose.yml .dockerignore )
+# ── carryover 要疊回去的「應用層」目錄 ────────────────────────
+# 一行一個，不用空白分隔的字串 —— 後者只能靠字詞分割展開，目錄名含空白就裂開。
+# 骨架檔（config/、bootstrap/、package.json、nuxt.config）刻意**不在**這裡：
+# 框架升級真正會變的就是那些，而反過來做需要一份「這一版新增了哪些骨架檔」
+# 的清單，那份清單不存在。
+_fresh_keep_dirs() {                # _fresh_keep_dirs <backend|frontend>
+    case $1 in
+        backend)  printf '%s\n' app database/migrations database/seeders \
+                      database/factories routes resources tests ;;
+        frontend) printf '%s\n' app components pages layouts composables \
+                      stores assets public server middleware plugins ;;
+    esac
+}
+
 # ── 刪除：確認後移除 ──────────────────────────────────────────
 FRESH_DELETE=( .git .gitmodules backend frontend init.sh refresh.sh README.md )
 
 _fresh_usage() {
     cat >&2 <<'TXT'
-用法：cx fresh [--phase <phase>] [--mode <mode>] [--rollback [--from <dir>]]
+用法：cx fresh [--phase <名稱>] [--resume-from <名稱>] [--mode <模式>] [--rollback] [--from <目錄>]
 
-  --phase preflight|backup|migrate|delete|all   （預設 all）
+  --phase <名稱>        跑到這一步為止（天花板，預設 all）
+          preflight backup migrate delete rebuild verify git-init
           preflight 完全不動任何東西，只做前置檢查
           delete    做到刪除為止，不重建
+
+  --resume-from <名稱>  從這一步開始（地板）。只接受 rebuild|verify|git-init
+          重建失敗之後接續用，不必重跑破壞性流程。
+          需要知道用哪一份封存：給 --from <目錄>，或讓 .cx/fresh.state 還在
 
   --mode  backup-only | carryover | scaffold    （預設 carryover）
           backup-only  只封存，不刪也不建
@@ -37,8 +56,14 @@ _fresh_usage() {
           資料庫不在還原範圍 —— 用 cx db restore。
 
 流程（順序不可調換）：
-  preflight → 備份 → 驗證封存 → 確認閘門 → 遷移 → 刪除 → 重建 → 三 Git 初始化
+  preflight → 備份 → 驗證封存 → 確認閘門 → 遷移 → 刪除 → 重建 → **驗證重建** → 三 Git 初始化
   確認閘門之前不刪除任何東西；驗證排在確認之前，壞掉的封存會在樹還完整時中止。
+  重建之後的驗證失敗就不會進 git-init —— 把半套骨架 commit 進去會讓還原更難。
+
+中斷之後：
+  過了刪除那一步才中斷的話，.cx/fresh.state 會擋住「重跑整個流程」——
+  否則第二次執行會把已經被刪掉的狀態重新封存一次並覆寫 LATEST，
+  原本救得回來的那份封存就找不到了。畫面會告訴你接續或還原的指令。
 TXT
 }
 
@@ -110,14 +135,46 @@ _fresh_preflight() {
     done
 
     # 封存空間：需要 3 倍
-    local arc need avail
-    arc=$(cx_archive_root)
+    #
+    # arc 用 --probe 取得（preflight 不該建目錄），所以它可能還不存在 ——
+    # df 對不存在的路徑會失敗，往上找到第一個存在的祖先再問。
+    local arc need avail probe
+    arc=$(cx_archive_root --probe)
+    probe=$arc
+    while [[ -n $probe && ! -e $probe && $probe != / ]]; do probe=$(dirname "$probe"); done
     need=$(du -sk --exclude=node_modules --exclude=vendor "$CX_ROOT" 2>/dev/null | cut -f1)
-    avail=$(df -Pk "$arc" | tail -1 | awk '{print $4}')
-    if (( avail > need * 3 )); then
+    avail=$(df -Pk "$probe" 2>/dev/null | tail -1 | awk '{print $4}')
+    # du / df 失敗時兩個變數會是空字串，而 bash 算術把空字串當 0 ——
+    # `(( 0 > 0 ))` 為假，於是會印出「空間不足」這個指向完全錯誤的訊息。
+    if [[ -z $need || -z $avail ]]; then
+        cx_warn "PF-06 無法量測空間（du 或 df 失敗，探測路徑：$probe）—— 跳過這項檢查"
+    elif (( avail > need * 3 )); then
         cx_ok "PF-06 空間充足（需 $((need/1024))MB × 3，可用 $((avail/1024/1024))GB）"
     else
-        cx_error "PF-06 空間不足"; fail=1
+        cx_error "PF-06 空間不足（需 $((need/1024))MB × 3，可用 $((avail/1024))MB）"; fail=1
+    fi
+
+    # PF-08 git identity —— 沒有它，_fresh_git_init 會在樹**已經重建完之後**
+    # 才死在 "Please tell me who you are"，而那時已經過了不可逆點。
+    if git -C "$CX_ROOT" config user.email >/dev/null 2>&1 \
+       && git -C "$CX_ROOT" config user.name >/dev/null 2>&1; then
+        cx_ok "PF-08 git identity（$(git -C "$CX_ROOT" config user.name)）"
+    else
+        cx_error "PF-08 git 沒有設定 user.name / user.email —— 重建階段的 commit 會失敗"
+        cx_dim "  git config --global user.name  \"你的名字\""
+        cx_dim "  git config --global user.email \"you@example.com\""
+        fail=1
+    fi
+
+    # PF-09 git 版本。archive.sh 用 rev-parse --absolute-git-dir（≥2.13），
+    # _fresh_git_init 用 init -b main（≥2.28）。MANIFEST 有記版本但沒人斷言。
+    local gv
+    gv=$(git --version 2>/dev/null | awk '{print $3}')
+    if [[ -n $gv ]] && printf '%s\n2.28.0\n' "$gv" | sort -V -C; then
+        cx_error "PF-09 git $gv 太舊 —— 重建需要 git ≥ 2.28（init -b main）"
+        fail=1
+    else
+        cx_ok "PF-09 git $gv"
     fi
 
     # 頂層項目分類
@@ -144,38 +201,62 @@ _fresh_preflight() {
 # 遷移 docker 自定義設定：php/ nuxt/ → docker/
 # 使用者明確要求「必須完整保留 docker 相關自定義 image、config 設定與檔案」
 # ---------------------------------------------------------------------------
+# 每一個會改變狀態的步驟都要經過這裡。
+#
+# 為什麼需要它：dispatcher 的 `"$fn" "$@" || _rc=$?`（cx:196）會讓**整個呼叫樹**
+# 的 errexit 失效 —— 這是 archive.sh:56-69 量測記錄過的 bash 行為，包 subshell
+# 或重新 set -e 都救不回來。於是這個檔案裡每一個指令都必須自己檢查回傳值。
+#
+# 而「靠紀律記得檢查」是行不通的：_fresh_migrate 原本 5 個 cp、1 個 mkdir
+# 全部沒檢查，最後一行是 cx_ok，所以那個函式**永遠不可能回傳非零** ——
+# cmd_fresh_main 那句寫得很慎重的
+#     _fresh_migrate || cx_die "遷移失敗 —— 已中止，未刪除任何東西"
+# 是死碼。註解描述的保護從來沒有存在過。
+#
+# 把「執行 + 檢查 + 回報」綁成一個動作，忘記檢查就變成不可能。
+_fresh_step() {                     # _fresh_step <說明> -- <指令...>
+    local label=$1; shift
+    [[ ${1:-} == -- ]] && shift
+    local rc=0
+    cx_run "$@" || rc=$?
+    if (( rc )); then
+        cx_error "$label（exit $rc）"
+        return "$rc"
+    fi
+    cx_ok "$label"
+}
+
 _fresh_migrate() {
     cx_step "遷移 Docker 自定義設定到 docker/"
-    mkdir -p "$CX_ROOT/docker/php" "$CX_ROOT/docker/nuxt" "$CX_ROOT/docker/legacy"
+    _fresh_step "建立 docker/{php,nuxt,legacy}" -- \
+        mkdir -p "$CX_ROOT/docker/php" "$CX_ROOT/docker/nuxt" "$CX_ROOT/docker/legacy" || return $?
 
-    local f
-    if [[ -d $CX_ROOT/php ]]; then
-        for f in "$CX_ROOT"/php/*; do
+    local f d
+    for d in php nuxt; do
+        [[ -d $CX_ROOT/$d ]] || continue
+        for f in "$CX_ROOT/$d"/*; do
             [[ -e $f ]] || continue
-            cx_run cp -a "$f" "$CX_ROOT/docker/php/$(basename "$f")"
-            cx_ok "php/$(basename "$f") → docker/php/"
+            _fresh_step "$d/$(basename "$f") → docker/$d/" -- \
+                cp -a "$f" "$CX_ROOT/docker/$d/$(basename "$f")" || return $?
         done
-    fi
-    if [[ -d $CX_ROOT/nuxt ]]; then
-        for f in "$CX_ROOT"/nuxt/*; do
-            [[ -e $f ]] || continue
-            cx_run cp -a "$f" "$CX_ROOT/docker/nuxt/$(basename "$f")"
-            cx_ok "nuxt/$(basename "$f") → docker/nuxt/"
-        done
-    fi
-    # 舊 compose 留一份參考（Phase 2 會重寫根目錄那份）
-    [[ -f $CX_ROOT/docker-compose.yml ]] && {
-        cx_run cp -a "$CX_ROOT/docker-compose.yml" "$CX_ROOT/docker/legacy/docker-compose.yml.orig"
-        cx_ok "docker-compose.yml → docker/legacy/（原始參考）"
-    }
-    [[ -f $CX_ROOT/.dockerignore ]] && {
-        cx_run cp -a "$CX_ROOT/.dockerignore" "$CX_ROOT/docker/legacy/dockerignore.orig"
-        cx_ok ".dockerignore → docker/legacy/"
-    }
+    done
+
+    # 舊 compose 與 dockerignore 留一份參考（Phase 2 會重寫根目錄那兩份）
+    local src dst
+    for src in docker-compose.yml:docker-compose.yml.orig .dockerignore:dockerignore.orig; do
+        dst=${src#*:}; src=${src%%:*}
+        [[ -f $CX_ROOT/$src ]] || continue
+        _fresh_step "$src → docker/legacy/" -- \
+            cp -a "$CX_ROOT/$src" "$CX_ROOT/docker/legacy/$dst" || return $?
+    done
+
     # 舊腳本也留一份，方便對照
     for f in init.sh refresh.sh README.md; do
-        [[ -f $CX_ROOT/$f ]] && cx_run cp -a "$CX_ROOT/$f" "$CX_ROOT/docker/legacy/$f.orig" && cx_ok "$f → docker/legacy/"
+        [[ -f $CX_ROOT/$f ]] || continue
+        _fresh_step "$f → docker/legacy/" -- \
+            cp -a "$CX_ROOT/$f" "$CX_ROOT/docker/legacy/$f.orig" || return $?
     done
+
     cx_ok "遷移完成 —— 所有自定義設定都有副本在 docker/ 底下"
 }
 
@@ -233,11 +314,19 @@ _fresh_delete() {
         _fresh_nuke "$CX_ROOT/$t"
     done
 
-    # 斷言：.gitmodules 與 .git 必須真的消失，否則後續 git init 會出問題
+    # 斷言：.gitmodules 與 .git 必須真的消失，否則後續 git init 會出問題。
+    #
+    # ⚠ dry-run 之下要跳過。刪除走 cx_run（dry-run 不執行），而這些斷言原本是
+    #   無條件的 —— 於是 `cx --dry-run fresh --phase delete` 會死在
+    #   「.gitmodules 仍存在」。最需要 dry-run 的動詞，dry-run 是壞的。
+    if (( CX_DRY_RUN )); then
+        cx_dim "  [dry-run] 略過刪除後的斷言（實際上什麼都沒刪）"
+    else
     [[ ! -e $CX_ROOT/.gitmodules ]] || cx_die "$EX_FAIL" ".gitmodules 仍存在"
     [[ ! -e $CX_ROOT/.git ]]        || cx_die "$EX_FAIL" ".git 仍存在"
     [[ ! -e $CX_ROOT/backend ]]     || cx_die "$EX_FAIL" "backend/ 仍存在"
     [[ ! -e $CX_ROOT/frontend ]]    || cx_die "$EX_FAIL" "frontend/ 仍存在"
+    fi
     cx_ok "斷言通過：.git / .gitmodules / backend / frontend 皆已移除"
 
     # 重建空目錄，且必須由「當前使用者」建立。
@@ -324,7 +413,7 @@ _fresh_rebuild_frontend() {
             cx_run docker run --rm -u "$(id -u):$(id -g)" \
                 -v "$CX_ROOT:/w" -w /w \
                 -e HOME=/tmp \
-                "${CX_IMG_NODE:-node:24.20-bookworm-slim}" \
+                "${CX_IMG_NODE:-node:24.20-alpine}" \
                 npx --yes nuxi@latest init frontend \
                 --template "${CX_NUXT_TEMPLATE:-minimal}" \
                 --packageManager npm --no-install --no-gitInit --force </dev/null \
@@ -354,7 +443,11 @@ _fresh_rebuild_backend() {
         native) run=(env -C "$CX_ROOT") ;;
         docker)
             # 用官方 composer 映像，不是本專案的 app 映像 —— 後者此刻還沒建。
+            # -e HOME=/tmp：以非 root 身分跑時 composer 要有地方寫快取，
+            # 沒有的話會噴 "Cannot create cache directory" 的警告甚至失敗。
+            # 前端那條路一直都有這個旗標，後端漏了。
             run=(docker run --rm -u "$(id -u):$(id -g)"
+                 -e HOME=/tmp
                  -v "$CX_ROOT:/w" -w /w
                  "${CX_IMG_COMPOSER:-composer:2}")
             ;;
@@ -363,11 +456,9 @@ _fresh_rebuild_backend() {
             return 1 ;;
     esac
 
-    local composer_bin=composer
-    [[ $tool == docker ]] && composer_bin=composer
 
     cx_info "composer create-project laravel/laravel"
-    cx_run "${run[@]}" "$composer_bin" create-project laravel/laravel backend \
+    cx_run "${run[@]}" composer create-project laravel/laravel backend \
         --no-interaction --prefer-dist </dev/null \
         || { cx_error "create-project 失敗"; return 1; }
 
@@ -375,17 +466,18 @@ _fresh_rebuild_backend() {
     case $tool in
         native) runb=(env -C "$dir") ;;
         docker) runb=(docker run --rm -u "$(id -u):$(id -g)"
+                      -e HOME=/tmp
                       -v "$CX_ROOT:/w" -w /w/backend
                       "${CX_IMG_COMPOSER:-composer:2}") ;;
     esac
 
     cx_info "composer require filament/filament:^5.0"
-    cx_run "${runb[@]}" "$composer_bin" require filament/filament:^5.0 \
+    cx_run "${runb[@]}" composer require filament/filament:^5.0 \
         --no-interaction --no-scripts </dev/null \
         || { cx_error "安裝 Filament 失敗"; return 1; }
 
     cx_info "composer require --dev larastan/larastan:^3.0"
-    cx_run "${runb[@]}" "$composer_bin" require --dev larastan/larastan:^3.0 \
+    cx_run "${runb[@]}" composer require --dev larastan/larastan:^3.0 \
         --no-interaction --no-scripts </dev/null \
         || { cx_error "安裝 Larastan 失敗"; return 1; }
 
@@ -402,36 +494,183 @@ _fresh_carryover() {
     local A=$1 c
     cx_step "把應用層程式碼疊回新骨架（carryover）"
     local tmp; tmp=$(mktemp -d) || return 1
-    # shellcheck disable=SC2064  # 要在設定 trap 的當下就把路徑固定住
-    trap "rm -rf '$tmp'" RETURN
+    # shellcheck disable=SC2064  # 刻意用單引號延後展開：$tmp 是 local，RETURN
+    #   trap 執行時仍在作用域內。用雙引號把路徑烘進去的話，TMPDIR 含單引號
+    #   就會把壞掉的路徑交給 rm -rf。全庫其他 11 處都是這個安全形式。
+    trap 'rm -rf "${tmp:-}"' RETURN
 
-    local -A KEEP=(
-        [backend]="app database/migrations database/seeders database/factories routes resources tests"
-        [frontend]="app components pages layouts composables stores assets public server middleware plugins"
-    )
+    local c d n
     for c in backend frontend; do
         [[ -f $A/src-$c.tar.gz ]] || { cx_warn "$c 沒有封存的原始碼，略過"; continue; }
         cx_run tar -xzf "$A/src-$c.tar.gz" -C "$tmp" || return 1
-        local d n=0
-        for d in ${KEEP[$c]}; do
+        n=0
+        # while-read 而不是 `for d in ${KEEP[$c]}` —— 後者靠字詞分割，
+        # 目錄名含空白就會裂開。shellcheck 的 SC2086 抓得到，但 _lint_sh
+        # 只 gate error，所以那個問題在 CI 上是看不見的。
+        while IFS= read -r d; do
+            [[ -n $d ]] || continue
             [[ -d $tmp/$c/$d ]] || continue
             cx_run mkdir -p "$CX_ROOT/$c/$(dirname "$d")" || return 1
             # -T：把來源目錄的**內容**疊上去，而不是變成子目錄
             cx_run cp -a -T "$tmp/$c/$d" "$CX_ROOT/$c/$d" || return 1
             n=$((n + 1))
-        done
+        done < <(_fresh_keep_dirs "$c")
         cx_ok "$c：疊回 $n 個目錄"
         cx_dim "  骨架檔（config/、bootstrap/、package.json、nuxt.config）刻意用新版的"
         cx_dim "  舊版留在封存裡：$A/src-$c.tar.gz"
     done
+
+    # ── 重新接上測試資料庫防護 ──────────────────────────────────────────
+    #
+    # tests/ 在疊回清單裡，phpunit.xml **不在**（它是骨架檔，重建時由
+    # composer create-project 重新產生）。於是 tests/bootstrap.php 與
+    # DatabaseSafetyGuard.php 會回來，但 phpunit.xml 的 bootstrap= 變回
+    # vendor/autoload.php —— 防護的檔案都在，卻沒有人呼叫它了。
+    # 2026-09-05 的實跑確認了這個路徑：verify 階段當場擋下來。
+    #
+    # 這一行不是「把舊的 phpunit.xml 搬回來」（那會抵銷重建的意義），
+    # 而是把一個**跟著疊回來的檔案**重新接上。所以在這裡自動做，
+    # 而 _fresh_verify_rebuild 的斷言留著當後盾。
+    if [[ -f $CX_ROOT/backend/tests/bootstrap.php && -f $CX_ROOT/backend/phpunit.xml ]] \
+       && ! grep -q 'bootstrap="tests/bootstrap.php"' "$CX_ROOT/backend/phpunit.xml"; then
+        _fresh_step "重新接上測試資料庫防護（phpunit.xml 的 bootstrap=）" -- \
+            sed -i 's|bootstrap="vendor/autoload.php"|bootstrap="tests/bootstrap.php"|' \
+                "$CX_ROOT/backend/phpunit.xml" || return $?
+    fi
 }
 
 _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
     local mode=$1 A=$2
+    # dry-run 之下前面的刪除沒有真的發生，所以 backend/ 與 frontend/ 還是滿的，
+    # 重建一定會撞到「目錄不是空的」。那不是缺陷，是 dry-run 的必然結果 ——
+    # 但它不該被報成失敗，否則 `cx --dry-run fresh` 永遠跑不完整條流程。
+    if (( CX_DRY_RUN )); then
+        cx_step "重建（dry-run：略過）"
+        cx_dim "  [dry-run] mode=$mode —— 實際執行時會："
+        cx_dim "    composer create-project laravel/laravel backend（+ filament/filament、larastan）"
+        cx_dim "    npx nuxi init frontend --template minimal"
+        [[ $mode == carryover ]] && cx_dim "    再從 $A 的 src-*.tar.gz 疊回應用層目錄"
+        return 0
+    fi
     _fresh_rebuild_backend  || return 1
     _fresh_rebuild_frontend || return 1
     [[ $mode == carryover ]] && { _fresh_carryover "$A" || return 1; }
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# 重建結果的驗證（在 git-init 之前）
+# ---------------------------------------------------------------------------
+#
+# 為什麼一定要有這一步：原本 _fresh_rebuild 成功之後直接進 _fresh_git_init，
+# 也就是把重建結果**無條件 commit 進去**。如果 nuxi 或 composer 產出的是半套
+# 骨架（網路中斷、磁碟滿、上游改了旗標），那段歷史就進了新的 repo ——
+# 而還原時你會多出一段不該保留的歷史，比沒有 commit 更難處理。
+#
+# 這一步必須便宜、離線、只回答一個問題：這個骨架完整到可以 commit 了嗎。
+_fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
+    local mode=$1 A=$2 fail=0
+    if (( CX_DRY_RUN )); then
+        cx_step "驗證重建結果（dry-run：略過，因為沒有真的重建）"
+        return 0
+    fi
+    cx_step "驗證重建結果"
+
+    # ── 結構 ────────────────────────────────────────────────────────────
+    local f
+    for f in backend/artisan backend/composer.json backend/phpunit.xml; do
+        [[ -f $CX_ROOT/$f ]] && cx_ok "存在：$f" || { cx_error "缺少：$f"; fail=1; }
+    done
+    if [[ -f $CX_ROOT/frontend/nuxt.config.ts || -f $CX_ROOT/frontend/nuxt.config.js ]]; then
+        cx_ok "存在：frontend/nuxt.config"
+    else
+        cx_error "缺少：frontend/nuxt.config.{ts,js}"; fail=1
+    fi
+    [[ -f $CX_ROOT/frontend/package.json ]] \
+        && cx_ok "存在：frontend/package.json" || { cx_error "缺少：frontend/package.json"; fail=1; }
+
+    # 三個必要套件 —— 骨架建起來了不代表相依對
+    local pkg
+    for pkg in laravel/framework filament/filament larastan/larastan; do
+        grep -q "\"$pkg\"" "$CX_ROOT/backend/composer.json" 2>/dev/null \
+            && cx_ok "composer.json 含 $pkg" || { cx_error "composer.json 缺少 $pkg"; fail=1; }
+    done
+
+    # ── 不該有的殘留 ────────────────────────────────────────────────────
+    # 前一次半途失敗留下的 .git 會讓 git submodule add 報
+    # 「already exists and is not a valid git repo」，而訊息不會提到是殘留。
+    local c
+    for c in backend frontend; do
+        if [[ -e $CX_ROOT/$c/.git ]]; then
+            cx_error "$c/.git 已存在 —— 上一次重建的殘留，會讓 submodule add 失敗"
+            cx_dim "  處理：rm -rf $CX_ROOT/$c/.git 之後重跑 --resume-from git-init"
+            fail=1
+        fi
+    done
+
+    # ── carryover 的完整性 ──────────────────────────────────────────────
+    # 這是唯一抓得到「cp -a -T 疊到一半失敗」的檢查：比對封存裡的項目數
+    # 與樹上的項目數。cp 的部分失敗在上面的結構檢查裡完全看不出來。
+    if [[ $mode == carryover ]]; then
+        local tmp; tmp=$(mktemp -d) || return 1
+        # shellcheck disable=SC2064
+        trap 'rm -rf "${tmp:-}"' RETURN
+        local d n_arc n_tree
+        for c in backend frontend; do
+            [[ -f $A/src-$c.tar.gz ]] || continue
+            tar -xzf "$A/src-$c.tar.gz" -C "$tmp" 2>/dev/null || continue
+            while IFS= read -r d; do
+                [[ -n $d && -d $tmp/$c/$d ]] || continue
+                if [[ ! -d $CX_ROOT/$c/$d ]]; then
+                    cx_error "carryover 沒疊回：$c/$d"; fail=1; continue
+                fi
+                n_arc=$(find "$tmp/$c/$d" -type f | wc -l)
+                n_tree=$(find "$CX_ROOT/$c/$d" -type f | wc -l)
+                if (( n_tree < n_arc )); then
+                    cx_error "carryover 疊回不完整：$c/$d（封存 $n_arc 個檔，樹上只有 $n_tree 個）"
+                    fail=1
+                else
+                    cx_ok "carryover：$c/$d（$n_tree 個檔）"
+                fi
+            done < <(_fresh_keep_dirs "$c")
+        done
+    fi
+
+    # ── 測試資料庫防護的接線 ────────────────────────────────────────────
+    # carryover 的 KEEP 帶 tests 但**不帶 phpunit.xml**，所以重建會把
+    # tests/bootstrap.php 疊回去、卻讓 phpunit.xml 回到 vendor/autoload.php
+    # —— 防護的檔案都在，但沒有人呼叫它了。
+    if [[ -f $CX_ROOT/backend/tests/bootstrap.php ]]; then
+        if grep -q 'bootstrap="tests/bootstrap.php"' "$CX_ROOT/backend/phpunit.xml" 2>/dev/null; then
+            cx_ok "測試資料庫防護的接線完整"
+        elif [[ $mode == carryover ]]; then
+            cx_error "tests/bootstrap.php 疊回來了，但 phpunit.xml 沒有指向它"
+            cx_dim "  carryover 的 KEEP 帶 tests、不帶 phpunit.xml —— 防護會靜默失效。"
+            cx_dim "  修正：把 phpunit.xml 的 bootstrap= 改成 tests/bootstrap.php"
+            fail=1
+        else
+            cx_warn "scaffold 產生了全新的 phpunit.xml —— 測試資料庫防護需要重新接上"
+            cx_dim "  把 bootstrap= 改成 tests/bootstrap.php（cx verify cli 的 GRD-wire 會盯著）"
+        fi
+    fi
+
+    # ── 沿用既有的驗收機制 ──────────────────────────────────────────────
+    # cli / docs / tui 這三個範圍不需要 Docker、不需要 .env，在剛重建完的
+    # 樹上就跑得完 —— 那正是重建之後的狀態。報告寫進**封存目錄**，
+    # 這樣證據在之後的 rollback 之後仍然留著。
+    if (( ! CX_DRY_RUN )) && [[ -d $A ]]; then
+        if "$CX_ROOT/cx" --root "$CX_ROOT" verify cli docs tui --quiet \
+                --report "$A/post-rebuild-verify.md" >/dev/null 2>&1; then
+            cx_ok "cx verify cli docs tui 通過（報告：$A/post-rebuild-verify.md）"
+        else
+            cx_warn "cx verify cli docs tui 有 FAIL —— 見 $A/post-rebuild-verify.md"
+            cx_dim "  這一項不擋 git-init：重建之後的文件與實作不一致是預期的，"
+            cx_dim "  但要有人看過。上面的結構檢查才是擋門的那一道。"
+        fi
+    fi
+
+    (( fail == 0 )) || { cx_error "重建結果驗證未通過"; return 1; }
+    cx_ok "重建結果完整"
 }
 
 # ---------------------------------------------------------------------------
@@ -441,6 +680,12 @@ _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
 # 主庫才 submodule add 得起來 —— 對一個沒有 commit 的 repo 做 submodule add
 # 會得到 "does not have a commit checked out"。
 _fresh_git_init() {
+    if (( CX_DRY_RUN )); then
+        cx_step "初始化三個 Git repo（dry-run：略過）"
+        cx_dim "  [dry-run] backend 與 frontend 各 git init -b main + 首次 commit"
+        cx_dim "  [dry-run] 主庫 git init -b main + submodule add（相對 URL）+ commit"
+        return 0
+    fi
     cx_step "初始化三個 Git repo"
     local c
     for c in backend frontend; do
@@ -498,40 +743,135 @@ _fresh_git_init() {
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 階段機
+# ---------------------------------------------------------------------------
+#
+# --phase <名稱>        天花板：跑到這一步為止（含）
+# --resume-from <名稱>  地板：從這一步開始（含）
+#
+# 為什麼要分成兩個旗標而不是共用 --phase：
+#   舊的 --phase 語意是**不一致**的 —— preflight 與 migrate 是「只跑這一步就返回」，
+#   backup 與 delete 是「跑到這一步為止」。所以 `cx fresh --phase migrate`
+#   會跳過 preflight、備份**與確認閘門**，直接開始複製檔案。那是設計缺陷。
+#   現在 --phase 一律是天花板，語意單一；「從中間開始」交給 --resume-from。
+#   把 --phase delete 悄悄改成「從 delete 開始」會把一個有界的指令變成
+#   無界的破壞性指令，所以必須是不同的旗標。
+_FRESH_PHASES=(preflight backup migrate delete rebuild verify git-init)
+
+_fresh_phase_index() {              # _fresh_phase_index <名稱> → 索引
+    local want=$1 i=0 ph
+    for ph in "${_FRESH_PHASES[@]}"; do
+        [[ $ph == "$want" ]] && { printf '%s' "$i"; return 0; }
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# ── 麵包屑 ─────────────────────────────────────────────────────────────────
+# 沒有它的話：_fresh_delete 中途被 SIGKILL 之後，下一次執行的 preflight
+# 看到的是一棵沒有 .git 的樹，PF-04/05 只是 skip，流程照跑，然後
+# LATEST 被**覆寫成那份沒用的新封存** —— 從此 cx fresh --rollback
+# （不帶 --from）什麼都還原不了。唯一的安全網就這樣被自己蓋掉了。
+_FRESH_STATE=".cx/fresh.state"
+
+_fresh_state_write() {              # _fresh_state_write <已完成的階段> <封存路徑>
+    (( CX_DRY_RUN )) && return 0
+    cx_ensure_host_dirs "$CX_ROOT/.cx" >/dev/null 2>&1
+    printf 'phase=%s\narchive=%s\nstamp=%s\n' "$1" "$2" "$(cx_stamp)" \
+        > "$CX_ROOT/$_FRESH_STATE"
+}
+
+_fresh_state_get() {                # _fresh_state_get <鍵>
+    [[ -f $CX_ROOT/$_FRESH_STATE ]] || return 1
+    sed -n "s/^$1=//p" "$CX_ROOT/$_FRESH_STATE" | head -1
+}
+
+_fresh_state_clear() { (( CX_DRY_RUN )) || rm -f "$CX_ROOT/$_FRESH_STATE"; }
+
+# 過了不可逆點之後才寫下的救援指引。終端機的捲動記錄是最容易弄丟的東西，
+# 一個放在專案根目錄的檔案不可能被忽略。
+_fresh_recovery_note() {            # _fresh_recovery_note <封存路徑> <情境>
+    (( CX_DRY_RUN )) && return 0
+    local A=$1 why=$2
+    cat > "$CX_ROOT/CX-RECOVERY.md" <<EOF
+# cx fresh 中斷後的救援指引
+
+情境：$why
+時間：$(date -u +%Y-%m-%dT%H:%M:%SZ)
+封存：$A
+
+## 回到重建前的狀態
+
+    cx fresh --rollback --from $A
+
+還原前會先驗證封存，被覆蓋的內容會先移到 .cx-restore-backup/<時間戳>/。
+資料庫不在還原範圍 —— 要的話另外跑：
+
+    cx db restore $A/db-*.sql.gz
+
+## 或者，從失敗的那一步繼續
+
+    cx fresh --resume-from rebuild --from $A --mode <carryover|scaffold>
+
+## 確認沒問題之後
+
+刪掉這個檔案，以及 .cx/fresh.state。
+EOF
+    cx_warn "救援指引已寫到 CX-RECOVERY.md"
+}
+
 cmd_fresh_main() {
-    local phase=all mode=carryover rollback=0 from=''
+    local phase=all mode=carryover rollback=0 from='' resume=''
     while (( $# )); do
         case $1 in
-            --phase)    [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--phase 需要一個值"
-                        phase=$2; shift 2 ;;
-            --phase=*)  phase=${1#*=}; shift ;;
-            --mode)     [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--mode 需要一個值"
-                        mode=$2; shift 2 ;;
-            --mode=*)   mode=${1#*=}; shift ;;
-            --rollback) rollback=1; shift ;;
-            --from)     [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--from 需要一個路徑"
-                        from=$(cx_resolve "$2"); shift 2 ;;
-            --from=*)   from=$(cx_resolve "${1#*=}"); shift ;;
-            -h|--help)  _fresh_usage; return 0 ;;
-            *)          cx_die "$EX_USAGE" "未知參數：$1" ;;
+            --phase)        [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--phase 需要一個值"
+                            phase=$2; shift 2 ;;
+            --phase=*)      phase=${1#*=}; shift ;;
+            --resume-from)  [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--resume-from 需要一個值"
+                            resume=$2; shift 2 ;;
+            --resume-from=*) resume=${1#*=}; shift ;;
+            --mode)         [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--mode 需要一個值"
+                            mode=$2; shift 2 ;;
+            --mode=*)       mode=${1#*=}; shift ;;
+            --rollback)     rollback=1; shift ;;
+            --from)         [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--from 需要一個路徑"
+                            from=$(cx_resolve "$2"); shift 2 ;;
+            --from=*)       from=$(cx_resolve "${1#*=}"); shift ;;
+            -h|--help)      _fresh_usage; return 0 ;;
+            *)              cx_die "$EX_USAGE" "未知參數：$1" ;;
         esac
     done
 
-    # 白名單驗證 —— 少了這段，任何打錯的 phase 都會 fall through 到
-    # preflight → backup → migrate → gate → delete 的完整破壞流程。
-    case $phase in
-        preflight|backup|migrate|delete|all) : ;;
-        *) cx_die "$EX_USAGE" "未知的 phase：$phase（preflight|backup|migrate|delete|all）" ;;
-    esac
+    # 白名單驗證 —— 少了這段，任何打錯的 phase 都會 fall through 到完整的
+    # 破壞性流程。
+    local ceiling floor=0
+    if [[ $phase == all ]]; then
+        ceiling=$(( ${#_FRESH_PHASES[@]} - 1 ))
+    else
+        ceiling=$(_fresh_phase_index "$phase") \
+            || cx_die "$EX_USAGE" "未知的 phase：$phase（${_FRESH_PHASES[*]} all）"
+    fi
+    if [[ -n $resume ]]; then
+        case $resume in
+            rebuild|verify|git-init) : ;;
+            *) cx_die "$EX_USAGE" \
+                "--resume-from 只接受 rebuild|verify|git-init（收到 $resume）
+    更早的階段涉及備份與刪除，不能跳過 —— 那些就是要重跑整個流程。" ;;
+        esac
+        floor=$(_fresh_phase_index "$resume")
+    fi
+    (( floor <= ceiling )) || cx_die "$EX_USAGE" \
+        "--resume-from $resume 比 --phase $phase 還晚，沒有東西可以跑"
     case $mode in
         backup-only|carryover|scaffold) : ;;
         *) cx_die "$EX_USAGE" "未知的 mode：$mode（backup-only|carryover|scaffold）" ;;
     esac
-    # archive.sh 要在這裡就載入，不能等到下面 —— 底下 --rollback 的錯誤訊息
-    # 會呼叫 cx_archive_root()，那個函式定義在 archive.sh 裡。
-    # 原本 source 寫在旗標處理之後，於是 `cx fresh --rollback` 會得到
-    #   fresh.sh: line 270: cx_archive_root: command not found
-    # 而不是它該給的「尚未實作，請看這個目錄」訊息。
+
+    # archive.sh 要在這裡就載入，不能等到下面 —— 底下 --rollback 會呼叫
+    # cx_archive_root()，那個函式定義在 archive.sh 裡。原本 source 寫在旗標
+    # 處理之後，於是 `cx fresh --rollback` 會得到 command not found，
+    # 而不是它該給的訊息。
     # shellcheck source=/dev/null
     . "$CX_ROOT/bin/lib/archive.sh"
 
@@ -539,63 +879,161 @@ cmd_fresh_main() {
     if (( rollback )); then
         local src=$from
         if [[ -z $src ]]; then
-            local latest="$(cx_archive_root)/LATEST"
+            local latest; latest="$(cx_archive_root --probe)/LATEST"
             [[ -f $latest ]] || cx_die "$EX_PRECOND" \
                 "沒有 --from，也找不到 $latest —— 先跑過 cx fresh 才會有封存"
             src=$(<"$latest")
         fi
         cx_lock fresh
-        cx_restore "$src"
-        return $?
+        local rrc=0
+        cx_restore "$src" || rrc=$?
+        (( rrc )) || { _fresh_state_clear; rm -f "$CX_ROOT/CX-RECOVERY.md"; }
+        return "$rrc"
     fi
-    [[ -n $from ]] && cx_warn "--from 只有 --rollback 會用到，本次忽略"
+    [[ -n $from && -z $resume ]] && cx_warn "--from 只有 --rollback 與 --resume-from 會用到，本次忽略"
 
     cx_lock fresh
 
-    case $phase in
-        preflight) _fresh_preflight; return 0 ;;
-        migrate)   _fresh_migrate; return 0 ;;
-    esac
-
-    _fresh_preflight
-
-    local A
-    A="$(cx_archive_root)/$(cx_stamp)"
-    cx_info "封存目錄：$A"
-    cx_backup "$A"
-    cx_verify_archive "$A" || cx_die "$EX_FAIL" "封存驗證失敗 —— 未刪除任何東西"
-    printf '%s\n' "$A" > "$(cx_archive_root)/LATEST"
-
-    if [[ $mode == backup-only ]]; then
-        cx_ok "backup-only 完成，未刪除任何東西"
-        cx_info "封存：$A"
-        return 0
+    # ── 中斷偵測 ────────────────────────────────────────────────────────
+    local prev_phase prev_arc
+    prev_phase=$(_fresh_state_get phase 2>/dev/null || true)
+    prev_arc=$(_fresh_state_get archive 2>/dev/null || true)
+    if [[ -n $prev_phase && -z $resume ]]; then
+        local pidx; pidx=$(_fresh_phase_index "$prev_phase" 2>/dev/null || echo -1)
+        if (( pidx >= 3 )); then      # delete 之後 = 已過不可逆點
+            cx_error "上一次 cx fresh 停在「$prev_phase」之後就沒有繼續（$CX_ROOT/$_FRESH_STATE）"
+            cx_dim "  這棵樹已經過了不可逆點。重跑整個流程會把**已經被刪掉的狀態**"
+            cx_dim "  重新封存一次，並覆寫 LATEST —— 原本那份救得回來的封存就找不到了。"
+            cx_dim ""
+            cx_dim "  接續：    cx fresh --resume-from rebuild --from $prev_arc --mode $mode"
+            cx_dim "  或還原：  cx fresh --rollback --from $prev_arc"
+            cx_dim "  真的要重來： rm $CX_ROOT/$_FRESH_STATE"
+            return "$EX_PRECOND"
+        fi
     fi
-    [[ $phase == backup ]] && { cx_ok "backup 階段完成"; cx_info "封存：$A"; return 0; }
 
-    # 閘門必須在 _fresh_migrate **之前**。
-    # 原本順序是 migrate → gate，而 migrate 會把 docker-compose.yml /
-    # .dockerignore / README.md 複製成 docker/legacy/*.orig ——
-    # 那是三個進版控的檔案。於是使用者在確認畫面按取消，畫面印
-    # 「使用者取消，未變更任何檔案」，git status 卻多出三個 M。
-    # 訊息說謊比動到檔案更糟：下次沒人會相信那句話。
-    _fresh_gate "$A" || return "$EX_ABORT"
-    # migrate 的 rc 一定要檢查。閘門移到它前面之後，這裡已經過了不可逆點 ——
-    # 遷移失敗卻繼續 _fresh_delete，等於把 docker 自定義設定連同原處一起刪掉，
-    # 而 docker/legacy/ 底下沒有可用的副本。
-    _fresh_migrate || cx_die "$EX_FAIL" \
-        "遷移失敗 —— 已中止，未刪除任何東西（封存在 $A）"
-    _fresh_delete
+    local A=''
+    # ── 0 preflight ─────────────────────────────────────────────────────
+    if (( floor <= 0 && ceiling >= 0 )); then
+        _fresh_preflight || return $?
+        _fresh_state_write preflight ''
+    fi
+    (( ceiling >= 1 )) || { cx_ok "preflight 階段完成"; return 0; }
 
-    [[ $phase == delete ]] && { cx_ok "delete 階段完成"; cx_info "封存：$A"; return 0; }
+    # ── 1 backup（含驗證與確認閘門）──────────────────────────────────────
+    if (( floor <= 1 )); then
+        # dry-run 之下只探測路徑，不建立目錄
+        if (( CX_DRY_RUN )); then
+            A="$(cx_archive_root --probe)/$(cx_stamp)"
+        else
+            A="$(cx_archive_root)/$(cx_stamp)"
+        fi
+        cx_info "封存目錄：$A"
+        cx_backup "$A" || return $?
+        cx_verify_archive "$A" || cx_die "$EX_FAIL" "封存驗證失敗 —— 未刪除任何東西"
+        (( CX_DRY_RUN )) || printf '%s\n' "$A" > "$(cx_archive_root)/LATEST"
+        _fresh_state_write backup "$A"
 
-    _fresh_rebuild "$mode" "$A" || cx_die "$EX_FAIL" \
-        "重建失敗 —— 封存完好，可用 cx fresh --rollback --from $A 還原"
-    _fresh_git_init || cx_die "$EX_FAIL" \
-        "Git 初始化失敗 —— 前後端已重建，可手動 git init，或 cx fresh --rollback --from $A"
+        if [[ $mode == backup-only ]]; then
+            cx_ok "backup-only 完成，未刪除任何東西"
+            cx_info "封存：$A"
+            _fresh_state_clear
+            return 0
+        fi
+        (( ceiling >= 2 )) || { cx_ok "backup 階段完成"; cx_info "封存：$A"; _fresh_state_clear; return 0; }
 
+        # 閘門必須在 _fresh_migrate **之前**。
+        # 原本順序是 migrate → gate，而 migrate 會把 docker-compose.yml /
+        # .dockerignore / README.md 複製成 docker/legacy/*.orig —— 那是三個
+        # 進版控的檔案。於是使用者在確認畫面按取消，畫面印「未變更任何檔案」，
+        # git status 卻多出三個 M。訊息說謊比動到檔案更糟。
+        _fresh_gate "$A" || { _fresh_state_clear; return "$EX_ABORT"; }
+    else
+        # resume：沿用上一次的封存
+        A=${from:-$prev_arc}
+        [[ -n $A && -d $A ]] || cx_die "$EX_PRECOND" \
+            "--resume-from 需要知道用哪一份封存 —— 給 --from <目錄>，或讓 .cx/fresh.state 存在"
+        cx_info "沿用既有封存：$A"
+    fi
+
+    # ── 2 migrate ───────────────────────────────────────────────────────
+    if (( floor <= 2 && ceiling >= 2 )); then
+        # migrate 的 rc 一定要檢查。閘門已經過了，這裡是不可逆點的另一邊 ——
+        # 遷移失敗卻繼續 _fresh_delete，等於把 docker 自定義設定連同原處
+        # 一起刪掉，而 docker/legacy/ 底下沒有可用的副本。
+        _fresh_migrate || { _fresh_recovery_note "$A" "遷移失敗"; cx_die "$EX_FAIL" \
+            "遷移失敗 —— 已中止，未刪除任何東西（封存在 $A）"; }
+        _fresh_state_write migrate "$A"
+    fi
+    (( ceiling >= 3 )) || { cx_ok "migrate 階段完成"; cx_info "封存：$A"; return 0; }
+
+    # ── 3 delete（不可逆點）──────────────────────────────────────────────
+    if (( floor <= 3 )); then
+        _fresh_delete || { _fresh_recovery_note "$A" "刪除失敗"; return "$EX_FAIL"; }
+        _fresh_state_write delete "$A"
+    fi
+    (( ceiling >= 4 )) || { cx_ok "delete 階段完成"; cx_info "封存：$A"; return 0; }
+
+    # ── 4 rebuild ───────────────────────────────────────────────────────
+    if (( floor <= 4 )); then
+        if ! _fresh_rebuild "$mode" "$A"; then
+            _fresh_recovery_note "$A" "重建失敗（mode=$mode）"
+            _fresh_offer_rollback "$A" "重建失敗"
+            return "$EX_FAIL"
+        fi
+        _fresh_state_write rebuild "$A"
+    fi
+    (( ceiling >= 5 )) || { cx_ok "rebuild 階段完成"; cx_info "封存：$A"; return 0; }
+
+    # ── 5 verify（重建之後、git-init 之前）───────────────────────────────
+    if (( floor <= 5 )); then
+        if ! _fresh_verify_rebuild "$mode" "$A"; then
+            _fresh_recovery_note "$A" "重建結果驗證失敗"
+            cx_error "重建的結果不完整 —— **不會**繼續 git-init"
+            cx_dim "  把半套骨架 commit 進去會讓還原更難：你會多出一段不該保留的歷史。"
+            _fresh_offer_rollback "$A" "重建結果驗證失敗"
+            return "$EX_FAIL"
+        fi
+        _fresh_state_write verify "$A"
+    fi
+    (( ceiling >= 6 )) || { cx_ok "verify 階段完成"; cx_info "封存：$A"; return 0; }
+
+    # ── 6 git-init ──────────────────────────────────────────────────────
+    if (( floor <= 6 )); then
+        if ! _fresh_git_init; then
+            _fresh_recovery_note "$A" "Git 初始化失敗"
+            cx_error "Git 初始化失敗 —— 前後端已重建，但還沒有版控"
+            return "$EX_FAIL"
+        fi
+    fi
+
+    _fresh_state_clear
+    rm -f "$CX_ROOT/CX-RECOVERY.md" 2>/dev/null || true
     cx_ok "清理與重建完成"
     cx_info "封存：$A"
     cx_dim "  後續： cx setup deps  →  cx dev up -d --build  →  cx doctor"
     cx_dim "  要回到重建前： cx fresh --rollback --from $A"
+}
+
+# 失敗之後的還原提議。
+#
+# 刻意**不自動**還原：cx_restore 會把現有的樹搬進 .cx-restore-backup/ 再覆蓋。
+# 如果重建是因為磁碟滿或網路斷才失敗，自動還原會讓磁碟壓力加倍、而且可能
+# 自己也失敗到一半 —— 那會產生**第三種**狀態，比停在第二種更糟。
+#
+# 也刻意不只是印出指令：操作者就在鍵盤前，封存已經驗證過，下一步毫無歧義。
+# 讓他去複製貼上一段路徑，是「訊息告訴你該做什麼但不幫你做」的那種設計。
+#
+# --yes 之下**不**自動還原 —— 那個旗標的意思是「我預先同意我打的那個破壞性
+# 計畫」，不是「出事時你看著辦」。這個不對稱是刻意的，所以要講出來。
+_fresh_offer_rollback() {
+    local A=$1 why=$2
+    if (( CX_ASSUME_YES )); then
+        cx_warn "--yes 之下不自動還原（那個旗標同意的是你打的計畫，不是出事後的處置）"
+        cx_dim "  要還原： cx fresh --rollback --from $A"
+        return 0
+    fi
+    cx_confirm "還原" "$why。\n\n要現在從封存還原嗎？\n\n  $A\n\n不還原的話，之後仍可用 cx fresh --rollback --from <上面那個路徑>。" \
+        || { cx_dim "  未還原。指引在 CX-RECOVERY.md"; return 0; }
+    cx_restore "$A"
 }

@@ -9,9 +9,18 @@
 #   記錄位置是必要的：git submodule add 對「已是有效 repo」的目錄不會 absorb gitdir，
 #   重建後 .git 可能是真目錄而非指標檔，還原路徑會與備份時不同。
 
+# 封存根目錄。
+#
+# ⚠ 帶 --probe 時**不建立目錄**。preflight 會呼叫這個函式來算可用空間，
+#   而 usage 明寫「preflight 完全不動任何東西」—— 原本的無條件 mkdir 讓那句話
+#   不成立（純檢查的動詞不該留下痕跡）。
 cx_archive_root() {
     local base="${CX_ARCHIVE_ROOT:-$(dirname "$CX_ROOT")/$(basename "$CX_ROOT")_archive}"
-    mkdir -p "$base"
+    if [[ ${1:-} == --probe ]]; then
+        printf '%s' "$base"
+        return 0
+    fi
+    mkdir -p "$base" || return 1
     ( cd "$base" && pwd -P )
 }
 
@@ -32,7 +41,16 @@ cx_is_detached() { ! git -C "$1" symbolic-ref -q HEAD >/dev/null 2>&1; }
 # ---------------------------------------------------------------------------
 cx_backup() {
     local A=$1
-    mkdir -p "$A"
+    # dry-run 之下完全不寫。原本 mkdir 與整份 MANIFEST 都不經過 cx_run，
+    # 於是 `cx --dry-run fresh` 會真的建出封存目錄與 MANIFEST ——
+    # dry-run 的契約是「什麼都不做」，例外一個都不能有。
+    if (( CX_DRY_RUN )); then
+        cx_step "封存（dry-run：不寫入任何檔案）"
+        cx_dim "  [dry-run] 封存目錄：$A"
+        cx_dim "  [dry-run] 會產生 MANIFEST.txt、git-*.bundle、gitdir-*.tar.gz、src-*.tar.gz、SHA256SUMS"
+        return 0
+    fi
+    mkdir -p "$A" || { cx_error "無法建立封存目錄 $A"; return 1; }
     local m="$A/MANIFEST.txt"
 
     {
@@ -82,6 +100,20 @@ cx_backup() {
     local c
     for c in backend frontend; do
         [[ -d $CX_ROOT/$c ]] || { cx_warn "$c 不存在，略過"; continue; }
+        # ⚠ symlink 會產出「驗證全綠但沒有原始碼」的封存。
+        #   `[[ -d ]]` 會跟隨 symlink 回報成功，但下面的 `tar -C "$CX_ROOT" -- "$c"`
+        #   打包的是 symlink 本身（GNU tar 不加 -h 不跟隨），而
+        #   `[[ -s src-$c.tar.gz ]]` 對一個只含 symlink 的 tar 照樣通過。
+        #   於是 cx_verify_archive 全綠、確認閘門顯示 commit 數、使用者按下確認，
+        #   然後 _fresh_delete 把樹刪掉 —— 而封存裡沒有任何程式碼。
+        #   還原路徑也不對：cx_restore 會在原本是 symlink 的位置解出一個真目錄。
+        #   這種佈局要先自己處理掉，封存不該猜。
+        if [[ -L $CX_ROOT/$c ]]; then
+            cx_die "$EX_FAIL" \
+                "$c 是 symlink（指向 $(readlink "$CX_ROOT/$c")）—— 封存無法正確處理，已中止。
+    tar 不會跟隨它，產出的封存會通過驗證但不含任何原始碼。
+    請先把它換成真目錄（或把子專案移進來）再跑 cx fresh。"
+        fi
         cx_step "封存 $c"
 
         # 原始碼
@@ -149,13 +181,21 @@ cx_backup() {
             dbname=$(docker exec "$cid" printenv MYSQL_DATABASE 2>/dev/null) \
                 || dbname=''
             [[ -n $dbname ]] || dbname=$(cx_project)
+            # dbname 來自 `docker exec printenv`，是**容器可控**的值。
+            # 直接內插進下面的 sh -c 會讓含單引號的資料庫名注入 shell，
+            # 而且它還會流進 MANIFEST 的 db_dump= 與 cx_verify_archive 的 grep。
+            # 先驗形狀，再用位置參數傳，不做字串內插。
+            case $dbname in
+                *[!A-Za-z0-9_-]*|'')
+                    cx_die "$EX_FAIL" "資料庫名含非預期字元，拒絕封存：$(cx_q "$dbname")" ;;
+            esac
             # 密碼用容器內的環境變數展開，不進 host 的行程列表
             #（/proc/<pid>/cmdline 全機器可讀）。
             local err="$A/.mysqldump.err"
             if docker exec -i "$cid" sh -c \
-                 "exec mysqldump -uroot -p\"\$MYSQL_ROOT_PASSWORD\" \
+                 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
                       --single-transaction --routines --triggers \
-                      --databases '$dbname'" \
+                      --databases "$1"' _ "$dbname" \
                  2>"$err" | gzip > "$A/db-$dbname.sql.gz"; then
                 gzip -t "$A/db-$dbname.sql.gz" \
                     && { cx_ok "db-$dbname.sql.gz"; echo "db_dump=db-$dbname.sql.gz" >> "$m"; rm -f "$err"; } \
@@ -188,6 +228,13 @@ cx_backup() {
 # ---------------------------------------------------------------------------
 cx_verify_archive() {
     local A=$1 fail=0
+    # dry-run 之下 cx_backup 什麼都沒寫，這裡當然驗不到東西 ——
+    # 而「驗證失敗」會讓整個 dry-run 中止，於是最需要 dry-run 的動詞
+    # 永遠跑不完。dry-run 的契約是「照著流程走一遍但不動任何東西」。
+    if (( CX_DRY_RUN )); then
+        cx_step "驗證封存（dry-run：略過，因為沒有真的封存）"
+        return 0
+    fi
     cx_step "驗證封存（在刪除任何東西之前）"
 
     [[ -f $A/MANIFEST.txt ]] || { cx_error "缺少 MANIFEST.txt"; return 1; }
