@@ -403,7 +403,8 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 5. **不要在容器裡裸跑 `php artisan test`，一律用 `cx test`。**
    `backend/phpunit.xml` 的 `<env force="true">` 在容器裡**擋不住** compose 注入的
    環境變數（PHPUnit 的 force 不寫 `$_SERVER`，而 Laravel 讀 `$_SERVER` 優先），
-   裸跑會打到真正的開發資料庫。
+     現在應用層還有 `DatabaseSafetyGuard`：連上非測試資料庫時以 **exit 3** 中止，
+     所以裸跑不會真的打進開發資料庫。但它擋不住 `-c 別的.xml`，還是用 `cx test`。
 
 完整原理、每個坑的來由、以及未驗證項目清單見 [`claude.md`](claude.md)。
 驗收狀態見 [`docs/docker-verification.md`](docs/docker-verification.md) 與 `reports/verify/`。

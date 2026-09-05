@@ -49,7 +49,16 @@
    而 Laravel 的 `Env` 讀 `$_SERVER` 優先 —— compose 的 `environment:`
    永遠贏。實測裸跑會打到真正的 dev MySQL，而不是 `sqlite :memory:`。
    目前沒有測試用 `RefreshDatabase`，一旦有人加了，裸跑就會清空開發資料庫。
-   真正的保護在 `bin/cmd/test.sh` 的 `_test_env_pairs`（用 `-e` 蓋掉 `$_SERVER`）。
+   真正的保護有**兩層**，而且兩層都不依賴 `phpunit.xml` 的 `<env force>`：
+     * `bin/cmd/test.sh` 的 `_test_env_pairs` 用 `-e` 蓋掉 `$_SERVER`（cx 這一層）
+     * `backend/tests/bootstrap.php` → `Tests\DatabaseSafetyGuard`（應用層）。它用
+       Laravel 自己的 `Env::get()` 解析 —— **不重寫 `$_SERVER` 優先的順序** ——
+       確認這次真的會連上的資料庫是宣告過的測試目標，不是就以 **exit 3** 中止。
+       `cx verify cli` 的 `GRD-wire` / `GRD-files` / `GRD-layer2` 盯著三個零件都還接著。
+
+   所以上一段的「裸跑就會清空開發資料庫」**已經不成立** —— 它會在連上之前就停住。
+   但還是用 `cx test`：guard 擋得住 `phpunit`，擋不住 `-c 別的.xml` 或
+   `--no-configuration`，而且 cx 那一層還處理了 runner 與覆蓋率。
 
 6. **Agent 併發上限：同時最多 5 個，同類型最多 3 個。**
    使用 Workflow 時要把 `parallel()` / `pipeline()` 的項目分批送出，每批不超過 5；
@@ -240,7 +249,24 @@ Docker daemon 不可用，因此改以原生工具鏈建立。**遠端已上線*
 └── frontend/             ← submodule       → Information-Study/pm-frontend
 ```
 
-三個 repo 都是 **public**，都在 `Information-Study` 組織下。
+三個 repo 都是 **public**，組織名來自 `.cxroot` 的 `CX_GH_ORG`。
+
+### 分支模型（2026-09-05 定案，**不對稱**）
+
+```
+主庫       main ← dev                （**沒有 feature/***）
+backend    main ← dev ← feature/*
+frontend   main ← dev ← feature/*
+```
+
+功能分支只開在子模組（`cx git feature start <名稱> --repo backend|frontend`），
+做完合回該子模組的 `dev`，主庫的 `dev` 只負責把那一顆 gitlink 推進。
+`cx git branch new` 會拒絕在主庫開 `feature/*`。拓撲用 `cx git flow-init` 建立。
+
+> 為什麼不拆成 `dev-frontend` / `dev-backend`：實測過前後端各自推進自己那一顆
+> gitlink 再合回同一條 `dev` —— 兩次合併都 rc=0，零衝突，因為那是不同路徑。
+> 真正會衝突的是共用基礎設施（`bin/` `docker/` `ansible/` `docs/`），而兩條長期線
+> 會讓那件事更難（同一個改動要落地兩次，還會漂移）。
 舊的 `team-of-P/*` 三個遠端在重建時一併移除，且列入 push hook 的黑名單。
 
 ### ⚠ 最重要的一件事
