@@ -20,12 +20,16 @@ cmd_doctor_main() {
     # 用各自的方式壞掉，每個都指向不同的方向。
     local _sm _sm_missing=()
     if [[ -f $CX_ROOT/.gitmodules ]]; then
-        for _sm in backend frontend; do
-            [[ -d $CX_ROOT/$_sm ]] || { _sm_missing+=("$_sm（目錄不存在）"); continue; }
+        # 路徑一律走 cx_sub_path —— v3 版面是 src/<名字>，而「名字」與「路徑」
+        # 在這個專案裡是兩件事（見 docs/cx/layout.md §2.3）。
+        local _p
+        while read -r _sm; do
+            _p=$(cx_sub_path "$_sm")
+            [[ -d $_p ]] || { _sm_missing+=("$_sm（目錄不存在）"); continue; }
             # 判準是「有沒有 .git」，不是「目錄空不空」—— 子模組初始化之後
             # src/backend/.git 是一個指標**檔**（gitdir: ...），不是目錄。
-            [[ -e $CX_ROOT/$_sm/.git ]] || _sm_missing+=("$_sm")
-        done
+            [[ -e $_p/.git ]] || _sm_missing+=("$_sm")
+        done < <(cx_submodules)
         if (( ${#_sm_missing[@]} )); then
             _fl "子模組" "未初始化：${_sm_missing[*]}"
             cx_dim '  git submodule update --init --recursive'

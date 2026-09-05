@@ -161,6 +161,99 @@ default ACL 讓新建的檔案自動帶上兩邊的權限，而 others 仍然是
 
 ---
 
+## 2.7 五種角色，五條路
+
+`cx` 的動詞是照「開發 → 測試 → 部署」這條線排的，而不同角色走的是不同的
+子集。這一節是索引：每一條的完整說明在對應的指南裡。
+
+### ① 第一次啟動新專案
+
+```bash
+# 下載範本 → 改名、抹掉範本歷史、重建、接遠端（一個動詞做完）
+cx init <新專案名> --org <GitHub 組織> --gh
+
+cx setup env                 # ⚠ 重新產生 .env（新密碼；cx init 刻意不做這件事）
+cx setup native              # 整套原生工具鏈 + 專案相依
+cx acl apply                 # POSIX ACL（php-fpm 與你都要寫得進去）
+cx dev up -d --build         # 起開發環境
+cx verify                    # 驗收
+cx git commit && cx git push # 推上去
+```
+
+`cx init` 底下是 `rename → fresh → remote` 三支，順序是**強制**的。
+完整流程、兩種重建模式的差別、閘門文字、rollback：
+[`guide-developer.md`](guide-developer.md) §0。
+
+> 只想抹掉 git 歷史而**不重建**前後端（「這份程式碼要當新專案的起點」）：
+> `cx fresh --mode git-only`。
+
+### ② 人員接續專案
+
+```bash
+git clone --recurse-submodules <URL> && cd <repo>
+cx status && cx doctor       # 先看現況，再看環境能不能用
+cx setup native && cx setup env
+cx git config identity && cx git sync
+cx dev up -d --build
+```
+
+clone 之後有**五件事不會自動就緒**，而它們的失敗訊息都不會說出真正的原因。
+完整流程：[`cx/onboarding.md`](cx/onboarding.md)。
+
+### ③ 開發人員
+
+```bash
+cx git branch switch dev
+cx dev up -d --build
+cx git feature start <名稱> --repo backend|frontend    # 工作分支只開在子模組
+# … 開發 …
+cx lint && cx test && cx git scan-secrets
+cx git commit --repo backend
+cx git feature finish --repo backend                  # 合回 dev，主庫 gitlink 跟上
+cx git push
+```
+
+完整說明：[`guide-developer.md`](guide-developer.md)。
+
+### ④ 測試人員
+
+```bash
+cx git branch switch dev
+cx test up -d --build              # 不可變映像 + ModSecurity WAF
+cx test all && cx verify all && cx scan all
+cx git hotfix start <名稱> --repo backend|frontend     # 缺陷用 hotfix/*
+# … 修 …
+cx git hotfix finish --repo backend
+cx prod up -d --build && cx verify app                 # 正式模式也要能跑
+cx git push
+cx git release                     # 放行：dev → main（唯一會碰 main 的動作）
+```
+
+放行條件、報告判讀、五個最常見的誤讀：[`guide-tester.md`](guide-tester.md)。
+
+### ⑤ 部署人員
+
+```bash
+cx git branch switch main          # 部署一律從 main
+```
+
+**Docker 路徑**：`cx prod up -d --build`
+
+**Ansible 原生路徑**：
+```bash
+cx deploy hosts init --env production
+cx deploy hosts add <名稱> --ip <IP> --user <帳號>   # --fe/--be/--db 決定跑什麼
+cx deploy hosts check --ansible
+cx deploy syntax && cx deploy lint && cx deploy check
+cx deploy apply                    # ⚠ 真的部署，會列出目標主機並要求確認
+```
+
+前端、後端、資料庫**可以**分屬不同主機（`web_frontend` / `web_backend` /
+`db_primary`），但那是架構變更不是旋鈕 —— FPM 要改成 TCP，而它沒有認證機制。
+完整清單：[`guide-deployer.md`](guide-deployer.md) §3.3。
+
+---
+
 ## 3. 三個階段
 
 `cx` 的動詞是照「開發 → 測試 → 部署」這條線排的。

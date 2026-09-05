@@ -127,8 +127,8 @@ cmd_npm_main() {
     done
     (( $# )) || { _npm_usage; return "$EX_USAGE"; }
 
-    [[ -f $CX_ROOT/$where/package.json ]] \
-        || cx_die "$EX_PRECOND" "找不到 $where/package.json"
+    [[ -f $(cx_sub_path "$where")/package.json ]] \
+        || cx_die "$EX_PRECOND" "找不到 src/$where/package.json"
 
     if [[ $where == backend ]]; then
         _npm_backend "$@"
