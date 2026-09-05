@@ -43,8 +43,11 @@ cx acl <子指令> [參數...]
 旗標
   --web-user <名稱|uid>   網頁伺服器的執行身分（預設讀 .env 的 APP_UID）
   --dev-user <名稱|uid>   開發者身分（預設：你自己）
-  --root <路徑>           要套用的專案根（預設：CX_ROOT）
-  -n, --dry-run           只印出會執行的 setfacl，不執行
+
+全域旗標（要寫在動詞**前面**，不是後面）
+  cx --root <路徑> acl ...   指定專案根（預設：向上搜尋 .cxroot）
+  cx --dry-run acl ...       只印出會執行的 setfacl，不執行
+                             ⚠ 沒有 -n 這個短旗標；`cx acl -n` 會被當成子指令
 
 為什麼是 ACL 不是 chmod
   setgid 只繼承群組，不繼承權限位元 —— 位元仍由建立者的 umask 決定。

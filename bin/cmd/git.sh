@@ -16,7 +16,8 @@ _git_usage() {
   branch switch <名稱>  切換三個 repo 到指定分支
   branch delete <名稱>  刪除分支（需確認；拒絕刪除當前分支與 main）
   guard install|status|remove
-  remote-init [--dry-run]   用 gh 建立 Information-Study 的三個 public repo
+  remote-init               用 gh 建立 Information-Study 的三個 public repo
+                            （要乾跑用全域旗標： cx --dry-run git remote-init）
   scan-secrets          祕密掃描（推送前自動執行）
   push                  推送（白名單 + 祕密掃描 + 子模組先於主庫）
 TXT

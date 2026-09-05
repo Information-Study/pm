@@ -17,7 +17,7 @@ _cx_completion() {
     # 這份清單就是「cx 到底做得到什麼」的權威來源之一 ——
     # 新增動詞時四個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
     #（只有檔名與動詞不同名時才需要）、這裡、以及 bin/cmd/help.sh。
-    local verbs='help doctor setup acl lint scan verify git fresh tui install uninstall code pma php
+    local verbs='help doctor setup acl lint style scan verify git fresh tui install uninstall code pma php
                  art composer npm db test sonar deploy
                  dev prod up down restart ps logs sh build config dc'
 
@@ -73,11 +73,22 @@ _cx_completion() {
             else
                 case $sub in
                     tools)  COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep" -- "$cur")) ;;
-                    system) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite" -- "$cur")) ;;
-                    native) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite" -- "$cur")) ;;
+                    system) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl" -- "$cur")) ;;
+                    native) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl" -- "$cur")) ;;
                 esac
             fi
             ;;
+        acl)
+            # acl 早就在上面的 $verbs 裡（所以 `cx a<TAB>` 補得出 acl），
+            # 但這裡一直沒有分支，於是 `cx acl <TAB>` 什麼都不給。
+            if [[ $sub == user ]]; then
+                COMPREPLY=($(compgen -W "add rm remove" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "status apply check user fix-owner drop --web-user --dev-user --help -h" -- "$cur"))
+            fi
+            ;;
+        style)
+            COMPREPLY=($(compgen -W "php js all --check --help -h" -- "$cur")) ;;
         db)
             COMPREPLY=($(compgen -W "status shell wait migrate fresh seed dump restore admin --help -h" -- "$cur")) ;;
         sonar)
@@ -85,7 +96,7 @@ _cx_completion() {
         deploy)
             COMPREPLY=($(compgen -W "syntax lint check ping facts vars apply app rollback galaxy --help -h" -- "$cur")) ;;
         verify)
-            COMPREPLY=($(compgen -W "static runtime app ansible all --report --quiet --help -h" -- "$cur")) ;;
+            COMPREPLY=($(compgen -W "static runtime app ansible cli docs tui waf acl all --report --quiet --help -h" -- "$cur")) ;;
         test)
             COMPREPLY=($(compgen -W "back front all coverage larastan up down restart ps logs sh build config dc --help -h" -- "$cur")) ;;
         dev|prod|up|down|restart|ps|logs|sh|build|config|dc)

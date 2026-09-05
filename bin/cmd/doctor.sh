@@ -14,6 +14,27 @@ cmd_doctor_main() {
     [[ -f $CX_ROOT/.cxroot ]] && _ok ".cxroot" "layout v${CX_LAYOUT_VERSION:-?}" || _fl ".cxroot" "缺少"
     [[ -f $CX_ROOT/claude.md ]] && _ok "claude.md" || _wr "claude.md" "缺少"
 
+    # 子模組。help 一直宣稱 doctor 會檢查這一項，實際上完全沒有 ——
+    # 於是在一個 backend/ 與 frontend/ 都是空目錄的 clone（或 worktree）上，
+    # doctor 會全綠，然後 composer / npm / test / acl / git 一個一個
+    # 用各自的方式壞掉，每個都指向不同的方向。
+    local _sm _sm_missing=()
+    if [[ -f $CX_ROOT/.gitmodules ]]; then
+        for _sm in backend frontend; do
+            [[ -d $CX_ROOT/$_sm ]] || { _sm_missing+=("$_sm（目錄不存在）"); continue; }
+            # 判準是「有沒有 .git」，不是「目錄空不空」—— 子模組初始化之後
+            # backend/.git 是一個指標**檔**（gitdir: ...），不是目錄。
+            [[ -e $CX_ROOT/$_sm/.git ]] || _sm_missing+=("$_sm")
+        done
+        if (( ${#_sm_missing[@]} )); then
+            _fl "子模組" "未初始化：${_sm_missing[*]}"
+            cx_dim '  git submodule update --init --recursive'
+            cx_dim '  阻擋：cx composer / npm / art / test / acl apply / git commit'
+        else
+            _ok "子模組" "backend 與 frontend 都已初始化"
+        fi
+    fi
+
     cx_step "容器"
     # command -v docker 會騙人：WSL 上 CLI 在 PATH 但 daemon 不通
     if cx_have docker; then
@@ -30,6 +51,28 @@ cmd_doctor_main() {
     cx_have docker && docker compose version >/dev/null 2>&1 \
         && _ok "docker compose" "$(docker compose version --short 2>/dev/null)" \
         || _wr "docker compose" "不可用"
+
+    # 埠。help 同樣一直宣稱 doctor 會檢查這一項，實際上沒有。
+    # 三個模式的埠段刻意不重疊（-p 只隔離容器／網路／volume，不隔離 host 埠），
+    # 但那只保證「三個模式之間」不撞。真正會擋住 cx up 的是**別的東西**先佔了埠：
+    # 主機自己的 nginx／mysql、另一個專案的 compose、Windows 那邊的服務。
+    # 症狀是 up 到一半才 bind: address already in use，而且訊息不會說是誰佔的。
+    local _p _busy=() _occupant
+    for _p in "${CX_DOCTOR_PORTS[@]:-80 3000 3306 8080 8891 9000 13000 13306 18080 18081 18891}"; do
+        ss -ltnH "sport = :$_p" 2>/dev/null | grep -q . || continue
+        # 是我們自己的容器佔的就不算問題
+        _occupant=$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null \
+                    | grep -E "(:|^)$_p->" | awk '{print $1}' | head -1)
+        [[ -n $_occupant ]] && continue
+        _busy+=("$_p")
+    done
+    if (( ${#_busy[@]} )); then
+        _wr "埠" "被非本專案的行程佔用：${_busy[*]}"
+        cx_dim '  查佔用者： ss -ltnp "sport = :<埠>"'
+        cx_dim '  埠段定義在 docker/env/<模式>.env，可以改'
+    else
+        _ok "埠" "三模式所需的埠都可用（或已由本專案的容器佔用）"
+    fi
 
     cx_step "後端工具鏈"
     if cx_have php; then
@@ -258,16 +301,49 @@ cmd_doctor_main() {
     cx_step "cx 動詞完整性"
     # dispatcher 的 CX_CMD_FILE_OF 曾經把 8 個動詞指到一個不存在的
     # bin/cmd/compose.sh，於是 cx up 直接「未知的指令」。
-    # 這裡實際檢查每個對外動詞都找得到實作檔。
-    # 清單要涵蓋每一個「有自己的實作檔」的動詞。code / pma / php 曾經漏掉，
-    # 於是這一項在它們不存在時仍然報 ✔ —— 檢查了個寂寞。
-    # 數量不寫死：加動詞時忘了改數字，訊息就會開始說謊。
+    #
+    # ⚠ 這份清單以前是手打的，而且漏了 acl —— 上一版的註解正好在講
+    # 「code / pma / php 曾經漏掉，於是這一項檢查了個寂寞」，然後自己又漏了一個。
+    # 手打的清單一定會再漏。改成兩邊都從實際的東西推導：
+    #   ① 補全的 $verbs（使用者打得出來的動詞）→ 每一個都要解析得到實作檔
+    #   ② bin/cmd/*.sh（實作檔）→ 每一個都要有動詞叫得到它
+    # 這樣「新增動詞忘了註冊補全」與「註冊了動詞卻沒有實作檔」兩個方向都會被抓。
     local v file missing_verbs=() nverbs=0
-    for v in help doctor setup lint scan verify git fresh tui install art composer npm \
-             db test sonar deploy compose code pma; do
+
+    # ① 補全宣告的動詞
+    local -a comp_verbs=()
+    mapfile -t comp_verbs < <(
+        sed -n "s/^[[:space:]]*local verbs='\(.*\)'[[:space:]]*$/\1/p;
+                s/^[[:space:]]*local verbs='\(.*\)$/\1/p" \
+            "$CX_ROOT/bin/completion/cx.bash" | tr ' ' '\n' | sed '/^$/d'
+    )
+    # 補全的 $verbs 可能跨行，把後續非引號結尾的行也收進來
+    if (( ${#comp_verbs[@]} )); then
+        local extra
+        extra=$(sed -n "/local verbs='/,/'/p" "$CX_ROOT/bin/completion/cx.bash" \
+                | tr -d "'" | sed "s/^[[:space:]]*local verbs=//" | tr ' ' '\n' | sed '/^$/d')
+        mapfile -t comp_verbs < <(printf '%s\n' $extra | sort -u)
+    fi
+
+    for v in "${comp_verbs[@]}"; do
+        [[ -n $v ]] || continue
         nverbs=$((nverbs + 1))
-        file="$CX_ROOT/bin/cmd/${v}.sh"
-        [[ -f $file ]] || missing_verbs+=("$v")
+        # 直接同名的實作檔，或 dispatcher 的別名表指到的檔
+        [[ -f "$CX_ROOT/bin/cmd/${v}.sh" ]] && continue
+        grep -qE "\[${v}\]=([a-z]+)" <<< "$(sed -n '/declare -A CX_CMD_FILE_OF=(/,/^)/p' \
+            "$CX_ROOT/cx" | sed 's/#.*//')" || { missing_verbs+=("$v（無實作檔也無別名）"); continue; }
+    done
+
+    # ② 每個實作檔都要叫得到（否則就是寫了沒接上的死碼）
+    local base
+    for file in "$CX_ROOT"/bin/cmd/*.sh; do
+        base=$(basename "$file" .sh)
+        printf '%s\n' "${comp_verbs[@]}" | grep -qx "$base" && continue
+        # compose 是別名目標，本身不是對外動詞
+        [[ $base == compose ]] && continue
+        grep -qE "\]=${base}([[:space:]]|\)|$)" <<< "$(sed -n '/declare -A CX_CMD_FILE_OF=(/,/^)/p' \
+            "$CX_ROOT/cx" | sed 's/#.*//')" \
+            || missing_verbs+=("bin/cmd/${base}.sh（沒有任何動詞叫得到）")
     done
 
     # 別名動詞沒有自己的檔，要驗的是「dispatcher 的對照表指得到實作函式」。

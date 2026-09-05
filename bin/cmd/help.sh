@@ -19,7 +19,7 @@ cx — pm 專案統一入口
   setup             一鍵初始化（.env、目錄、collections，並盤點工具鏈）
     setup native            ★ 一行裝完整套原生工具鏈 = system + tools + deps
     setup system [名稱...]  需要 root 的系統套件（php / nginx / git / docker
-                            〔含 compose v2〕/ mysql-client / php-sqlite）。
+                            〔含 compose v2〕/ mysql-client / php-sqlite / acl）。
                             sudo 不可用時只印指令並回傳 3，不會替你輸入密碼
     setup tools [名稱...]   免 root 安裝 composer / node〔含 npm〕/ ansible /
                             trivy / gitleaks / semgrep 到 ~/.local（核對 SHA256）
@@ -81,6 +81,8 @@ cx — pm 專案統一入口
   deploy app [限制]    只跑應用層（不碰系統層）
   deploy rollback      互動式回滾
   deploy galaxy     安裝 requirements.yml 的 collections
+  deploy facts <主機>  抓一台主機的 ansible facts
+  deploy vars [限制]   印出該群組合併後的變數（查「我設的值到底有沒有生效」）
 
 ── Git ──────────────────────────────────────────────────────────────────────
   git status                  三個 repo 的分支 / 變更 / 上游 / 領先落後

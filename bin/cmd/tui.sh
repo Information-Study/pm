@@ -300,6 +300,11 @@ _tui_setup() {
         case $c in
             '<')   return 0 ;;
             all)   _tui_run setup ;;
+            # galaxy 不是 setup 的子指令，是 deploy 的。這一行以前直接把
+            # 「galaxy」接在 setup 後面，於是選單裡點下去只會得到
+            # 「未知的子指令：galaxy」與 exit 2 —— 選單項目指向一個不存在的指令，
+            # 而且沒有任何自我檢查會發現這件事（現在 cx verify tui 會）。
+            galaxy) _tui_run deploy galaxy ;;
             *)     _tui_run setup "$c" ;;
         esac
     done
