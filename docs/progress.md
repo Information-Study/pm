@@ -48,7 +48,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
 | `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`（另有**應用層 hard guard**：任何非 sqlite 的目標都 fail-fast，退出碼 3）；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
-| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**122 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
+| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**132 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |

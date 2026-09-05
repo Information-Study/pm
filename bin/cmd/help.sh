@@ -118,6 +118,12 @@ cmd_help_main() {
   git flow-init               補齊 gitflow 拓撲（三個 repo 的 dev、submodule.recurse）
   git feature start|finish|list --repo backend|frontend
                               功能分支只開在子模組；主庫的 dev 在 finish 時跟上 gitlink
+  git hotfix start|finish|list --repo backend|frontend
+                              同 feature，只是前綴不同（把測試者回報的缺陷與正在
+                              進行的功能分開追蹤）。⚠ 從 dev 開、合回 dev，
+                              **不碰 main** —— 與 gitflow 的 hotfix 不同
+  git release                 dev → main（三個 repo 一起，gitlink 對齊子模組的 main）
+                              **唯一**會碰 main 的動詞。不推送、不打 tag
   git config identity|editor|show   git 身分與編輯器（三個 repo 一起設，或 --global）
   git remote-set <URL...>     指到現成的 remote（不經過 gh）
   git remote-init             用 gh 在 .cxroot 的 CX_GH_ORG 底下建三個 public repo

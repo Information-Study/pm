@@ -7,7 +7,15 @@ CX_REPO_MAIN=pm
 CX_REPO_BACKEND=pm-backend
 CX_REPO_FRONTEND=pm-frontend
 # gitflow：main 是發布線，dev 是開發主線。
-# feature/* 從 dev 開、合回 dev；release/* 與 hotfix/* 才碰 main。
+# feature/* 與 hotfix/* 都從 dev 開、合回 dev，而且**只開在子模組裡**；
+# 主庫只有 main ← dev 兩條線，它的 dev 在 finish 時同步 gitlink。
+# dev → main 由 cx git release 做，不打 tag（本專案沒有版本號策略）。
+#
+# ⚠ 這裡的 hotfix 不是 gitflow 的 hotfix（那個從 main 開、合回 main + dev、配 tag）。
+#   本專案的 hotfix 只是「另一個前綴」，拓撲與 feature 完全相同。
+#   這行註解在 2026-09-06 之前寫著「release/* 與 hotfix/* 才碰 main」，
+#   而那兩條流程當時**根本不存在** —— 設定檔自己在描述一個沒有實作的模型。
+#
 # 這兩個值是**唯一**的分支模型來源 —— git.sh 原本有六處寫死 main。
 CX_GIT_MAIN_BRANCH=main
 CX_GIT_DEV_BRANCH=dev

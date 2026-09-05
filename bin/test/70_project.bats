@@ -229,8 +229,13 @@ YML
         git -C "$CX_TEST_ROOT/$d" add -A
         git -C "$CX_TEST_ROOT/$d" commit -qm advance
     done
-    run cx_raw --root "$CX_TEST_ROOT" --yes git branch new hotfix/x --from main
+    # ⚠ 分支名刻意用 chore/ 而不是 hotfix/。2026-09-06 加入 cx git hotfix 之後，
+    #   hotfix/* 與 feature/* 一樣在主庫被拒絕（finish 只看子模組，在主庫開等於
+    #   永遠合不回去）。這條案例測的是 --from，不是那個防護 ——
+    #   拿受保護的前綴來當「隨便一個分支名」會讓它測到別的東西。
+    #   防護本身由 72_gitflow.bats 的「branch new hotfix/* 在主庫要被拒絕」蓋。
+    run cx_raw --root "$CX_TEST_ROOT" --yes git branch new chore/x --from main
     assert_rc 0
-    [[ $(git -C "$CX_TEST_ROOT" rev-parse hotfix/x) == $(git -C "$CX_TEST_ROOT" rev-parse main) ]] \
+    [[ $(git -C "$CX_TEST_ROOT" rev-parse chore/x) == $(git -C "$CX_TEST_ROOT" rev-parse main) ]] \
         || { echo "--from main 沒有生效" >&2; return 1; }
 }

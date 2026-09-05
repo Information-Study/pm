@@ -121,7 +121,7 @@ _cx_completion() {
             ;;
         git)
             if [[ -z $sub ]]; then
-                COMPREPLY=($(compgen -W 'status fetch pull sync commit save branch feature flow-init config guard remote-init remote-set scan-secrets push' -- "$cur"))
+                COMPREPLY=($(compgen -W 'status fetch pull sync commit save branch feature hotfix release flow-init config guard remote-init remote-set scan-secrets push' -- "$cur"))
                 return
             fi
             case $sub in
@@ -135,13 +135,16 @@ _cx_completion() {
                             -- "$cur"))
                     fi
                     ;;
-                feature)
+                feature|hotfix)
+                    # 兩者共用同一組子指令與旗標 —— 它們是同一支實作
+                    #（_git_flow_line），差別只有分支前綴。
                     if (( argn == 1 )); then
                         COMPREPLY=($(compgen -W 'start finish list' -- "$cur"))
                     else
                         COMPREPLY=($(compgen -W '--repo' -- "$cur"))
                     fi
                     ;;
+                release) COMPREPLY=($(compgen -W '--skip-scan' -- "$cur")) ;;
                 guard)  (( argn == 1 )) && COMPREPLY=($(compgen -W 'install status remove' -- "$cur")) ;;
                 commit|save)
                     COMPREPLY=($(compgen -W '-m --message --amend --skip-scan --repo' -- "$cur")) ;;

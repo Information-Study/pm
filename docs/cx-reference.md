@@ -815,8 +815,73 @@ cx git feature finish --repo backend        # 合回 backend 的 dev（--no-ff�
 `finish` 刻意**不做**推送與刪分支：那兩件事各自有自己的閘門，混進來會讓
 `finish` 變成一個「一次做了三件不可逆的事」的動詞。合併完會告訴你下一步。
 
-只做 feature 這一條線。release / hotfix 牽涉版本號與 tag，而本專案目前沒有
-版本號策略 —— 做一半的 release 流程比沒有更糟。
+### `cx git hotfix` — 同一支實作，另一個前綴
+
+```bash
+cx git hotfix start auth-bypass --repo backend    # 從 dev 開 hotfix/auth-bypass
+cx git hotfix finish --repo backend               # 合回 dev，主庫 gitlink 跟上
+cx git hotfix list                                # 兩個子模組的 hotfix/*
+```
+
+**與 `feature` 的差別只有前綴。** 兩者共用同一支實作（`_git_flow_line`），
+拓撲完全相同：從 `dev` 開、合回 `dev`、只開在子模組、主庫的 `dev` 在 finish
+時同步 gitlink、finish 不推送也不刪分支。
+
+用途是**分開追蹤**：測試者回報的缺陷與正在進行的功能混在同一個前綴底下，
+`cx git feature list` 就看不出哪些是「還在做」哪些是「在救火」。
+
+> ⚠ **這不是 gitflow 的 hotfix。**
+> gitflow 的 hotfix 從 `main` 開、合回 `main` + `dev`，配版本號與 tag。
+> 本專案的 hotfix **不碰 `main`** —— `main` 只由 `cx git release` 碰，
+> 而且那個動詞也不打 tag（本專案沒有版本號策略，做一半的 release
+> 流程比沒有更糟）。熟 gitflow 的人請特別注意這個差異。
+
+`cx git branch new hotfix/x --repo main` 會被拒絕，理由與 `feature/*` 一樣：
+finish 只看子模組，在主庫開等於永遠合不回去。
+
+### `cx git release` — dev → main
+
+```bash
+cx git release
+```
+
+**這是唯一會碰 `main` 的動詞。** 在它出現之前（2026-09-06），`cx git` 的 15 個
+子指令裡沒有任何一個把 `dev` 合進 `main` —— `main` 上的 merge commit 是手動做的，
+而部署流程說「切換至 `main` 線」。也就是說部署的人切過去拿到的永遠是舊的，
+除非有人記得手動合。
+
+流程（四步，順序不是可以憑直覺改的）：
+
+1. **主庫先切到 `main`，不帶 `--recurse-submodules`。**
+   帶了的話會把子模組拉到 `main` 記錄的**舊** gitlink，而下一步正要在子模組上
+   合併 —— 合的就會是舊的東西。理由與 `cx git feature finish` 完全相同。
+2. 子模組各自 `switch main` → `merge --no-ff dev`。
+3. 主庫 `merge --no-ff dev`。此刻主庫 `main` 的 gitlink 是**從 `dev` 帶過來的**，
+   指向子模組 `dev` 的 tip。
+4. **把 gitlink 改指到子模組 `main` 的 tip，再 commit。**
+
+> 第 4 步不能省。`--no-ff` 讓子模組的 `main` 多一個 merge commit，
+> 所以 `main` tip ≠ `dev` tip，而第 3 步帶過來的 gitlink 指的是後者。
+> `.gitmodules` 的追蹤分支是 `main`，`cx git sync` 在主庫站在 `main` 時
+> 也會把子模組接到 `main` —— gitlink 若停在 `dev` 線的 commit，
+> sync 就會偵測到工作區與 gitlink 不一致，而那個不一致沒有任何人做錯事。
+
+前置檢查：三個 repo 都要有 `main` 與 `dev`（否則叫你先 `cx git flow-init`）、
+子模組完全乾淨、主庫除了 gitlink 以外乾淨、git 身分已設定。
+`dev` 沒有領先 `main` 時**不會建空的 merge commit**，直接說「沒有要發布的東西」。
+
+發布前會跑一次 `cx git scan-secrets`（三個 repo 都是 public，而 release 是
+「準備要推」的訊號）。
+
+**不推送、不打 tag。**
+推送有自己的三道閘門（`cx git push`）；tag 牽涉版本號策略，而本專案沒有 ——
+做一半的版本機制比沒有更糟。
+
+`--skip-scan` 跳過發布前的祕密掃描。它**不是**最後防線 —— `cx git push` 自己
+也會掃，而 release 不推送。這道存在的理由是「早點發現」（發現得越晚，要重寫的
+歷史越長），所以可以跳過；但推送那一道**沒有**對應的旗標。
+
+---
 
 ### branch 的起點與範圍
 

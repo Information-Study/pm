@@ -20,6 +20,15 @@ _git_usage() {
                         合回該子模組的 dev，並讓主庫的 dev 跟上 gitlink
                         （不推送、不刪分支）
   feature list          列出兩個子模組的 feature/*
+  hotfix start <名稱> --repo backend|frontend
+                        同 feature，只是前綴不同 —— 用來把測試者回報的缺陷
+                        與正在進行的功能分開追蹤。⚠ 從 dev 開、合回 dev，
+                        **不碰 main**（與 gitflow 的 hotfix 不同）
+  hotfix finish [名稱] --repo backend|frontend
+  hotfix list           列出兩個子模組的 hotfix/*
+  release [--skip-scan] dev → main（三個 repo 一起，並讓主庫的 gitlink 對齊
+                        子模組的 main）。**唯一**會碰 main 的動詞。
+                        不推送、不打 tag —— 那兩件事各有各的閘門與理由
   branch list           列出三個 repo 的分支與同步狀態
   branch new <名稱> [--repo …] [--from <ref>]
                         建立並切換到同名分支（預設從 dev 開）
@@ -121,6 +130,8 @@ cmd_git_main() {
         config)        _git_config "$@" ;;
         branch)        _git_branch "$@" ;;
         feature)       _git_feature "$@" ;;
+        hotfix)        _git_hotfix "$@" ;;
+        release)       _git_release "$@" ;;
         flow-init)     _git_flow_init ;;
         guard)         case ${1:-status} in
                            install) cx_guard_install ;;
@@ -646,11 +657,12 @@ _git_branch() {
 
 # ── gitflow ─────────────────────────────────────────────────────────────────
 #
-# 只做 feature 這一條線。release/hotfix 牽涉到版本號與 tag，那是另一個決定，
-# 而且本專案目前沒有版本號策略 —— 做一半的 release 流程比沒有更糟。
+# feature 與 hotfix 都是「從 dev 開、合回 dev」，拓撲完全相同，所以共用實作
+# （見 _git_flow_line）。兩者都不動 main —— main 只由 cx git release 碰。
 #
-# feature 一律從 dev 開、合回 dev。main 只由 release/hotfix 碰，
-# 所以這裡完全不動 main。
+# ⚠ 本專案的 hotfix 不是 gitflow 的 hotfix（那個從 main 開、合回 main + dev、配 tag）。
+#   這裡的 hotfix 只是「另一個前綴」，用途是把測試者回報的缺陷與正在進行的功能
+#   分開追蹤。不打 tag —— 本專案沒有版本號策略。
 # ── gitflow 的分支拓撲 ──────────────────────────────────────────────────────
 #
 # 冪等，只補缺的。cx git flow-init 與 _fresh_git_init 共用它，
@@ -660,7 +672,7 @@ _git_branch() {
 #   backend    main ← dev
 #   frontend   main ← dev
 #
-# 主庫**不建** feature/*，那只在子模組裡開（見 _git_feature 的說明）。
+# 主庫**不建** feature/* 或 hotfix/*，那只在子模組裡開（見 _git_flow_line 的說明）。
 _git_flow_ensure_branches() {       # _git_flow_ensure_branches [--dry]
     local dry=0; [[ ${1:-} == --dry ]] && dry=1
     local main_br dev_br r slug made=0
@@ -725,9 +737,9 @@ _git_flow_ensure_branches() {       # _git_flow_ensure_branches [--dry]
 
 _git_flow_init() {
     cx_step "gitflow 分支拓撲"
-    cx_dim "  主庫      $(_git_main_branch) ← $(_git_dev_branch)          （不開 feature/*）"
-    cx_dim "  backend   $(_git_main_branch) ← $(_git_dev_branch) ← feature/*"
-    cx_dim "  frontend  $(_git_main_branch) ← $(_git_dev_branch) ← feature/*"
+    cx_dim "  主庫      $(_git_main_branch) ← $(_git_dev_branch)                        （不開工作分支）"
+    cx_dim "  backend   $(_git_main_branch) ← $(_git_dev_branch) ← feature/* | hotfix/*"
+    cx_dim "  frontend  $(_git_main_branch) ← $(_git_dev_branch) ← feature/* | hotfix/*"
     cx_dim ""
     cx_dim "將補上下列缺的東西："
     _git_flow_ensure_branches --dry
@@ -738,17 +750,18 @@ _git_flow_init() {
 繼續嗎？" || return "$EX_ABORT"
     _git_flow_ensure_branches || return "$EX_FAIL"
     cx_info "接著： cx git feature start <名稱> --repo backend|frontend"
+    cx_dim  "        （緊急修正用 cx git hotfix start —— 拓撲相同，只是前綴不同）"
 }
 
-# 側別解析：feature 只存在於子模組，所以一定要知道是哪一邊。
+# 側別解析：工作分支只存在於子模組，所以一定要知道是哪一邊。
 # 順序：明確 --repo > 呼叫時的 cwd 落在哪個子模組 > 要求指名。
-# 不用「猜主庫目前在哪條分支」—— 主庫根本沒有 feature 分支可以猜。
-_git_feature_side() {               # _git_feature_side <明確指定或空>
-    local want=$1
+# 不用「猜主庫目前在哪條分支」—— 主庫根本沒有工作分支可以猜。
+_git_flow_side() {                  # _git_flow_side <明確指定或空> <kind>
+    local want=$1 kind=${2:-feature}
     if [[ -n $want ]]; then
         case $want in
             backend|frontend) printf '%s' "$want"; return 0 ;;
-            *) cx_die "$EX_USAGE" "--repo 只能是 backend 或 frontend（feature 分支只開在子模組裡），收到：$want" ;;
+            *) cx_die "$EX_USAGE" "--repo 只能是 backend 或 frontend（$kind 分支只開在子模組裡），收到：$want" ;;
         esac
     fi
     local pwd_real; pwd_real=$(cd "${CX_INVOKE_PWD:-$PWD}" 2>/dev/null && pwd -P || printf '%s' "$PWD")
@@ -757,36 +770,47 @@ _git_feature_side() {               # _git_feature_side <明確指定或空>
         [[ $pwd_real == "$CX_ROOT/$c" || $pwd_real == "$CX_ROOT/$c"/* ]] && { printf '%s' "$c"; return 0; }
     done
     cx_die "$EX_USAGE" "$(printf '%s\n' \
-        "要指定哪一邊： cx git feature start <名稱> --repo backend|frontend" \
+        "要指定哪一邊： cx git $kind start <名稱> --repo backend|frontend" \
         "" \
-        "  功能分支只開在子模組裡（backend / frontend）。" \
+        "  $kind 分支只開在子模組裡（backend / frontend）。" \
         "  主庫是基礎設施倉庫，只有 $(_git_main_branch) 與 $(_git_dev_branch) 兩條線，" \
-        "  它的 $(_git_dev_branch) 會在 feature finish 時同步跟上子模組的 gitlink。" \
+        "  它的 $(_git_dev_branch) 會在 $kind finish 時同步跟上子模組的 gitlink。" \
         "" \
         "  或者 cd 進 backend/ 或 frontend/ 再下指令，就不用打 --repo。")"
 }
 
 # ── gitflow ─────────────────────────────────────────────────────────────────
 #
-# 分支模型（2026-09-05 依實測定案）：
+# 分支模型（2026-09-05 定案，2026-09-06 加入 hotfix 與 release）：
 #
-#   主庫       main ← dev                    **沒有 feature/***
-#   backend    main ← dev ← feature/*        gitflow
-#   frontend   main ← dev ← feature/*        gitflow
+#   主庫       main ← dev                            **沒有 feature/* 也沒有 hotfix/***
+#   backend    main ← dev ← feature/* | hotfix/*
+#   frontend   main ← dev ← feature/* | hotfix/*
 #
-# 為什麼主庫不開 feature：實測過「前端與後端各自推進自己那一顆 gitlink，
+# 為什麼主庫不開工作分支：實測過「前端與後端各自推進自己那一顆 gitlink，
 # 再合回同一條 dev」—— 兩次合併都 rc=0，零衝突，因為那是**不同路徑**。
 # 真正會衝突的是共用基礎設施（bin/ docker/ ansible/ docs/，實測 CONFLICT）。
 # 在主庫也開 feature、或把 dev 拆成兩條長期線，都只會讓後者更難合，
 # 卻對前者毫無幫助 —— 那本來就不會衝突。
 #
-# 只做 feature 這一條線。release/hotfix 牽涉到版本號與 tag，那是另一個決定，
-# 而且本專案目前沒有版本號策略 —— 做一半的 release 流程比沒有更糟。
-_git_feature() {
+# ⚠ 本專案的 hotfix **不是 gitflow 的 hotfix**。
+#   gitflow：hotfix 從 main 開、合回 main + dev，配版本號與 tag。
+#   本專案：hotfix 從 dev 開、合回 dev —— 拓撲與 feature **完全相同**，
+#           差別只有前綴。用途是把「測試者回報的缺陷」與「正在進行的功能」
+#           分開追蹤，不是發布機制。
+#   為什麼不做 gitflow 版本：本專案沒有版本號策略，做一半的 release 流程
+#   比沒有更糟。dev → main 由 cx git release 負責，它也不打 tag。
+#
+# feature 與 hotfix 共用同一組實作。泛化刻意**只做在這一層**（前綴、訊息文字），
+# 底下的 _git_flow_start / _git_flow_finish 一個字都沒改 —— 那兩支裡面的合併
+# 順序是實測換來的，任何「順手重構一下」都是回歸的入口。
+_git_flow_line() {                  # _git_flow_line <feature|hotfix> [子指令...]
+    local kind=$1; shift
+    local pfx="$kind/"
     local sub=${1:-}; shift || true
     local dev; dev=$(_git_dev_branch)
 
-    # 先把 --repo 從參數裡撈出來（feature 的旗標只有這一個）
+    # 先把 --repo 從參數裡撈出來（這一族的旗標只有這一個）
     local want=''
     local -a rest=()
     while (( $# )); do
@@ -800,19 +824,20 @@ _git_feature() {
 
     case $sub in
         start)
-            [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "feature start 需要名稱（例：cx git feature start login --repo backend）"
+            [[ -n ${1:-} ]] || cx_die "$EX_USAGE" \
+                "$kind start 需要名稱（例：cx git $kind start login --repo backend）"
             local n=$1
-            [[ $n == feature/* ]] || n="feature/$n"
-            local side; side=$(_git_feature_side "$want") || return "$EX_USAGE"
-            _git_feature_start "$n" "$side" "$dev" ;;
+            [[ $n == "$pfx"* ]] || n="$pfx$n"
+            local side; side=$(_git_flow_side "$want" "$kind") || return "$EX_USAGE"
+            _git_flow_start "$n" "$side" "$dev" ;;
         finish)
-            local side; side=$(_git_feature_side "$want") || return "$EX_USAGE"
-            # 沒給名稱就用該子模組目前所在的分支（不是主庫的 —— 主庫沒有 feature）
+            local side; side=$(_git_flow_side "$want" "$kind") || return "$EX_USAGE"
+            # 沒給名稱就用該子模組目前所在的分支（不是主庫的 —— 主庫沒有工作分支）
             local cur; cur=$(git -C "$CX_ROOT/$side" branch --show-current 2>/dev/null || echo '')
             local n=${1:-$cur}
-            [[ -n $n ]] || cx_die "$EX_USAGE" "feature finish 需要名稱，或先把 $side 切到那個分支上"
-            [[ $n == feature/* ]] || n="feature/$n"
-            _git_feature_finish "$n" "$side" "$dev" ;;
+            [[ -n $n ]] || cx_die "$EX_USAGE" "$kind finish 需要名稱，或先把 $side 切到那個分支上"
+            [[ $n == "$pfx"* ]] || n="$pfx$n"
+            _git_flow_finish "$n" "$side" "$dev" ;;
         list)
             local c
             for c in backend frontend; do
@@ -820,20 +845,26 @@ _git_feature() {
                 printf '\n%s%s%s\n' "$C_BLU" "$(_git_repo_slug "$CX_ROOT/$c")" "$C_RST"
                 git -C "$CX_ROOT/$c" for-each-ref \
                     --format='  %(refname:short)  %(committerdate:relative)' \
-                    'refs/heads/feature/*' 2>/dev/null || true
+                    "refs/heads/$pfx*" 2>/dev/null || true
             done
             printf '\n' ;;
         -h|--help|'')
-            cx_dim "cx git feature start <名稱> --repo backend|frontend"
-            cx_dim "cx git feature finish [名稱] --repo backend|frontend"
-            cx_dim "cx git feature list"
+            cx_dim "cx git $kind start <名稱> --repo backend|frontend"
+            cx_dim "cx git $kind finish [名稱] --repo backend|frontend"
+            cx_dim "cx git $kind list"
             cx_dim ""
-            cx_dim "功能分支只開在子模組裡；主庫的 $(_git_dev_branch) 會在 finish 時同步 gitlink。" ;;
-        *) cx_die "$EX_USAGE" "feature: 未知子指令 $sub（start|finish|list）" ;;
+            cx_dim "$kind 分支只開在子模組裡；主庫的 $(_git_dev_branch) 會在 finish 時同步 gitlink。"
+            [[ $kind == hotfix ]] && cx_dim \
+                "⚠ 本專案的 hotfix 從 $(_git_dev_branch) 開、合回 $(_git_dev_branch)，**不碰 $(_git_main_branch)** —— 與 gitflow 的 hotfix 不同。"
+            : ;;
+        *) cx_die "$EX_USAGE" "$kind: 未知子指令 $sub（start|finish|list）" ;;
     esac
 }
 
-_git_feature_start() {              # _git_feature_start <分支> <側別> <dev>
+_git_feature() { _git_flow_line feature "$@"; }
+_git_hotfix()  { _git_flow_line hotfix  "$@"; }
+
+_git_flow_start() {                 # _git_flow_start <分支> <側別> <dev>
     local n=$1 side=$2 dev=$3
     local d="$CX_ROOT/$side" slug; slug=$(_git_repo_slug "$d")
     [[ -e $d/.git ]] || cx_die "$EX_PRECOND" "$side 還不是 git repo"
@@ -855,13 +886,14 @@ _git_feature_start() {              # _git_feature_start <分支> <側別> <dev>
         cx_run git -C "$d" switch -c "$n" || return "$EX_FAIL"
     fi
     cx_ok "$slug → $n"
-    cx_info "主庫沒有動 —— 它的 $dev 會在 cx git feature finish 時跟上 gitlink"
+    # 種類從分支名推導（feature/x → feature），不要寫死 —— hotfix 走的是同一支。
+    cx_info "主庫沒有動 —— 它的 $dev 會在 cx git ${n%%/*} finish 時跟上 gitlink"
 }
 
 # 合回該子模組的 dev，然後讓主庫的 dev 同步指向新的 commit。
 # **不推送**、也不刪分支 —— 那兩件事各自有自己的閘門，
 # 混進來會讓 finish 變成一個「做了三件不可逆的事」的動詞。
-_git_feature_finish() {             # _git_feature_finish <分支> <側別> <dev>
+_git_flow_finish() {                # _git_flow_finish <分支> <側別> <dev>
     local n=$1 side=$2 dev=$3
     local d="$CX_ROOT/$side" slug; slug=$(_git_repo_slug "$d")
 
@@ -931,6 +963,155 @@ _git_feature_finish() {             # _git_feature_finish <分支> <側別> <dev
     cx_info "已合併。推送： cx git push；刪掉 feature： cx git branch delete $n --repo $side"
 }
 
+# ── release：dev → main ─────────────────────────────────────────────────────
+#
+# 這是**唯一**會碰 main 的動詞。在它出現之前（2026-09-06），cx git 的 15 個
+# 子指令裡沒有任何一個把 dev 合進 main —— main 上的 merge commit 是手動做的，
+# 而部署流程說「切換至 main 線」。也就是說部署的人切過去拿到的永遠是舊的，
+# 除非有人記得手動合。
+#
+# ⚠ 順序與 gitlink 語意（兩者都不是可以憑直覺改的）：
+#
+#   1. 主庫先切到 main，**不帶 --recurse-submodules**。
+#      帶了的話會把子模組拉到 main 記錄的舊 gitlink，而下一步正要在子模組上
+#      合併 —— 合的就會是舊的東西。理由與 _git_flow_finish 完全相同。
+#   2. 子模組各自 switch main → merge --no-ff dev。
+#   3. 主庫 merge --no-ff dev。此刻主庫 main 的 gitlink 是**從 dev 帶過來的**，
+#      也就是指向子模組 dev 的 tip。
+#   4. 把 gitlink 改指到子模組 **main 的 tip**，再 commit。
+#      為什麼必須有這一步：--no-ff 讓子模組的 main 多一個 merge commit，
+#      所以 main tip ≠ dev tip。而 .gitmodules 的追蹤分支是 main、
+#      _git_sub_target_branch() 在主庫站在 main 時也回 main ——
+#      gitlink 若停在 dev 線的 commit，cx git sync 就會偵測到工作區與
+#      gitlink 不一致，而那個不一致沒有任何人做錯事。
+#
+# **不推送、不打 tag。** 推送有自己的閘門（cx git push 的三道）；
+# tag 牽涉版本號策略，而本專案沒有 —— 做一半的版本機制比沒有更糟。
+_git_release() {
+    local skip_scan=0
+    while (( $# )); do
+        case $1 in
+            --skip-scan) skip_scan=1; shift ;;
+            -h|--help)
+                cx_dim "cx git release [--skip-scan]"
+                cx_dim ""
+                cx_dim "把 $(_git_dev_branch) 發布到 $(_git_main_branch)（三個 repo 一起），"
+                cx_dim "並讓主庫的 gitlink 對齊子模組的 $(_git_main_branch)。"
+                cx_dim "不推送、不打 tag。"
+                return 0 ;;
+            *) cx_die "$EX_USAGE" "release: 未知參數 $1（只接受 --skip-scan）" ;;
+        esac
+    done
+    local main_br dev_br
+    main_br=$(_git_main_branch); dev_br=$(_git_dev_branch)
+    _git_require_repos || return $?
+    _git_identity_ok   || return "$EX_PRECOND"
+
+    # ── 前置：三個 repo 都要有兩條線，而且都乾淨 ──────────────────────
+    local r slug
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        git -C "$r" show-ref --verify --quiet "refs/heads/$main_br"             || cx_die "$EX_PRECOND" "$slug 沒有 $main_br 分支（先 cx git flow-init）"
+        git -C "$r" show-ref --verify --quiet "refs/heads/$dev_br"             || cx_die "$EX_PRECOND" "$slug 沒有 $dev_br 分支（先 cx git flow-init）"
+    done < <(_git_repos_order all)
+
+    # 子模組要完全乾淨；主庫可以有髒的 gitlink（那正是這個動詞要記錄的東西），
+    # 但除此之外必須乾淨 —— 理由與 _git_flow_finish 的前置檢查相同。
+    local c
+    for c in backend frontend; do
+        [[ -z $(git -C "$CX_ROOT/$c" status --porcelain) ]]             || cx_die "$EX_PRECOND" "$c 有未提交變更 —— 先 cx git commit --repo $c"
+    done
+    [[ -z $(git -C "$CX_ROOT" status --porcelain -- . ':(exclude)backend' ':(exclude)frontend') ]]         || { cx_error "主庫有 gitlink 以外的未提交變更 —— 先處理掉再發布"
+             git -C "$CX_ROOT" status --short -- . ':(exclude)backend' ':(exclude)frontend'                  | sed 's/^/      /' >&2
+             return "$EX_PRECOND"; }
+
+    # ── 有什麼要發布？沒有的話就不要建空的 merge commit ────────────────
+    cx_step "$dev_br → $main_br 的差異"
+    local total=0 n
+    local -A ahead=()
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        n=$(git -C "$r" rev-list --count "$main_br..$dev_br" 2>/dev/null || echo 0)
+        ahead[$r]=$n; total=$((total + n))
+        printf '  %-16s %s 個 commit\n' "$slug" "$n"
+    done < <(_git_repos_order all)
+    if (( total == 0 )); then
+        cx_ok "$main_br 已經包含 $dev_br 的全部內容 —— 沒有要發布的東西"
+        return 0
+    fi
+
+    # ── 祕密掃描先跑。三個 repo 都是 public，而 release 是「準備要推」的訊號 ──
+    #
+    # 這道**不是**最後防線 —— cx git push 自己也會掃，而 release 不推送。
+    # 它存在的理由是「早點發現」：發現得越晚，要重寫的歷史越長。
+    # --skip-scan 因此是可以接受的（比照 cx git commit），但它只該用在
+    # 離線環境與測試 fixture 上 —— 推送那一道沒有對應的旗標。
+    if (( skip_scan )); then
+        cx_warn "已跳過祕密掃描（--skip-scan）—— cx git push 仍然會掃"
+    else
+        _git_scan_secrets || return $?
+    fi
+
+    cx_confirm --danger "把 $dev_br 發布到 $main_br" \
+"三個 repo 各自 $main_br ← merge --no-ff $dev_br，然後主庫的 gitlink
+改指到子模組 $main_br 的 tip。
+
+  $(for r in "${!ahead[@]}"; do printf '%s：%s 個 commit\n  ' "$(_git_repo_slug "$r")" "${ahead[$r]}"; done)
+
+**不會**推送，也**不會**打 tag。
+推送請用 cx git push。
+
+繼續嗎？" || return "$EX_ABORT"
+
+    # ── 1. 主庫先站到 main（不帶 --recurse-submodules）────────────────
+    cx_step "主庫切到 $main_br"
+    local cur_super; cur_super=$(git -C "$CX_ROOT" branch --show-current 2>/dev/null || echo '')
+    if [[ $cur_super != "$main_br" ]]; then
+        cx_run git -C "$CX_ROOT" switch "$main_br"             || { cx_error "主庫切到 $main_br 失敗"; return "$EX_FAIL"; }
+    fi
+
+    # ── 2. 子模組各自合併 ─────────────────────────────────────────────
+    for c in backend frontend; do
+        local d="$CX_ROOT/$c"; slug=$(_git_repo_slug "$d")
+        (( ${ahead[$d]:-0} )) || { cx_ok "$slug：$main_br 已是最新"; continue; }
+        cx_step "$slug：$dev_br → $main_br"
+        cx_run git -C "$d" switch "$main_br"             || { cx_error "$slug 切到 $main_br 失敗"; return "$EX_FAIL"; }
+        cx_run git -C "$d" merge --no-ff -m "Release $dev_br into $main_br" "$dev_br"             || { cx_error "$slug 合併失敗 —— 解完衝突後自己 git commit，不要再跑一次 release"
+                 return "$EX_FAIL"; }
+        cx_ok "$slug：$main_br → $(git -C "$d" rev-parse --short HEAD)"
+    done
+
+    # ── 3. 主庫合併 ───────────────────────────────────────────────────
+    if (( ${ahead[$CX_ROOT]:-0} )); then
+        cx_step "主庫：$dev_br → $main_br"
+        cx_run git -C "$CX_ROOT" merge --no-ff -m "Release $dev_br into $main_br" "$dev_br"             || { cx_error "主庫合併失敗 —— 解完衝突後自己 git commit，不要再跑一次 release"
+                 return "$EX_FAIL"; }
+    fi
+
+    # ── 4. gitlink 改指到子模組 main 的 tip ───────────────────────────
+    # 這一步不能省。--no-ff 讓子模組的 main 多一個 merge commit，
+    # 所以 main tip ≠ dev tip，而步驟 3 帶過來的 gitlink 指的是後者。
+    cx_step "主庫：gitlink 對齊 $main_br"
+    local changed=0
+    for c in backend frontend; do
+        [[ -e $CX_ROOT/$c/.git ]] || continue
+        local head; head=$(git -C "$CX_ROOT/$c" rev-parse HEAD)
+        local idx;  idx=$(git -C "$CX_ROOT" ls-files --stage -- "$c" | awk '{print $2}')
+        [[ $idx == "$head" ]] && { cx_ok "$c gitlink 已對齊 ${head:0:7}"; continue; }
+        cx_run git -C "$CX_ROOT" add -- "$c" || return "$EX_FAIL"
+        cx_ok "$c gitlink：${idx:0:7} → ${head:0:7}"
+        changed=1
+    done
+    if (( changed )); then
+        cx_run git -C "$CX_ROOT" commit -q -m "chore(release): gitlink 對齊 $main_br"             || { cx_error "主庫提交 gitlink 失敗"; return "$EX_FAIL"; }
+    fi
+
+    _git_assert_no_detached all || return "$EX_FAIL"
+    cx_ok "已發布到 $main_br。推送： cx git push"
+    cx_dim "  回到開發線： cx git branch switch $dev_br"
+    cx_dim "  沒有打 tag —— 本專案沒有版本號策略（見 .cxroot 的分支模型註解）"
+}
+
 _git_branch_list() {
     local r slug cur
     while read -r r; do
@@ -966,7 +1147,8 @@ _git_branch_new() {
     # 主庫沒有 feature/* —— 那是子模組的東西（見 _git_feature 的說明）。
     # 從 branch new 繞過去會建出一條沒有任何動詞認得的分支：
     # feature finish 只看子模組，於是它永遠合不回去，也不會有人發現。
-    if [[ $n == feature/* && ( $repo == all || $repo == main ) ]]; then
+    # hotfix/* 與 feature/* 一樣：finish 只看子模組，在主庫開等於永遠合不回去。
+    if [[ ( $n == feature/* || $n == hotfix/* ) && ( $repo == all || $repo == main ) ]]; then
         cx_die "$EX_USAGE" "$(printf '%s\n' \
             "主庫不開 feature 分支（$n）" \
             "" \

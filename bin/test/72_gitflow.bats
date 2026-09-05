@@ -286,3 +286,168 @@ setup() {
         || _fail_with "工作區不乾淨卻還是切線了"
     [[ $output == *"不乾淨"* ]] || _fail_with "沒有說明為什麼不切：$output"
 }
+
+# ── hotfix：與 feature 同一支實作，只是前綴不同 ────────────────────────────
+#
+# 泛化的風險不在「hotfix 會不會動」，而在「泛化的時候順手動到 finish 的合併
+# 順序」。那段順序是實測換來的（主庫先站到 dev、且不帶 --recurse-submodules，
+# 否則子模組會被重設回舊 gitlink），所以底下有一條案例專門對 hotfix 重跑它。
+
+@test "hotfix start 從 dev 開，主庫與另一側完全不動" {
+    local super_before; super_before=$(git -C "$CX_TEST_ROOT" rev-parse HEAD)
+    local fe_before;    fe_before=$(git -C "$CX_TEST_ROOT/frontend" rev-parse HEAD)
+
+    run cx_bin --yes git hotfix start auth-bypass --repo backend
+    assert_rc 0
+    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = hotfix/auth-bypass ] \
+        || _fail_with "backend 沒切到 hotfix/auth-bypass"
+    [ "$(git -C "$CX_TEST_ROOT" rev-parse HEAD)" = "$super_before" ] \
+        || _fail_with "主庫被動到了"
+    [ "$(git -C "$CX_TEST_ROOT/frontend" rev-parse HEAD)" = "$fe_before" ] \
+        || _fail_with "另一側被動到了"
+}
+
+@test "hotfix finish 合回子模組的 dev，並讓主庫的 dev gitlink 跟上" {
+    cx_bin --yes git hotfix start hf1 --repo backend
+    local g=(-c user.email=b@b -c user.name=b)
+    echo fix > "$CX_TEST_ROOT/backend/fix.txt"
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m 'fix'
+
+    run cx_bin --yes git hotfix finish --repo backend
+    assert_rc 0
+    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = dev ] \
+        || _fail_with "backend 沒回到 dev"
+    local be_head; be_head=$(git -C "$CX_TEST_ROOT/backend" rev-parse HEAD)
+    local gl; gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- backend | awk '{print $2}')
+    [ "$gl" = "$be_head" ] || _fail_with "主庫的 gitlink 沒跟上：$gl vs $be_head"
+}
+
+@test "hotfix finish：主庫原本不在 dev 上時，記錄的是合併後的 SHA（不是舊 gitlink）" {
+    # 這一條盯的是 _git_flow_finish 的第一個順序不變量：主庫要**先**站到 dev，
+    # 而且切的時候不帶 --recurse-submodules。反過來的話，主庫帶著
+    # --recurse-submodules 切分支會把剛合併好的子模組重設回 dev 記錄的舊 gitlink，
+    # 於是後面 git add 記進去的是**舊的** sha —— 而且整個流程 rc=0。
+    git -C "$CX_TEST_ROOT" switch -q main
+    cx_bin --yes git hotfix start hf2 --repo backend
+    local g=(-c user.email=b@b -c user.name=b)
+    echo two > "$CX_TEST_ROOT/backend/two.txt"
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m two
+
+    run cx_bin --yes git hotfix finish --repo backend
+    assert_rc 0
+    local be_head gl
+    be_head=$(git -C "$CX_TEST_ROOT/backend" rev-parse HEAD)
+    gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- backend | awk '{print $2}')
+    [ "$gl" = "$be_head" ] \
+        || _fail_with "主庫記錄的是舊 gitlink（$gl），不是合併後的 $be_head"
+}
+
+@test "hotfix finish 不把另一側的髒 gitlink 掃進同一個 commit" {
+    cx_bin --yes git hotfix start hf3 --repo backend
+    local g=(-c user.email=b@b -c user.name=b)
+    echo a > "$CX_TEST_ROOT/backend/a.txt"
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m a
+    # 另一側也動一下，讓它的 gitlink 變髒
+    git -C "$CX_TEST_ROOT/frontend" switch -q dev
+    echo b > "$CX_TEST_ROOT/frontend/b.txt"
+    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" commit -q -m b
+    local fe_gl_before
+    fe_gl_before=$(git -C "$CX_TEST_ROOT" ls-files --stage -- frontend | awk '{print $2}')
+
+    run cx_bin --yes git hotfix finish --repo backend
+    assert_rc 0
+    local fe_gl_after
+    fe_gl_after=$(git -C "$CX_TEST_ROOT" ls-files --stage -- frontend | awk '{print $2}')
+    [ "$fe_gl_before" = "$fe_gl_after" ] \
+        || _fail_with "另一側的 gitlink 被順手掃進 commit 了"
+}
+
+@test "branch new hotfix/* 在主庫要被拒絕（finish 只看子模組，開了就合不回去）" {
+    run cx_bin --yes git branch new hotfix/x --repo main
+    assert_rc "$EX_USAGE"
+}
+
+@test "hotfix list 只列 hotfix/*，不列 feature/*" {
+    cx_bin --yes git feature start feat-a --repo backend
+    git -C "$CX_TEST_ROOT/backend" switch -q dev
+    cx_bin --yes git hotfix start hf-a --repo backend
+
+    run cx_bin git hotfix list
+    assert_rc 0
+    assert_out_has "hotfix/hf-a"
+    assert_out_lacks "feature/feat-a"
+}
+
+# ── release：dev → main ────────────────────────────────────────────────────
+#
+# 唯一會碰 main 的動詞。最容易寫錯的是第 4 步（gitlink 對齊）：
+# --no-ff 讓子模組的 main 多一個 merge commit，所以 main tip ≠ dev tip，
+# 而主庫 merge 帶過來的 gitlink 指的是後者。少了對齊那一步，main 線上的
+# gitlink 會指向 dev 線的 commit —— cx git sync 之後工作區與 gitlink 不一致，
+# 而那個不一致沒有任何人做錯事。
+
+@test "release 把三個 repo 的 dev 合進 main" {
+    local g=(-c user.email=b@b -c user.name=b)
+    git -C "$CX_TEST_ROOT/backend" switch -q dev
+    echo r1 > "$CX_TEST_ROOT/backend/r1.txt"
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m r1
+    git -C "$CX_TEST_ROOT" switch -q dev
+    git -C "$CX_TEST_ROOT" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT" "${g[@]}" commit -q -m 'bump gitlink'
+
+    run cx_bin --yes git release --skip-scan
+    assert_rc 0
+    [ "$(git -C "$CX_TEST_ROOT" branch --show-current)" = main ] \
+        || _fail_with "主庫沒停在 main"
+    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = main ] \
+        || _fail_with "backend 沒停在 main"
+    git -C "$CX_TEST_ROOT/backend" merge-base --is-ancestor dev main \
+        || _fail_with "backend 的 main 沒有包含 dev"
+}
+
+@test "release 之後主庫 main 的 gitlink 指向子模組 main 的 tip（不是 dev 的）" {
+    local g=(-c user.email=b@b -c user.name=b)
+    git -C "$CX_TEST_ROOT/backend" switch -q dev
+    echo r2 > "$CX_TEST_ROOT/backend/r2.txt"
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m r2
+    git -C "$CX_TEST_ROOT" switch -q dev
+    git -C "$CX_TEST_ROOT" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT" "${g[@]}" commit -q -m 'bump'
+
+    cx_bin --yes git release --skip-scan
+
+    local be_main be_dev gl
+    be_main=$(git -C "$CX_TEST_ROOT/backend" rev-parse main)
+    be_dev=$(git -C "$CX_TEST_ROOT/backend" rev-parse dev)
+    gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- backend | awk '{print $2}')
+    [ "$be_main" != "$be_dev" ] \
+        || skip "--no-ff 沒有產生新的 merge commit（fast-forward），這條測不到"
+    [ "$gl" = "$be_main" ] \
+        || _fail_with "gitlink 指的是 dev 線的 commit（$gl），不是 main 的 $be_main"
+}
+
+@test "release 在沒有東西可發布時不建空的 merge commit" {
+    # 剛做完 flow-init 的樹：main 與 dev 同一個 commit
+    git -C "$CX_TEST_ROOT" switch -q dev
+    local before; before=$(git -C "$CX_TEST_ROOT" rev-parse main)
+    run cx_bin --yes git release --skip-scan
+    assert_rc 0
+    assert_out_has "沒有要發布"
+    [ "$(git -C "$CX_TEST_ROOT" rev-parse main)" = "$before" ] \
+        || _fail_with "建了一個空的 merge commit"
+}
+
+@test "release 在子模組髒的時候中止（EX_PRECOND），不留半吊子的 main" {
+    echo dirty > "$CX_TEST_ROOT/backend/dirty.txt"
+    local before; before=$(git -C "$CX_TEST_ROOT" rev-parse main)
+    run cx_bin --yes git release --skip-scan
+    assert_rc "$EX_PRECOND"
+    [ "$(git -C "$CX_TEST_ROOT" rev-parse main)" = "$before" ] \
+        || _fail_with "中止了卻已經動過 main"
+}

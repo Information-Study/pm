@@ -802,8 +802,19 @@ frontend       main ← dev ← feature/*
 > 也就是說，把主庫拆成兩條長期線會為了一個**不存在**的衝突，
 > 讓真正存在的那個（基礎設施要合兩次、而且會漂移）變嚴重。
 
-**只做 feature 這一條線。** release / hotfix 牽涉到版本號與 tag，而本專案目前沒有版本號
-策略 —— 做一半的 release 流程比沒有更糟。
+**兩條工作分支線：`feature/*` 與 `hotfix/*`，拓撲完全相同。**
+兩者都從 `dev` 開、合回 `dev`、只開在子模組，共用同一支實作 ——
+差別只有前綴，用途是把「還在做的功能」與「在救火的缺陷」分開追蹤。
+
+```bash
+cx git feature start login --repo backend
+cx git hotfix  start auth-bypass --repo backend
+```
+
+> ⚠ 本專案的 `hotfix` **不是 gitflow 的 hotfix**（那個從 `main` 開、
+> 合回 `main` + `dev`、配 tag）。這裡的 `hotfix` **不碰 `main`**。
+> `dev → main` 是 `cx git release` 的工作，而且它也不打 tag ——
+> 本專案沒有版本號策略，做一半的 release 流程比沒有更糟。
 
 ### 6.3 第一次：設定身分
 

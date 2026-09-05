@@ -245,6 +245,8 @@ _tui_git() {
         sync     "子模組 checkout 追蹤分支" \
         branch   "分支：列出／建立／切換／刪除" \
         feature  "gitflow：在子模組開 feature／合回 dev" \
+        hotfix   "gitflow：緊急修正（同 feature，只是前綴不同；不碰 main）" \
+        release  "⚠ 發布：dev → main（唯一會碰 main 的動作；不推送、不打 tag）" \
         flow-init "補齊 gitflow 分支拓撲（三個 repo 的 dev）" \
         commit   "提交（可指定單一 repo）" \
         config   "git 身分與編輯器（三個 repo 一起設）" \
@@ -256,7 +258,9 @@ _tui_git() {
             guard)  _tui_git_guard ;;
             scan)   _tui_run git scan-secrets ;;
             branch) _tui_git_branch ;;
-            feature) _tui_git_feature ;;
+            feature) _tui_git_flow feature ;;
+            hotfix)  _tui_git_flow hotfix ;;
+            release) _tui_run git release ;;
             flow-init) _tui_run git flow-init ;;
             config) _tui_git_config ;;
             commit) _tui_git_commit ;;
@@ -311,25 +315,37 @@ _tui_feature_side() {
         frontend "前端（Nuxt + Vue）"
 }
 
-_tui_git_feature() {
-    local c side
-    while c=$(_tui_menu "gitflow — feature（只在子模組）" "返回" \
-        list   "列出兩個子模組的 feature/*" \
-        start  "在某個子模組從 dev 開一個新的 feature" \
+# feature 與 hotfix 是同一支實作（_git_flow_line），差別只有前綴，
+# 所以選單也共用 —— 兩份會各自演化，然後只有一邊支援新的子指令。
+#
+# ⚠ 這裡的 `_tui_run git feature`／`_tui_run git hotfix` 必須是**字面**的，
+#   不能寫成 `_tui_run git "$kind"` —— verify_meta.py 的 check_tui 是靜態
+#   regex 剖析，看不到變數展開，於是 TUI-resolve 會抓不到這兩個子指令。
+_tui_git_flow() {                   # _tui_git_flow <feature|hotfix>
+    local kind=$1 c side n
+    local extra=''
+    [[ $kind == hotfix ]] && extra="（不碰 $(_git_main_branch 2>/dev/null || echo main)）"
+    while c=$(_tui_menu "gitflow — $kind（只在子模組）$extra" "返回" \
+        list   "列出兩個子模組的 $kind/*" \
+        start  "在某個子模組從 dev 開一個新的 $kind" \
         finish "合回該子模組的 dev，主庫的 dev 同步 gitlink"); do
         case $c in
             '<') return 0 ;;
-            list) _tui_run git feature list ;;
+            list)
+                if [[ $kind == hotfix ]]; then _tui_run git hotfix list
+                else                           _tui_run git feature list; fi ;;
             start)
                 side=$(_tui_feature_side) || continue
                 [[ $side == '<' ]] && continue
-                local n; n=$(_tui_ask "新 feature" "名稱（會變成 feature/<名稱>）：") || continue
+                n=$(_tui_ask "新 $kind" "名稱（會變成 $kind/<名稱>）：") || continue
                 [[ -n $n ]] || continue
-                _tui_run git feature start "$n" --repo "$side" ;;
+                if [[ $kind == hotfix ]]; then _tui_run git hotfix start "$n" --repo "$side"
+                else                           _tui_run git feature start "$n" --repo "$side"; fi ;;
             finish)
                 side=$(_tui_feature_side) || continue
                 [[ $side == '<' ]] && continue
-                _tui_run git feature finish --repo "$side" ;;
+                if [[ $kind == hotfix ]]; then _tui_run git hotfix finish --repo "$side"
+                else                           _tui_run git feature finish --repo "$side"; fi ;;
         esac
     done
 }
