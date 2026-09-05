@@ -156,7 +156,7 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 
 | # | 項目 | 指令 | 實測結果 | 日期 |
 |---|---|---|---|---|
-| M1 | TUI 主選單與子選單畫得出來、進得去、離得開 | `script -q <log> -c 'cx tui'` 配鍵盤序列 | ✅ 主選單 9 項全部渲染；環境／容器／工具三個子選單都進得去並正確顯示內容 | 2026-09-05 |
+| M1 | TUI 主選單與子選單畫得出來、進得去、離得開 | `script -q <log> -c 'cx tui'` 配鍵盤序列 | ✅ 主選單 9 項全部渲染；環境／容器／工具三個子選單都進得去並正確顯示內容（環境子選單在 2026-09-05 加入 `rename` 後為 9 項） | 2026-09-05 |
 | M2 | phpMyAdmin 真的能登入並看到資料表 | 瀏覽器開 8891 / 18891 | ⬜ 只驗到 HTTP 200，沒有真的登入 | |
 | M3 | Filament 後台實際登入並操作 | `cx db admin` → 瀏覽器 | ⬜ 未驗（沒有建立過管理員） | |
 | M4 | Sanctum SPA 完整登入流程 | 需要前端有登入頁 | ⬜ 未驗（前端目前沒有登入頁） | |
@@ -175,7 +175,18 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 
 ### `cx verify all`
 
-**通過 70 ・ 失敗 0 ・ 未驗 2**
+**通過 88 ・ 失敗 0 ・ 未驗 2**（2026-09-05 本輪結束時；本輪開始時是 70）
+
+本輪新增的檢查（每一項都是「同一類缺陷下次會被自動抓到」）：
+
+| 家族 | 守什麼 |
+|---|---|
+| `hard-caps` / `hard-stop` | 三模式每個 service 的 `no-new-privileges` + `cap_drop: ALL`、`cap_add` 必須是允許表的子集；`app` 的 `stop_grace_period` 必須大於 `supervisord.conf` 的 `stopwaitsecs`（跨檔） |
+| `4b` | 所有外部映像釘到明確版本 —— 拒絕 `latest`／`stable`／只有 major 的 tag |
+| `GRD-*` | 測試資料庫防護的接線（`phpunit.xml` 真的指向 `tests/bootstrap.php`） |
+| `LNT-eslint-*` | ESLint 的四個零件都在位（`cx fresh --mode carryover` 會把它們一起弄不見） |
+| `TPL-*` | 專案身分的四個第二事實來源與 `.cxroot` 一致 |
+| `CLI-bats` | `cx test cli` 的接線 |
 
 未驗的兩項是 `waf-block` 與 `waf-livewire` —— 宣告的引擎是 `DetectionOnly`，
 在那個狀態下這兩項沒有意義，所以誠實地 SKIP。把引擎切成 `On` 單獨驗過，兩項都通過

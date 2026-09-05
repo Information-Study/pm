@@ -41,24 +41,29 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | 動詞 | 狀態 | 備註 |
 |---|---|---|
 | `setup` | ✅ | env / dirs / **native** / system / tools / deps（`guard` 仍在，但**不含**在無參數的 `setup` 裡） |
-| `doctor` | ✅ | 含 Phase 2 產出物與動詞完整性檢查（33 項，含 dispatcher 對照表） |
+| `doctor` | ✅ | 含 Phase 2 產出物與動詞完整性檢查（**35 項**，含 dispatcher 對照表、埠、子模組、可執行位元） |
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
-| `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
+| `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`（另有**應用層 hard guard**：任何非 sqlite 的目標都 fail-fast，退出碼 3）；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
+| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**66 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |
-| `verify` | ✅ | static / runtime / app / ansible / all |
+| `verify` | ✅ | **cli / docs / tui / static / runtime / app / waf / acl / ansible / all**。前三個不需要 Docker 也不需要 `.env`，剛 clone 下來的樹就跑得完 |
 | `deploy` | ✅ | syntax / lint / check / ping / facts / vars / apply / app / rollback / galaxy |
 | `git` | ✅ | status / **fetch** / **pull** / sync / commit / branch / guard / remote-init / scan-secrets / push |
 | `art` `composer` `npm` | ✅ | 容器與原生兩條路都可用，`--runner` 可強制；`npm --backend` 是新增的（舊 `npm-php` service 從來不存在） |
-| `lint` `tui` `install` `uninstall` `help` | ✅ | |
+| `lint` | ✅ | ansible / php / **js（ESLint + Prettier）** / sh。`sh` 有一小撮「其實是正確性缺陷」的 warning 視同 error（`fatal_warn`） |
+| `style` | ✅ | php（Pint）/ js（Prettier）—— **會改檔案**，與 `lint` 的分工是硬的 |
+| `acl` | ✅ | POSIX ACL：check / apply / user add\|rm |
+| `rename` | ✅ | 把整個範本改成新的專案名；`--dry-run` 先列變更點，**不碰 `.git`**。由 `cx verify cli` 的 `TPL-*` 四項守著一致性 |
+| `tui` `install` `uninstall` `help` | ✅ | |
 | `code` | ✅ | 用 VS Code 開專案根（不是所在的子目錄） |
 | `pma` | ✅ | 開 phpMyAdmin；只有 dev 有，埠從合併後的 compose 設定讀 |
 | `php` | ✅ | 直接跑 php（`cx art` 只涵蓋 artisan），兩條 runner 都支援 |
 | `setup system` | ✅ | 需要 root 的系統套件；有確認閘門，sudo 不可用時只印指令 |
 | `setup native` | ✅ | system → tools → deps 一次做完（2026-09-04 新增） |
-| `fresh` | ⚠ 部分 | 備份／驗證／確認閘門／刪除都可用；**重建階段與 `--rollback` 仍未實作** |
+| `fresh` | ✅ | preflight → backup → verify-archive → 閘門 → migrate → delete → **rebuild → verify-rebuild → git-init**，以及 `--rollback`／`--from`／`--resume-from`。⚠ 這一列在 2026-09-05 之前寫的是「重建階段與 `--rollback` 仍未實作」—— 那在實作完成後就過期了，是本專案最典型的「文件與實際相反」 |
 
 ---
 
