@@ -646,12 +646,14 @@ _tui_fresh() {
     while c=$(_tui_menu "清理與重建（⚠ 具破壞性）" "返回" \
         preflight "只跑前置檢查（完全不動任何東西）" \
         backup    "只做備份與封存驗證" \
-        carryover "備份 → 確認 → 刪除 → 重建（保留既有內容）" \
-        scaffold  "備份 → 確認 → 刪除 → 重建（全新骨架）" \
+        git-only  "⚠ 只抹 git 紀錄並重新 init（程式碼原封不動，不重建骨架）" \
+        carryover "⚠ 備份 → 確認 → 刪除 → 重建（保留既有內容）" \
+        scaffold  "⚠ 備份 → 確認 → 刪除 → 重建（全新骨架）" \
         rollback  "從封存還原"); do
         case $c in
             '<')                 return 0 ;;
             preflight|backup)    _tui_run fresh --phase "$c" ;;
+            git-only)            _tui_run fresh --mode git-only ;;
             carryover|scaffold)  _tui_run fresh --mode "$c" ;;
             rollback)            _tui_run fresh --rollback ;;
         esac
