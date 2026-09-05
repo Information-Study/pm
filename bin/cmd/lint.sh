@@ -114,6 +114,44 @@ _lint_sh() {
     fi
 }
 
+# ── 前端：ESLint ────────────────────────────────────────────────────────────
+#
+# 與 Prettier 的分工是硬的：ESLint 抓「會出錯的東西」（未使用的變數、用了沒
+# 定義的東西、Vue 的錯誤用法），Prettier 只管排版。frontend/eslint.config.mjs
+# 刻意不開任何排版規則，所以兩者不會互相打架。
+#
+# eslint.config.mjs 會 import ./.nuxt/eslint.config.mjs —— 那份由 @nuxt/eslint
+# 在 `nuxt prepare` 時產生，帶著 Nuxt 的 auto-import 全域。**沒跑過 prepare
+# 就沒有那個檔**，eslint 會死在 import 失敗；那是環境問題（EX_PRECOND），
+# 不是「程式有問題」，所以要分開回報 —— 否則剛 clone 下來的樹會看到一個
+# 假的 lint 失敗。
+_lint_js_eslint() {
+    [[ -f $CX_ROOT/frontend/package.json ]] || {
+        cx_warn "找不到 frontend/package.json，略過前端"; return "$EX_PRECOND"; }
+
+    cx_step "前端靜態檢查 — ESLint"
+    local rc=0
+    if [[ $(cx_runner) == docker ]]; then
+        cx_runner_need_docker "cx lint js"
+        cx_runner_banner "compose 的 nuxt service"
+        cx_compose_init "$CX_MODE"
+        cx_dc run --rm --no-deps -u "$(id -u):$(id -g)" \
+            --entrypoint npx nuxt eslint . || rc=$?
+    else
+        cx_runner_need_native "cx lint js" npm
+        [[ -x $CX_ROOT/frontend/node_modules/.bin/eslint ]] || { cx_warn \
+            "找不到 frontend/node_modules/.bin/eslint —— 先跑 cx --runner native npm ci"
+            return "$EX_PRECOND"; }
+        [[ -f $CX_ROOT/frontend/.nuxt/eslint.config.mjs ]] || { cx_warn \
+            "缺少 frontend/.nuxt/eslint.config.mjs —— 先跑 npx nuxt prepare（npm ci 的 postinstall 會做）"
+            return "$EX_PRECOND"; }
+        cx_runner_banner "frontend/node_modules/.bin/eslint"
+        cx_run env -C "$CX_ROOT/frontend" node_modules/.bin/eslint . || rc=$?
+    fi
+    if (( rc == 0 )); then cx_ok "ESLint：0 finding"; else cx_warn "ESLint 有 finding"; fi
+    return "$rc"
+}
+
 cmd_lint_main() {
     local target=all dir=''
     case ${1:-} in
@@ -138,11 +176,12 @@ cmd_lint_main() {
     case $target in
         ansible) _lint_one _lint_ansible "$dir" ;;
         php)     _lint_one _style_php 1 ;;
-        js)      _lint_one _style_js 1 ;;
+        js)      _lint_one _lint_js_eslint; _lint_one _style_js 1 ;;
         sh)      _lint_one _lint_sh ;;
         all)
             _lint_one _lint_ansible "$dir"
             _lint_one _style_php 1
+            _lint_one _lint_js_eslint
             _lint_one _style_js 1
             _lint_one _lint_sh
             ;;

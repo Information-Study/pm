@@ -20,6 +20,7 @@
     <PASS|FAIL|SKIP>|<編號>|<標題>|<備註>
 標題與備註都不可以含有 "|"（_verify_report 用它切欄位）。
 """
+import json
 import os
 import pathlib
 import re
@@ -468,6 +469,60 @@ def check_bats_wiring():
         row("PASS", "CLI-bats", "cx 行為測試的接線", f"{len(tests)} 支 .bats")
 
 
+def check_eslint_wiring():
+    """ESLint 的四個零件必須同時在位。
+
+    理由與 GRD-wire 完全相同，而且這裡更脆：`_fresh_keep_dirs frontend` 的
+    KEEP 清單只有目錄（app / components / pages …），**不含 eslint.config.mjs、
+    也不含 nuxt.config.ts 與 package.json**。所以一次 carryover 重建會：
+      - `nuxi init` 重新產生 package.json  → eslint 與 @nuxt/eslint 兩個
+        devDependency 消失
+      - 重新產生 nuxt.config.ts            → modules 少掉 '@nuxt/eslint'
+      - eslint.config.mjs 不在 KEEP 裡     → 直接被刪掉
+    三件事同時發生，而 `cx lint js` 只會安靜地少跑一半 —— 它不會說
+    「ESLint 不見了」，只會回報 Prettier 的結果然後印「靜態檢查通過」。
+    """
+    cfg = read("frontend/eslint.config.mjs")
+    if cfg is None:
+        row("FAIL", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在",
+            "檔案不存在（cx fresh --mode carryover 不會把它帶回來）")
+    elif ".nuxt/eslint.config.mjs" not in cfg:
+        row("FAIL", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在",
+            "沒有 import ./.nuxt/eslint.config.mjs —— Nuxt 的 auto-import 全域會全部報 no-undef")
+    else:
+        row("PASS", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在", "並 extend .nuxt 的產生設定")
+
+    pkg = read("frontend/package.json")
+    if pkg is None:
+        row("SKIP", "LNT-eslint-dep", "frontend 有 eslint 與 @nuxt/eslint", "讀不到 package.json")
+    else:
+        try:
+            dev = (json.loads(pkg).get("devDependencies") or {})
+        except ValueError:
+            dev = {}
+        miss = [d for d in ("eslint", "@nuxt/eslint") if d not in dev]
+        if miss:
+            row("FAIL", "LNT-eslint-dep", "frontend 有 eslint 與 @nuxt/eslint",
+                f"devDependencies 缺少 {', '.join(miss)}")
+        else:
+            row("PASS", "LNT-eslint-dep", "frontend 有 eslint 與 @nuxt/eslint",
+                " ".join(f"{d}@{dev[d]}" for d in ("eslint", "@nuxt/eslint")))
+
+    nc = read("frontend/nuxt.config.ts") or ""
+    if "'@nuxt/eslint'" in nc or '"@nuxt/eslint"' in nc:
+        row("PASS", "LNT-eslint-mod", "nuxt.config 的 modules 含 @nuxt/eslint", "")
+    else:
+        row("FAIL", "LNT-eslint-mod", "nuxt.config 的 modules 含 @nuxt/eslint",
+            "少了它就不會產生 .nuxt/eslint.config.mjs，eslint.config.mjs 的 import 會失敗")
+
+    lint = read("bin/cmd/lint.sh") or ""
+    if "_lint_js_eslint" in lint and re.search(r"js\)\s+_lint_one _lint_js_eslint", lint):
+        row("PASS", "LNT-eslint-cx", "cx lint js 真的會跑 ESLint", "js 與 all 兩個分支都接了")
+    else:
+        row("FAIL", "LNT-eslint-cx", "cx lint js 真的會跑 ESLint",
+            "bin/cmd/lint.sh 的 js 分支沒有呼叫 _lint_js_eslint —— 只會跑 Prettier")
+
+
 def main():
     families = sys.argv[1:] or ["cli", "docs", "tui"]
     if "cli" in families:
@@ -477,6 +532,7 @@ def main():
         check_cli_help_sync()
         check_test_db_guard()
         check_bats_wiring()
+        check_eslint_wiring()
     if "tui" in families:
         check_tui()
     if "docs" in families:

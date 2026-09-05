@@ -937,7 +937,7 @@ cx lint [ansible|php|js|sh|all] [目錄]
 |---|---|
 | `ansible` | `bin/lib/ansible_lint.py`（YAML 剖析、FQCN、紅線、變數引用、changed_when） |
 | `php` | `pint --test`（= `cx style php --check`） |
-| `js` | `prettier --check`（= `cx style js --check`） |
+| `js` | **ESLint**（`@nuxt/eslint`）+ `prettier --check`。兩個都跑完才回傳最嚴重碼 |
 | `sh` | `shellcheck` 掃 `cx` 與 `bin/**/*.sh` |
 | `all` | 以上全部（預設） |
 
@@ -946,6 +946,45 @@ cx lint [ansible|php|js|sh|all] [目錄]
 
 **`lint` 與 `style` 的分工是硬的**：`lint` 絕不改檔案，`style` 才會。
 混在同一個動詞底下，遲早有人在 CI 裡跑 lint 然後意外改了一整棵樹。
+
+### ESLint 與 Prettier 的分工也是硬的
+
+| | 管什麼 |
+|---|---|
+| ESLint | **會出錯的東西** —— 未使用的變數、Vue 的錯誤用法（`v-for` 沒 key…） |
+| Prettier | 只管排版 |
+
+`frontend/eslint.config.mjs` 刻意**不開任何排版類規則**，所以兩者不會互相打架，
+也就不需要 `eslint-config-prettier` 去關掉一堆規則。
+`cx style js` 維持只做 Prettier `--write`（lint 不改檔案的紀律不變）。
+
+設定會 `import ./.nuxt/eslint.config.mjs` —— 那份由 `@nuxt/eslint` 模組在
+`nuxt prepare` 時產生（`package.json` 的 `postinstall` 會跑），帶著 Nuxt 的
+auto-import 全域（`defineNuxtConfig`、`useRuntimeConfig`…）。
+**沒跑過 `prepare` 就沒有那個檔**，`cx lint js` 會回報 `EX_PRECOND`（環境問題）
+而不是假的 lint 失敗。
+
+> ⚠ `cx fresh --mode carryover` 會把這一整套弄不見：`_fresh_keep_dirs frontend`
+> 只保留目錄，`nuxi init` 會重新產生 `package.json`（兩個 devDependency 消失）
+> 與 `nuxt.config.ts`（modules 少掉 `@nuxt/eslint`），而 `eslint.config.mjs`
+> 根本不在 KEEP 清單裡。三件事同時發生時 `cx lint js` **只會安靜地少跑一半**。
+> 所以 `cx verify cli` 有 `LNT-eslint-*` 四項在盯著這件事。
+
+> ⚠ **加模組進 `nuxt.config.ts` 之後，每一個會跑 Nuxt 的環境都要有那個相依。**
+> dev 的 `node_modules` 是**具名 volume**，不會因為 `package.json` 變了就自己更新 ——
+> 症狀是 dev 的 `/` 回 500，容器日誌寫 `Cannot resolve module "@nuxt/eslint"`，
+> 而 test/prod 完全正常（它們的映像是 `npm ci` 重建的）。
+> 兩步解決：
+>
+> ```bash
+> cx --runner docker npm ci        # 更新 dev volume 裡的 node_modules
+> docker restart pm_dev-nuxt-1     # dev server 要重啟才會重讀 nuxt.config
+> ```
+>
+> test/prod 則是 `cx <模式> up -d --build nuxt`。
+> `@nuxt/eslint` 是 devDependency，但 prod **執行期**不讀 `nuxt.config.ts`
+>（跑的是 `.output/server/index.mjs`），所以只有建置階段需要它 —— 而建置階段的
+> `npm ci` 本來就會裝 devDependencies。
 
 `ansible` 那一支是 `--syntax-check` 的**替代品，不是等價物**。
 ansible 裝好之後請改用 `cx deploy lint`。它會排除 `collections/`、`.cache/`、
