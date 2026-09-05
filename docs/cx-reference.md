@@ -1129,6 +1129,9 @@ cx 程式路徑：`cx lint sh` 是 shellcheck（靜態），`cx verify cli/docs/
 | `50_archive.bats` | 封存的失效模式（截斷的 bundle、缺檔、對帳、冪等、備份不被直接刪） |
 | `60_fresh.bats` | 階段機、`--resume-from`、麵包屑、還原往返 |
 | `70_project.bats` | 改名之後所有推導值都跟著走 |
+| `72_gitflow.bats` | gitflow：`flow-init`、feature 只動子模組、主庫拒絕 `feature/*`、`finish` 讓主庫 gitlink 跟上且不掃另一側、`sync` 不倒退分支 |
+| `74_tui_geom.bats` | 對話框尺寸必須夾到終端機裝得下的範圍（含一條防復發的 grep：不准再出現超過 80 欄的寫死尺寸） |
+| `80_init.bats` | `cx init`／`re-init`：worktree 拒絕、封存驗證不可因缺鍵放行、symlink 中止刪除、麵包屑、閘門、`--dry-run` 不動檔案 |
 | `80_verify.bats` | PASS/FAIL/SKIP 語意（含一個**正向對照**：故意製造缺陷，確認真的會 FAIL） |
 
 ### 設計上的三個決定

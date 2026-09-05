@@ -70,8 +70,9 @@ $tail_txt"
 （這個指令沒有任何輸出）"
     fi
     if cx_interactive; then
+        local _h _w; read -r _h _w < <(_cx_fit 24 92)
         _cx_dlg --title "✘ 執行失敗（exit $rc）" --scrolltext \
-            --msgbox "$body" 24 92 1>&8 2>&9 || true
+            --msgbox "$body" "$_h" "$_w" 1>&8 2>&9 || true
     else
         printf '%s\n' "$body" >&9
     fi
@@ -132,12 +133,43 @@ _tui_run() {
 #     2  **介面後端壞了**            ← 必須讓使用者知道，不能當成「離開」
 #   把 2 併進 1 的後果，就是 2026-09-05 回報的那個症狀：
 #   選單一片空白、exit 0、使用者以為功能不存在。
+# 尺寸不可以寫死。
+#
+# 原本是 `--menu "\n選擇一項：" 22 76 12`：清單高度固定 12、對話框固定 22×76，
+# 完全不看實際有幾個項目，也不看終端機多大。兩個後果：
+#   * 項目超過 12 的選單（Git 現在 13 項）只能捲動，而且對話框不會跟著長高
+#   * 終端機比 22 列或 76 欄小的時候，whiptail 畫不出來 —— 而它的失敗會被
+#     _cx_dlg 判成「後端壞了」（rc 不是 0/1/255），使用者看到的是
+#     「選單畫不出來」，然後回到上一層選單時往往再壞一次
+#
+# 現在依「項目數」與「終端機實際尺寸」算，兩邊取小。
+_tui_menu_geom() {                  # _tui_menu_geom <項目數> → "高 寬 清單高"
+    local n=$1 rows=24 cols=80 sz
+    # stty 要對著真 tty 問：這個函式常在 $( ) 裡被呼叫，stdout 是管線。
+    sz=$(stty size </dev/tty 2>/dev/null) && [[ $sz =~ ^[0-9]+\ [0-9]+$ ]] \
+        && { rows=${sz% *}; cols=${sz#* }; }
+    # 清單之外還要放：上下邊框、說明兩行、按鈕列、留白 —— 實測約 9 列
+    local chrome=9
+    local maxlist=$(( rows - chrome ))
+    (( maxlist < 3 )) && maxlist=3
+    local listh=$n
+    (( listh > maxlist )) && listh=$maxlist
+    local h=$(( listh + chrome ))
+    (( h > rows )) && h=$rows
+    local w=76
+    (( w > cols - 2 )) && w=$(( cols - 2 ))
+    (( w < 40 )) && w=40
+    printf '%d %d %d' "$h" "$w" "$listh"
+}
+
 _tui_menu() {                       # _tui_menu <title> <back-label> <tag> <desc> ...
     local title=$1 back=$2; shift 2
     local f rc=0; f=$(mktemp)
     local -a items=("$@") ; items+=("<" "$back")
+    local h w listh
+    read -r h w listh < <(_tui_menu_geom $(( ${#items[@]} / 2 )))
     _cx_dlg --title "$title" --cancel-button "離開" \
-            --menu "\n選擇一項：" 22 76 12 "${items[@]}" 2>"$f" 1>&8 || rc=$?
+            --menu "\n選擇一項：" "$h" "$w" "$listh" "${items[@]}" 2>"$f" 1>&8 || rc=$?
     if (( rc == 0 )); then
         cat "$f"; rm -f "$f"; return 0
     fi
@@ -690,7 +722,7 @@ _tui_db_restore() {
     (( ${#items[@]} )) || { cx_msg "還原" "reports/db/ 底下沒有 dump。先跑「備份」。"; return 0; }
     local sel g; g=$(mktemp)
     if _cx_dlg --title "還原（模式：$_TUI_MODE）" \
-            --menu "\n⚠ 這會覆蓋 $_TUI_MODE 的資料庫。選一份 dump：" 20 90 10 \
+            --menu "\n⚠ 這會覆蓋 $_TUI_MODE 的資料庫。選一份 dump：" 20 76 10 \
             "${items[@]}" 2>"$g" 1>&8; then
         sel=$(<"$g"); rm -f "$g"
         _tui_run db restore "$sel"

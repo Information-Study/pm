@@ -79,9 +79,27 @@ _cx_dlg() {
 # 否則使用者會看到字面的 "\n" 而不是換行。
 _cx_unescape() { printf '%b' "$1"; }
 
+# 把對話框尺寸夾到終端機裝得下的範圍。
+#
+# 本檔與 tui.sh 原本把 24×92、20×90、16×92 這類尺寸寫死。80 欄的終端機
+# （最常見的預設）根本放不下 92 欄，而 whiptail 畫不出來時回的不是 0/1/255，
+# 於是 _cx_dlg 會判成「後端壞了」，使用者看到的是「選單畫不出來」。
+# 寬度寫死比高度更危險：高度不夠通常只是擠，寬度不夠是直接失敗。
+_cx_fit() {                         # _cx_fit <想要的高> <想要的寬> → "高 寬"
+    local h=$1 w=$2 rows=24 cols=80 sz
+    sz=$(stty size </dev/tty 2>/dev/null) && [[ $sz =~ ^[0-9]+\ [0-9]+$ ]] \
+        && { rows=${sz% *}; cols=${sz#* }; }
+    (( h > rows )) && h=$rows
+    (( w > cols - 2 )) && w=$(( cols - 2 ))
+    (( h < 7 ))  && h=7
+    (( w < 40 )) && w=40
+    printf '%d %d' "$h" "$w"
+}
+
 cx_msg() {
     if cx_interactive; then
-        _cx_dlg --title "$1" --msgbox "$2" 20 78 1>&8 2>&9
+        local _h _w; read -r _h _w < <(_cx_fit 20 78)
+        _cx_dlg --title "$1" --msgbox "$2" "$_h" "$_w" 1>&8 2>&9
     else
         printf '\n=== %s ===\n' "$1" >&2
         _cx_unescape "$2" >&2; printf '\n\n' >&2
@@ -133,7 +151,8 @@ cx_confirm() {
         [[ $a == [Yy]* ]]
         return
     fi
-    local -a args=(--title "$title" --yesno "$body" 24 92)
+    local _h _w; read -r _h _w < <(_cx_fit 24 92)
+    local -a args=(--title "$title" --yesno "$body" "$_h" "$_w")
     (( danger )) && args+=(--defaultno)
     local rc=0
     _cx_dlg "${args[@]}" 1>&8 2>&9 || rc=$?
@@ -169,7 +188,8 @@ cx_ask_line() {                     # cx_ask_line <標題> <提示> [預設值]
         [[ -z $got && -n $def ]] && got=$def
     else
         local f rc=0; f=$(mktemp)
-        _cx_dlg --title "$title" --inputbox "$body" 12 88 "$def" 2>"$f" 1>&8 || rc=$?
+        local _h _w; read -r _h _w < <(_cx_fit 12 88)
+        _cx_dlg --title "$title" --inputbox "$body" "$_h" "$_w" "$def" 2>"$f" 1>&8 || rc=$?
         if (( rc )); then
             rm -f "$f"
             # 與 cx_confirm 同一個理由：後端壞掉不是「使用者取消」。
@@ -199,7 +219,8 @@ cx_ask_typed() {
         _cx_read_tty got || return 1
     else
         local f; f=$(mktemp)
-        _cx_dlg --title "$title" --inputbox "$body" 16 92 "" 2>"$f" 1>&8 || { rm -f "$f"; return 1; }
+        local _h _w; read -r _h _w < <(_cx_fit 16 92)
+        _cx_dlg --title "$title" --inputbox "$body" "$_h" "$_w" "" 2>"$f" 1>&8 || { rm -f "$f"; return 1; }
         got=$(<"$f"); rm -f "$f"
     fi
     [[ $got == "$expect" ]] || { cx_error "確認字串不符（收到：${got:-<空>}）"; return 1; }
