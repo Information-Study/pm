@@ -180,9 +180,15 @@ PM_TEST_DB_ALLOW=1 cx test back
 | `GRD-cxtest` | `bin/cmd/test.sh` 的 env 清單仍導向 sqlite |
 
 `GRD-wire` 是其中最重要的一項，因為它擋的是**最惡劣的一種失效**：
-`cx fresh --mode carryover` 的 KEEP 清單帶 `tests` 但**不帶 `phpunit.xml`**，
-所以一次重建會把 `tests/bootstrap.php` 疊回去，卻讓 `phpunit.xml` 被重新產生回
-`bootstrap="vendor/autoload.php"` —— 檔案都還在，但已經沒有任何人呼叫它了。
+`cx fresh` 的疊回清單（`bin/cmd/fresh.sh` 的 `_fresh_keep_dirs`）帶 `tests`
+但**不帶 `phpunit.xml`** —— 後者是骨架檔，重建時由 composer create-project
+重新產生成 `bootstrap="vendor/autoload.php"`。於是 `tests/bootstrap.php` 與
+`DatabaseSafetyGuard.php` 都疊回來了，檔案都在，但已經沒有任何人呼叫它們。
+
+`fresh.sh` 現在在 carryover 疊回之後會自己把 `bootstrap=` 改回
+`tests/bootstrap.php`，並在重建驗證階段用同一條斷言當後盾（`--mode scaffold`
+只會警告，不自動改，因為那條路徑本來就是「全新骨架」）。`GRD-wire` 是這兩層之外
+的最後一道：任何時候有人手改了 `phpunit.xml`，它下一次 `cx verify cli` 就會發現。
 
 ### 1.3 `cx test cli` — `cx` 自己的行為測試（bats）
 
@@ -343,7 +349,7 @@ SKIP 只出現在誠實的情境，而且每一次都附理由：
   > `CLI-bats` **只驗接線，不代表測試通過** —— 「測試有沒有過」這個宣稱
   > 只屬於 `cx test cli`，不屬於任何別的地方。
 
-* **`docs`** —— 文件與實作一致：`ansible/README` 的執行狀態不能與實測衝突、
+* **`docs`** —— 文件與實作一致：`ansible/README.md` 的執行狀態不能與實測衝突、
   README 教的 `waf_*` 變數真的被某個 role 讀取、文件指向的 `group_vars` 路徑正確
   （是目錄 `all/main.yml`，不是 `all.yml`）、Livewire 排除規則的前綴形狀、
   `cx-reference.md` 涵蓋每個動詞。
@@ -395,7 +401,7 @@ cx scan <code|sast|sca|dast|secrets|all> [--runner docker|native|auto]
 | `sca` ③ | `trivy fs`（vuln+secret+misconfig）、**`trivy image` 掃已建好的映像**、`composer audit`、`npm audit`、CycloneDX SBOM、掃描器映像 digest | ✘，但映像那一段需要**已經 build 過** | 22 |
 | `dast` ④ | ZAP baseline 跑兩輪（`DetectionOnly` 與 `On`，每輪真的重建 waf 容器切引擎）＋ **主動攻擊探測**＋被動 alert 對照 | **✔ 需要 `cx test up -d`**（否則找不到 `<專案>_test_net`，以 `EX_PRECOND` 中止） | 23 |
 | `secrets` | gitleaks 對 backend / frontend / 主庫各掃一次**全歷史** | ✘ | 22（與 ③ 共用） |
-| `all` | ①②③④ 再加 secrets | 同上 | 五道之中**最嚴重**的那個 |
+| `all` | ①②③④ 再加 secrets | 各道的聯集 —— **因為含 ④，所以仍然要先 `cx test up -d`** | 五道之中**最嚴重**的那個 |
 
 > **`cx scan all` 不會遇到第一個問題就停。** 每一道都跑完，最後回傳最嚴重的退出碼。
 > 停在第一道會讓後面幾道永遠沒機會跑，而掃描的價值正是「一次看到全部」。
@@ -617,14 +623,21 @@ CX_TEST_STRICT=1 cx test cli  # cx 自己的行為測試（bats）
 | 放行條件 | |
 |---|---|
 | `cx verify cli docs tui` | 失敗 0，**且未驗數是你看過並接受的**（`TPL-env` 在沒有 `.env` 時會 SKIP，那是正常的） |
-| `cx lint sh` | rc=0。閘門只看 **error**，warning 會完整顯示但不擋（與 ② SAST 同一套邏輯）。**rc=3 = shellcheck 沒裝**，補 `cx setup tools shellcheck` |
+| `cx lint sh` | rc=0。閘門看 **error**，warning 會完整顯示但不擋（與 ② SAST 同一套邏輯）—— 唯一的例外是 `bin/cmd/lint.sh` 的 `fatal_warn` 清單（`SC2215 SC2216 SC2217 SC2218 SC2069 SC2064 SC2140 SC2145`），那八條 shellcheck 歸類為 warning 的東西其實是正確性缺陷，命中就視同 error 回 `EX_FAIL`(1)。**rc=3 = shellcheck 沒裝**，補 `cx setup tools shellcheck` |
 | `cx test cli` | rc=0。**rc=3 = bats 沒裝**，不是通過 —— 補 `cx setup tools bats` 再跑 |
 
 ### 第 1 層：需要工具鏈（容器**或**原生擇一），不需要容器在跑
 
-這一層的每個動詞都是雙 runner 的：`--runner auto` 有 Docker daemon 就走容器，
-沒有就走原生。走原生時需要 `backend/vendor` 與 `frontend/node_modules`，
+這一層**有一部分**是雙 runner 的：`cx style`、`cx test back` / `front`、
+`cx scan sast`、以及 `cx scan sca` 的 `trivy fs`，`--runner auto` 有 Docker daemon
+就走容器，沒有就走原生；走原生時需要 `backend/vendor` 與 `frontend/node_modules`，
 缺了會以 `EX_PRECOND` 硬失敗並告訴你補哪一個。
+
+其餘幾個**不是**雙 runner，`--runner` 對它們沒有作用，一律跑 host 上的工具：
+`cx scan code` 的 Larastan（`backend/vendor/bin/phpstan`）、`cx scan sca` 的
+`composer audit` 與 `npm audit`、`cx scan secrets` 的 gitleaks、
+以及 `cx deploy syntax` / `lint` 的 ansible。
+反方向也有一個：`cx scan sca` 的 `trivy image` 只在 docker runner 之下才會跑。
 
 ```bash
 cx style --check              # Pint + Prettier，只檢查不改檔
@@ -641,13 +654,16 @@ cx deploy syntax && cx deploy lint   # 動到 ansible/ 才需要
 |---|---|
 | `cx style --check` | rc=0（非 0 代表格式沒跑過，跑 `cx style` 自動修）。兩邊都跑完才回傳最嚴重的碼 |
 | `cx test back` / `front` | rc=0。**rc=3 要當環境問題處理**（缺 `pdo_sqlite`／缺 `node_modules`／資料庫防護拒絕），不要當成「這次沒測到但沒關係」 |
-| `cx scan code` | rc=0。rc=20 = Larastan 有 error |
+| `cx scan code` | rc=0。rc=20 = Larastan 有 error。⚠ `backend/vendor/bin/phpstan` 不存在時只印一行 `cx_warn` 並讓這道回 0 —— 所以要順帶確認終端機上真的出現了 `報告：reports/quality/larastan.json（errors=…）` 那一行，否則這個 0 是「沒跑」不是「乾淨」 |
 | `cx scan sast` | rc=0。rc=21 = 有 **ERROR 等級** finding；warning 會列出但不擋 |
-| `cx scan sca` | rc=0。rc=22 = 有 finding；例外必須進 `.trivyignore.yaml` 且**有到期日** |
+| `cx scan sca` | rc=0。rc=22 = 有 finding；例外必須進 `docker/security/trivy/.trivyignore.yaml` 且**有 `statement` 與 `expired_at`** |
 | `cx scan secrets` | rc=0，且三份 `gitleaks-*.json` 都**存在**且是 `[]`。檔案不存在 = 沒跑成 |
 
-> **`cx scan sca` 在沒有已建映像時，映像那一段會警告並回 `EX_PRECOND`，
-> 而該碼刻意不進 lane 的判定**（沒有映像可掃不該把整條 lane 判成有 finding）。
+> **`cx scan sca` 一個已建映像都找不到時，只印一行「沒有已建置的映像可掃」的警告，
+> 那一段回 0** —— 整條 lane 完全不受影響，也就是一個安靜的綠燈。
+> （另外兩種情況才回 `EX_PRECOND`：Docker 不可用，或 `trivy image` 自己沒跑成
+> —— 判準是輸出檔裡有沒有 `"SchemaVersion"`。那個碼刻意不進 lane 的判定，
+> 因為環境問題不該被記成「這個專案有資安問題」。）
 > 所以如果這次 PR 動到 Dockerfile 或 `backend/`，要先 build 再掃，
 > 否則映像層的祕密外洩不會被看到 —— 那正是 2026-09-05 抓到 `pm/app:prod-prod`
 > 內含真實 `APP_KEY`／`DB_PASSWORD` 的那一類缺陷。

@@ -660,7 +660,25 @@ _git_branch_new() {
     # 起點：--from > dev > 目前所在的 commit。
     # 原本是 `switch -c "$n"`（沒有起點），也就是「從你現在剛好在的地方開」——
     # gitflow 之下 feature 必須從 dev 開，而「現在剛好在哪」不是可重現的東西。
+    #
+    # ⚠ 這裡曾經只寫 `local base=${_GIT_BRANCH_FROM:-}` —— 也就是沒給 --from
+    #   就退回裸的 switch -c，從 HEAD 開。而 usage 與 cx-reference 都寫著
+    #   「預設從 dev 開」。文件與實作相反，正是本專案最常見的那類缺陷。
+    #   2026-09-05 實測：main 比 dev 多一個 commit 時，branch new 開出來的
+    #   分支指向 main 而不是 dev。
+    #
+    #   dev 不存在時（例如剛 cx init 出來的新專案）不能硬失敗 ——
+    #   退回 HEAD 並明說，讓使用者知道起點是什麼。
     local base=${_GIT_BRANCH_FROM:-}
+    if [[ -z $base ]]; then
+        local _dev; _dev=$(_git_dev_branch)
+        if git -C "$CX_ROOT" show-ref --verify --quiet "refs/heads/$_dev"; then
+            base=$_dev
+        else
+            cx_warn "沒有 $_dev 分支 —— 這次從目前的 HEAD 開"
+            cx_dim "  要建立 gitflow 的開發主線： cx git branch new $_dev --from $(_git_main_branch)"
+        fi
+    fi
     local r slug dirty=0
     while read -r r; do
         slug=$(_git_repo_slug "$r")

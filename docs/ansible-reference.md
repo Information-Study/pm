@@ -96,7 +96,7 @@ ansible-vault create inventory/group_vars/all/vault.yml
 ansible-vault edit   inventory/group_vars/all/vault.yml
 ```
 
-密碼**不可以**含井字號、換行、或前後空白 —— `/root/.my.cnf` 與 Laravel `.env`
+密碼**不可以**含反斜線 `\`、雙引號 `"`、CR 或 LF —— `/root/.my.cnf` 與 Laravel `.env`
 都沒有可靠的表達方式。`assert.yml` 會擋下來。
 
 ### ansible_managed

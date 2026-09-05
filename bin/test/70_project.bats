@@ -170,3 +170,67 @@ YML
     assert_out_has "PROJECT_SLUG=drifted" "IMAGE_PREFIX=drifted"
     assert_out_lacks "someoneelse"
 }
+
+@test "branch new 預設從 dev 開，不是從你剛好在的地方" {
+    # usage 與 cx-reference 都寫「預設從 dev 開」，而實作原本是裸的
+    # `switch -c <名稱>` —— 也就是從 HEAD 開。文件與實作相反，
+    # 而且只有在 dev 落後 main 的時候才看得出來。
+    make_root gitflow >/dev/null
+    rm -f "$CX_TEST_ROOT/bin"
+    mkdir -p "$CX_TEST_ROOT/bin"
+    cp -r "$CX_TEST_REAL_ROOT/bin/lib" "$CX_TEST_REAL_ROOT/bin/completion" "$CX_TEST_ROOT/bin/"
+    mkdir -p "$CX_TEST_ROOT/bin/cmd"
+    cp "$CX_TEST_REAL_ROOT"/bin/cmd/*.sh "$CX_TEST_ROOT/bin/cmd/"
+    printf 'bin\ncx\n.cxroot\nbackend\nfrontend\n' > "$CX_TEST_ROOT/.gitignore"
+    local d
+    for d in . backend frontend; do
+        git -C "$CX_TEST_ROOT/$d" init -q -b main
+        git -C "$CX_TEST_ROOT/$d" config user.name t
+        git -C "$CX_TEST_ROOT/$d" config user.email t@t.co
+        [[ $d == . ]] || cp "$CX_TEST_ROOT/.gitignore" "$CX_TEST_ROOT/$d/.gitignore"
+        echo a > "$CX_TEST_ROOT/$d/f"
+        git -C "$CX_TEST_ROOT/$d" add -A
+        git -C "$CX_TEST_ROOT/$d" commit -qm base
+        git -C "$CX_TEST_ROOT/$d" branch dev
+        # 讓 main 前進，這樣 HEAD 與 dev 才分得出來
+        echo b > "$CX_TEST_ROOT/$d/f"
+        git -C "$CX_TEST_ROOT/$d" add -A
+        git -C "$CX_TEST_ROOT/$d" commit -qm "main 又前進了"
+    done
+    run cx_raw --root "$CX_TEST_ROOT" --yes git branch new fix/from-dev
+    assert_rc 0
+    local dev_sha new_sha main_sha
+    dev_sha=$(git -C "$CX_TEST_ROOT" rev-parse dev)
+    new_sha=$(git -C "$CX_TEST_ROOT" rev-parse fix/from-dev)
+    main_sha=$(git -C "$CX_TEST_ROOT" rev-parse main)
+    [[ $new_sha == "$dev_sha" ]] || {
+        echo "新分支指向 $new_sha，dev 是 $dev_sha，main 是 $main_sha" >&2
+        echo "→ 沒有從 dev 開" >&2; return 1; }
+}
+
+@test "branch new 的 --from 覆蓋 dev 這個預設" {
+    make_root gitflow2 >/dev/null
+    rm -f "$CX_TEST_ROOT/bin"
+    mkdir -p "$CX_TEST_ROOT/bin/cmd"
+    cp -r "$CX_TEST_REAL_ROOT/bin/lib" "$CX_TEST_REAL_ROOT/bin/completion" "$CX_TEST_ROOT/bin/"
+    cp "$CX_TEST_REAL_ROOT"/bin/cmd/*.sh "$CX_TEST_ROOT/bin/cmd/"
+    printf 'bin\ncx\n.cxroot\nbackend\nfrontend\n' > "$CX_TEST_ROOT/.gitignore"
+    local d
+    for d in . backend frontend; do
+        git -C "$CX_TEST_ROOT/$d" init -q -b main
+        git -C "$CX_TEST_ROOT/$d" config user.name t
+        git -C "$CX_TEST_ROOT/$d" config user.email t@t.co
+        [[ $d == . ]] || cp "$CX_TEST_ROOT/.gitignore" "$CX_TEST_ROOT/$d/.gitignore"
+        echo a > "$CX_TEST_ROOT/$d/f"
+        git -C "$CX_TEST_ROOT/$d" add -A
+        git -C "$CX_TEST_ROOT/$d" commit -qm base
+        git -C "$CX_TEST_ROOT/$d" branch dev
+        echo b > "$CX_TEST_ROOT/$d/f"
+        git -C "$CX_TEST_ROOT/$d" add -A
+        git -C "$CX_TEST_ROOT/$d" commit -qm advance
+    done
+    run cx_raw --root "$CX_TEST_ROOT" --yes git branch new hotfix/x --from main
+    assert_rc 0
+    [[ $(git -C "$CX_TEST_ROOT" rev-parse hotfix/x) == $(git -C "$CX_TEST_ROOT" rev-parse main) ]] \
+        || { echo "--from main 沒有生效" >&2; return 1; }
+}

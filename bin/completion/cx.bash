@@ -79,9 +79,9 @@ _cx_completion() {
                 COMPREPLY=($(compgen -W "all native env dirs guard tools system deps --help -h" -- "$cur"))
             else
                 case $sub in
-                    tools)  COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep" -- "$cur")) ;;
-                    system) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl" -- "$cur")) ;;
-                    native) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl" -- "$cur")) ;;
+                    tools)  COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep shellcheck bats" -- "$cur")) ;;
+                    system) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl jq" -- "$cur")) ;;
+                    native) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl jq" -- "$cur")) ;;
                 esac
             fi
             ;;

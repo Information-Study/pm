@@ -688,6 +688,47 @@ def check_php_prefix_parity():
             " ".join(sorted("/" + x for x in native)))
 
 
+def check_setup_completion_drift():
+    """`cx setup tools|system` 的補全清單必須涵蓋 setup.sh 的權威清單。
+
+    這一族漂移不會讓任何東西壞掉 —— 它只是讓 Tab 補不出真的裝得起來的工具，
+    於是使用者以為那個工具不存在。2026-09-05 實測：`CX_SETUP_TOOLS` 已經含
+    shellcheck 與 bats（`cx lint sh` / `cx test cli` 也會叫使用者去裝），
+    而補全的清單少了這兩個；`CX_SETUP_SYSTEM_TOOLS` 的 jq 同樣沒進補全。
+
+    既有的 `CLI-setup` 只查 `CX_SETUP_SYSTEM_TOOLS` 有沒有對應的函式，
+    查不到這一種。
+    """
+    setup = read("bin/cmd/setup.sh")
+    comp = read("bin/completion/cx.bash")
+    if not setup or not comp:
+        row("SKIP", "CLI-setup-comp", "setup 的補全清單涵蓋權威清單", "讀不到來源")
+        return
+
+    bad = []
+    for var, key in (("CX_SETUP_TOOLS", "tools"),
+                     ("CX_SETUP_SYSTEM_TOOLS", "system")):
+        m = re.search(rf"{var}='([^']*)'", setup)
+        if not m:
+            bad.append(f"{var}(讀不到)")
+            continue
+        want = set(m.group(1).split())
+        cm = re.search(rf'{key}\)\s*COMPREPLY=\(\$\(compgen -W "([^"]+)"', comp)
+        if not cm:
+            bad.append(f"補全沒有 {key}) 分支")
+            continue
+        have = set(cm.group(1).split())
+        miss = sorted(want - have)
+        if miss:
+            bad.append(f"{key} 少了 {' '.join(miss)}")
+    if bad:
+        row("FAIL", "CLI-setup-comp", "setup 的補全清單涵蓋權威清單",
+            "; ".join(bad) + "（Tab 補不出來的工具，使用者會以為不存在）")
+    else:
+        row("PASS", "CLI-setup-comp", "setup 的補全清單涵蓋權威清單",
+            "tools 與 system 都涵蓋")
+
+
 def main():
     families = sys.argv[1:] or ["cli", "docs", "tui"]
     if "cli" in families:
@@ -700,6 +741,7 @@ def main():
         check_eslint_wiring()
         check_template_identity()
         check_php_prefix_parity()
+        check_setup_completion_drift()
     if "tui" in families:
         check_tui()
     if "docs" in families:
