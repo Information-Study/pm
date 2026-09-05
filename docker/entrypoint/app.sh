@@ -30,27 +30,45 @@ fi
 # ── 2. .env 與 APP_KEY ─────────────────────────────────────────────────────
 # 舊版的 D2：初始化腳本既沒有 cp .env 也沒有 key:generate，
 # 於是第一次啟動就是 "No application encryption key has been specified."
-if [ ! -f .env ]; then
-    if [ -f .env.example ]; then
-        log ".env 不存在 → 從 .env.example 複製"
-        cp .env.example .env
-    else
-        log ".env 與 .env.example 都不存在 → 建立空的 .env"
-        : > .env
+#
+# 2026-09-05 起分成兩條路：
+#
+#   APP_KEY 由 compose 注入（test / prod）
+#       完全不碰 .env。Laravel 讀得到環境變數就夠了，Dotenv 找不到檔案是容忍的。
+#       這一條是必要的，因為 .env 現在被 .dockerignore 排除（否則開發者的
+#       APP_KEY 與 DB_PASSWORD 會被烘進映像層），而容器裡的 .env 落在
+#       writable layer、不在任何 volume 上 —— 每次 --force-recreate 都會
+#       換一把新金鑰，把 session 與 encrypted cast 的資料變成解不開的亂碼。
+#       順帶讓 read_only: true 變成可行（不再有啟動時的寫入）。
+#
+#   APP_KEY 沒有注入（dev，或有人手動 docker run）
+#       維持舊行為：從 .env.example 複製並 key:generate。
+#       dev 的 .env 是 host 上 bind mount 進來的真檔案，本來就要持久化。
+if [ -n "${APP_KEY:-}" ]; then
+    log "APP_KEY 由環境注入 —— 不建立也不修改 .env"
+else
+    if [ ! -f .env ]; then
+        if [ -f .env.example ]; then
+            log ".env 不存在 → 從 .env.example 複製"
+            cp .env.example .env
+        else
+            log ".env 與 .env.example 都不存在 → 建立空的 .env"
+            : > .env
+        fi
     fi
+    # compose 傳進來的真實環境變數優先於 .env（Laravel 的 Dotenv 預設不覆寫既有 env），
+    # 所以 .env 裡只需要有 APP_KEY 這個「必須持久化」的值。
+    if ! grep -q '^APP_KEY=base64:' .env 2>/dev/null; then
+        log "產生 APP_KEY"
+        php artisan key:generate --force --no-interaction || die "key:generate 失敗"
+    fi
+    # 這支腳本以 root 執行，而 dev 模式的 .env 其實是 host 上的檔案
+    # （./backend bind mount 進來）。不 chown 的話 host 端的你會發現
+    # backend/.env 是 root:root，改不動也刪不掉。
+    # www-data 的 uid/gid 在 build 時已經對齊成 APP_UID/APP_GID。
+    chown www-data:www-data .env 2>/dev/null || true
+    chmod 640 .env 2>/dev/null || true
 fi
-# compose 傳進來的真實環境變數優先於 .env（Laravel 的 Dotenv 預設不覆寫既有 env），
-# 所以 .env 裡只需要有 APP_KEY 這個「必須持久化」的值。
-if ! grep -q '^APP_KEY=base64:' .env 2>/dev/null; then
-    log "產生 APP_KEY"
-    php artisan key:generate --force --no-interaction || die "key:generate 失敗"
-fi
-# 這支腳本以 root 執行，而 dev 模式的 .env 其實是 host 上的檔案
-# （./backend bind mount 進來）。不 chown 的話 host 端的你會發現
-# backend/.env 是 root:root，改不動也刪不掉。
-# www-data 的 uid/gid 在 build 時已經對齊成 APP_UID/APP_GID。
-chown www-data:www-data .env 2>/dev/null || true
-chmod 640 .env 2>/dev/null || true
 
 # ── 3. 目錄權限 ────────────────────────────────────────────────────────────
 # 不用 chmod 777（舊版做過，是必然的 Trivy/Semgrep misconfig finding）。

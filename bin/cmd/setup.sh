@@ -69,9 +69,13 @@ _setup_env() {
         return 0
     fi
 
-    local root_pw app_pw uid gid line slug
+    local root_pw app_pw app_key uid gid line slug
     root_pw=$(_setup_gen_secret)
     app_pw=$(_setup_gen_secret)
+    # APP_KEY 的格式是 Laravel 規定的：base64: 前綴 + 32 bytes 的 base64。
+    # 不能用 _setup_gen_secret（那是 A-Za-z0-9 的 32 字元，長度不對），
+    # 也不能少了前綴 —— Encrypter 會直接把整串當成原始金鑰，長度檢查就過不了。
+    app_key="base64:$(LC_ALL=C head -c 32 /dev/urandom | base64)"
     uid=$(id -u)
     gid=$(id -g)
     # 專案識別從 .cxroot 帶進 .env：compose 的網路名與映像前綴都吃這個值。
@@ -85,6 +89,7 @@ _setup_env() {
         case $line in
             'MYSQL_ROOT_PASSWORD=__CHANGE_ME__') line="MYSQL_ROOT_PASSWORD=$root_pw" ;;
             'DB_PASSWORD=__CHANGE_ME__')         line="DB_PASSWORD=$app_pw" ;;
+            'APP_KEY=__CHANGE_ME__')             line="APP_KEY=$app_key" ;;
             'APP_UID=1000')                      line="APP_UID=$uid" ;;
             'APP_GID=1000')                      line="APP_GID=$gid" ;;
             'PROJECT_SLUG=pm')                   line="PROJECT_SLUG=$slug" ;;

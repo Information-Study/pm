@@ -71,6 +71,10 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-local}
+      # :? 而不是 :- —— 金鑰缺席要大聲失敗，不能靜默讓 entrypoint 產一把新的。
+      # 靜默的後果是每次 --force-recreate 換一把金鑰，session 與 encrypted cast
+      # 全部解不開，而且要等到有人回報「登入一直被登出」才會被發現。
+      APP_KEY: ${APP_KEY:?根目錄 .env 缺少 APP_KEY（跑 cx setup env，或手動補一行 APP_KEY=base64:...）}
       APP_DEBUG: ${APP_DEBUG:-true}
       APP_URL: ${APP_URL:-http://localhost:8080}
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Taipei}

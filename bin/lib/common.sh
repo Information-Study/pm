@@ -265,6 +265,14 @@ cx_is_repo_root() {
 cx_project() { printf '%s' "${CX_PROJECT_NAME:-pm}"; }
 
 # compose project 名（-p 的值）。
+# 映像前綴。compose 用的是 .env 的 IMAGE_PREFIX（不是 CX_PROJECT_NAME）——
+# 兩者由 cx setup env 產生時對齊，但 .env 可以被手改，所以要讀真正的來源。
+cx_image_prefix() {
+    local v=''
+    [[ -f $CX_ROOT/.env ]] && v=$(grep -E '^IMAGE_PREFIX=' "$CX_ROOT/.env" | tail -1 | cut -d= -f2-)
+    printf '%s' "${v:-$(cx_project)}"
+}
+
 cx_project_for() { printf '%s_%s' "$(cx_project)" "${1:?mode}"; }
 
 # SonarQube 那組是獨立的 compose project（生命週期跟三個模式無關），

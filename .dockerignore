@@ -12,9 +12,25 @@
 
 # ── 祕密（最重要的一段）────────────────────────────────────────────────────
 # 三個 repo 都是 public，image 也可能被推到 registry。
+#
+# ⚠ 樣式是**錨定在 build context 根目錄**的。裸的 `.env` 只排除 <root>/.env，
+#   **不排除 backend/.env**。而 docker/php/Dockerfile 是 `COPY backend/ ./`，
+#   docker/nuxt/Dockerfile 是 `COPY frontend/ ./` —— 於是開發者的 backend/.env
+#   （含真實 APP_KEY 與 DB_PASSWORD）整份被烘進 test/prod 的映像層，撤不回來。
+#   2026-09-05 實測：pm/app:prod-prod 的 .env 內含 APP_KEY / DB_PASSWORD /
+#   DB_USERNAME 三個值，且與 host 的 backend/.env 完全相同。
+#   這一段的檔頭註解當時就在警告這件事，但樣式沒能防住它 ——
+#   而同一個檔案下面的 backend/vendor/ 用的正是帶路徑前綴的正確寫法。
+#   所以：每一個子專案都要各自列一次。
 .env
 .env.*
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
 !.env.example
+!backend/.env.example
+!frontend/.env.example
 .secrets/
 *.key
 *.pem

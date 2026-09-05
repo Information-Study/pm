@@ -333,6 +333,67 @@ def check_no_ignore_platform(root):
         out("PASS", "D10", "無 --ignore-platform-reqs", "cx composer 會主動拒絕這個旗標")
 
 
+def check_dockerignore_secrets(root):
+    """.dockerignore 的祕密排除樣式，必須涵蓋每一個被 COPY 的子專案。
+
+    2026-09-05 實測到的缺陷：`.dockerignore` 有 `.env` 與 `.env.*`，但那些樣式
+    **錨定在 build context 根目錄**，只排除 <root>/.env。而 Dockerfile 是
+    `COPY backend/ ./` 與 `COPY frontend/ ./` —— 於是開發者的 backend/.env
+    （含真實 APP_KEY 與 DB_PASSWORD）整份被烘進 test/prod 的映像層。
+
+    映像層是撤不回來的，而當時 `cx scan sca` 一路全綠，因為 trivy fs 掃的是
+    工作樹、不是映像。所以這一項要靠**靜態比對**擋住：
+    凡是 Dockerfile 裡出現 `COPY <dir>/ `，`.dockerignore` 就必須有
+    `<dir>/.env` 這條樣式。
+    """
+    di = Path(root, ".dockerignore")
+    if not di.exists():
+        out("FAIL", "sec-ignore", ".dockerignore 擋得住子專案的 .env", "找不到 .dockerignore")
+        return
+    patterns = {ln.strip() for ln in di.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and not ln.strip().startswith("#")}
+
+    copied = set()
+    for df in sorted(Path(root, "docker").rglob("Dockerfile")):
+        for m in re.finditer(r"^COPY\s+(?:--\S+\s+)*([A-Za-z0-9_.-]+)/\s",
+                             df.read_text(encoding="utf-8"), re.M):
+            copied.add(m.group(1))
+
+    missing = []
+    for d in sorted(copied):
+        if f"{d}/.env" not in patterns:
+            missing.append(f"{d}/.env")
+        if f"{d}/.env.*" not in patterns:
+            missing.append(f"{d}/.env.*")
+    if missing:
+        out("FAIL", "sec-ignore", ".dockerignore 擋得住子專案的 .env",
+            "缺少樣式：" + " ".join(missing) + "（裸的 .env 只錨定 context 根目錄）")
+    else:
+        out("PASS", "sec-ignore", ".dockerignore 擋得住子專案的 .env",
+            "涵蓋 " + " ".join(sorted(copied)) if copied else "沒有子專案被 COPY")
+
+
+def check_app_key_injected(cfgs):
+    """APP_KEY 必須由 compose 注入，而且是必填（:?）不是有預設（:-）。
+
+    .env 被排除出映像之後，容器裡的 .env 落在 writable layer、不在任何 volume 上。
+    沒有注入的話，entrypoint 會在**每一次 --force-recreate** 產生新金鑰，
+    把 session 與 encrypted cast 的資料變成解不開的亂碼 —— 而且要等到有人
+    回報「登入一直被登出」才會被發現。
+    """
+    bad = []
+    for mode, cfg in cfgs.items():
+        env = ((cfg.get("services") or {}).get("app") or {}).get("environment") or {}
+        if "APP_KEY" not in env:
+            bad.append(f"{mode}(未注入)")
+        elif not str(env.get("APP_KEY") or "").strip():
+            bad.append(f"{mode}(空值)")
+    if bad:
+        out("FAIL", "sec-appkey", "APP_KEY 由 compose 注入且非空", " ".join(bad))
+    else:
+        out("PASS", "sec-appkey", "APP_KEY 由 compose 注入且非空")
+
+
 def main():
     root = sys.argv[1]
     cfgs = {}
@@ -344,25 +405,31 @@ def main():
             cfgs[mode] = load(p)
         except Exception as exc:
             out("FAIL", f"cfg-{mode}", "compose config 可解析", str(exc))
+    # 純檔案檢查先跑 —— 它們不需要 compose config，不該被「沒有 .env」連坐。
+    # 之前的寫法是 cfgs 為空就直接 return 1，於是一個全新 clone（還沒 cx setup env）
+    # 連「.dockerignore 擋不擋得住祕密」這種完全靜態的檢查都跑不到。
+    check_dockerignore_secrets(root)
+    check_base_has_no_ports(root)
+    check_dockerfiles(root)
+    check_scan_no_fixed_name(root)
+    check_no_ignore_platform(root)
+
     if not cfgs:
-        out("FAIL", "cfg", "compose config 可解析", "三個模式都產不出設定")
+        out("FAIL", "cfg", "compose config 可解析", "三個模式都產不出設定（跑 cx setup env）")
         return 1
 
     check_dockerfile_case(root, cfgs)
     check_no_container_name(cfgs)
     check_no_app_entrypoint(cfgs)
-    check_base_has_no_ports(root)
     check_port_isolation(cfgs)
     check_network_named(cfgs)
     check_image_tag_has_mode(cfgs)
     check_prod_closed(cfgs)
     check_db_mysql(cfgs)
+    check_app_key_injected(cfgs)
     check_mysql_health_dep(cfgs)
     check_mount_sources(root, cfgs)
     check_version_pins(cfgs)
-    check_dockerfiles(root)
-    check_scan_no_fixed_name(root)
-    check_no_ignore_platform(root)
     return 0
 
 

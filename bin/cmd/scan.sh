@@ -326,6 +326,50 @@ _scan_sca() {
         _lane_worst=$(_scan_max "$_lane_worst" "$EX_PRECOND")
     fi
 
+    # ── 建好的映像也要掃 ──────────────────────────────────────────────────
+    #
+    # trivy fs 掃的是**工作樹**，看不到映像層。而祕密外洩正好只發生在映像層：
+    # 2026-09-05 實測 pm/app:prod-prod 的 .env 內含真實的 APP_KEY 與
+    # DB_PASSWORD —— .dockerignore 的 `.env` 樣式錨定在 context 根目錄，
+    # 擋不住 `COPY backend/ ./` 帶進來的 backend/.env。
+    # 那個缺陷存在期間 cx scan sca 一路全綠，因為沒有任何一道在看映像。
+    #
+    # 這不是新工具，是既有 Trivy 的另一個子命令。
+    _scan_sca_images() {
+        cx_docker_ok || { cx_warn "Docker 不可用 —— 略過映像掃描"; return "$EX_PRECOND"; }
+        local worst=0 img tag rc found=0
+        for tag in "app:${CX_MODE:-dev}-${CX_MODE:-dev}" "app:test-test" "app:prod-prod" \
+                   "nuxt:test-prod-ssr" "nuxt:prod-prod-ssr"; do
+            img="$(cx_image_prefix)/$tag"
+            docker image inspect "$img" >/dev/null 2>&1 || continue
+            found=$((found + 1))
+            rc=0
+            # 只掃 secret 與 misconfig：vuln 由 trivy fs 的 lockfile 掃描負責，
+            # 在這裡重跑一次只會產生同樣的 finding 兩份。
+            _scan_step "$EX_SCAN_SCA" "Trivy image：$tag" \
+                docker run --rm -u "$(id -u):$(id -g)" \
+                    -e TRIVY_CACHE_DIR=/tmp/trivy \
+                    -v "$CX_CACHE_DIR/trivy:/tmp/trivy" \
+                    -v /var/run/docker.sock:/var/run/docker.sock:ro \
+                    -v "$CX_ROOT:/workspace:ro" \
+                    -v "$CX_REPORT_DIR:/out" \
+                    "${CX_IMG_TRIVY:-aquasec/trivy:latest}" \
+                    image --config /workspace/docker/security/trivy/trivy.yaml \
+                          --scanners secret,misconfig --exit-code 1 \
+                          --format json \
+                          --output "/out/sca/trivy-image-${tag//[:\/]/-}.json" \
+                          "$img" || rc=$?
+            worst=$(_scan_max "$worst" "$rc")
+        done
+        (( found )) || cx_warn "沒有已建置的映像可掃（先跑 cx <模式> up -d --build）"
+        return "$worst"
+    }
+    if [[ $runner == docker ]]; then
+        rc=0; _scan_sca_images || rc=$?
+        # 沒有映像可掃不該把整條 lane 判成有 finding
+        [[ $rc == "$EX_PRECOND" ]] || _lane_worst=$(_scan_max "$_lane_worst" "$rc")
+    fi
+
     # composer audit（原生可用）
     if cx_have composer && [[ -f $CX_ROOT/backend/composer.lock ]]; then
         rc=0

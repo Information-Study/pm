@@ -139,11 +139,35 @@ _verify_runtime_mode() {
         _vf FAIL "D6-$mode" "vendor/autoload.php 存在" "bind mount 蓋掉了 image 裡的 vendor"
     fi
 
-    # D2：entrypoint 產生 .env 與 APP_KEY。
-    if cx_dc_q exec -T app sh -c 'grep -q "^APP_KEY=base64:" .env' </dev/null 2>/dev/null; then
-        _vf PASS "D2-$mode" ".env 與 APP_KEY 已就緒"
+    # D2：APP_KEY 就緒。2026-09-05 起兩個模式的判準不同 ——
+    #
+    #   dev        .env 是 host bind mount 進來的真檔案，entrypoint 產生 APP_KEY
+    #              並持久化在那裡。判準：.env 裡有 APP_KEY=base64:。
+    #
+    #   test/prod  .env 被 .dockerignore 排除（否則開發者的 APP_KEY 與
+    #              DB_PASSWORD 會被烘進映像層），改由 compose 注入。
+    #              判準更強：APP_KEY 必須在**環境變數**裡，而且容器內
+    #              **不可以有 .env** —— 有的話代表 entrypoint 又在 writable
+    #              layer 寫了一把金鑰，那把金鑰會在下次 --force-recreate 消失。
+    if [[ $mode == dev ]]; then
+        if cx_dc_q exec -T app sh -c 'grep -q "^APP_KEY=base64:" .env' </dev/null 2>/dev/null; then
+            _vf PASS "D2-$mode" "APP_KEY 已就緒（.env 持久化）"
+        else
+            _vf FAIL "D2-$mode" "APP_KEY 已就緒（.env 持久化）" "entrypoint 沒有產生 APP_KEY"
+        fi
     else
-        _vf FAIL "D2-$mode" ".env 與 APP_KEY 已就緒" "entrypoint 沒有產生 APP_KEY"
+        local _k _hasenv
+        _k=$(cx_dc_q exec -T app sh -c 'printf %s "${APP_KEY:-}"' </dev/null 2>/dev/null)
+        _hasenv=$(cx_dc_q exec -T app sh -c 'test -f .env && echo yes || echo no' </dev/null 2>/dev/null)
+        if [[ $_k != base64:* ]]; then
+            _vf FAIL "D2-$mode" "APP_KEY 由環境注入" \
+                "容器的 APP_KEY 不是 base64: 開頭（實際：${_k:-（空）}）"
+        elif [[ ${_hasenv//[[:space:]]/} == yes ]]; then
+            _vf FAIL "D2-$mode" "APP_KEY 由環境注入" \
+                "容器內仍有 .env —— 那把金鑰在 writable layer，重建容器就會換掉"
+        else
+            _vf PASS "D2-$mode" "APP_KEY 由環境注入（容器內無 .env）"
+        fi
     fi
 
     # D12：prod 映像不得含 xdebug（build 斷言的執行期複驗）。
