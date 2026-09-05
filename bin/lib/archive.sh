@@ -420,7 +420,7 @@ cx_restore() {
         local h n
         h=$(sed -n "s/^${c}_head=//p" "$m" | head -1)
         n=$(sed -n "s/^${c}_commits=//p" "$m" | head -1)
-        [[ -n $h ]] && cx_info "$(printf '%-8s' "$c")HEAD ${h:0:12}・${n:-?} 個 commit"
+        [[ -n $h ]] && cx_info "$(printf '%-9s' "$c")HEAD ${h:0:12}・${n:-?} 個 commit"
     done
 
     if (( ${#existing[@]} )); then
@@ -432,7 +432,11 @@ cx_restore() {
 
     # 被覆蓋的東西先搬走而不是直接刪 —— 還原到一半失敗的時候，
     # 使用者至少還拿得回原本的狀態。
-    local bak="$CX_ROOT/.cx-restore-backup/$(cx_stamp)"
+    # cx_stamp 只到秒。連續兩次還原（冪等性測試正是這樣做的）會撞到同一個
+    # 目錄名，而 `mv .git "$bak/"` 在目標已有非空 .git 時會失敗：
+    #     mv: cannot overwrite '…/.cx-restore-backup/<stamp>/.git': Directory not empty
+    # 加上 PID 讓它在同一秒內也唯一。2026-09-05 由 cx test cli 抓到。
+    local bak="$CX_ROOT/.cx-restore-backup/$(cx_stamp).$$"
     if (( ${#existing[@]} )); then
         cx_run mkdir -p "$bak" || return "$EX_FAIL"
         for t in "${existing[@]}"; do

@@ -119,6 +119,53 @@ _test_php() {
     fi
 }
 
+# cx 自己的行為測試（bats）。
+#
+# 為什麼需要它：cx 有 8000+ 行 bash，而 cx lint sh（shellcheck）與
+# cx verify cli/docs/tui（跨檔靜態一致性）**都不執行任何 cx 程式路徑**。
+# lint.sh 自己就寫著 shellcheck 抓不到本專案最貴的那類缺陷 ——
+# `_setup_system_have` 少一個 case 分支是完全合法的 bash。
+#
+# 結果刻意**不**餵進 cx verify 的 _vf：
+#   cx verify 回答的是「這棵樹／這個環境組裝對了嗎」，
+#   cx test cli 回答的是「cx 這支程式行為對嗎」。
+# 混在一起會讓預設的 cx verify 依賴 bats，於是在沒裝 bats 的機器上
+# 長出一條永久的黃線 —— 而 cli/docs/tui 三個範圍存在的理由正是
+# 「在什麼都沒裝的樹上也跑得完」。
+_test_cli() {
+    cx_step "cx 自身行為測試（bats）"
+    if ! cx_have bats; then
+        cx_warn "bats 未安裝 —— 略過"
+        cx_dim "  安裝： cx setup tools bats"
+        return "$EX_PRECOND"
+    fi
+    local strict=0 a
+    for a in "$@"; do [[ $a == --strict ]] && strict=1; done
+    [[ ${CX_TEST_STRICT:-0} == 1 ]] && strict=1
+
+    cx_runner_banner "bats $(bats --version 2>/dev/null | awk '{print $2}')"
+    local out rc=0
+    out=$(CX_TEST_REAL_ROOT="$CX_ROOT" bats -r --print-output-on-failure \
+              "$CX_ROOT/bin/test" 2>&1) || rc=$?
+    printf '%s\n' "$out" >&2
+
+    # bats 把 skip 算成成功，那與本專案「SKIP ≠ PASS」的教條直接衝突。
+    # 不改 bats 的行為（那會讓輸出不再是標準 TAP），而是把數字講出來，
+    # 並提供 --strict 讓 CI 把任何 skip 當成失敗。
+    local skipped
+    skipped=$(printf '%s\n' "$out" | grep -c '# skip' || true)
+    if (( skipped )); then
+        cx_warn "$skipped 個測試被跳過 —— 跳過不等於通過"
+        printf '%s\n' "$out" | grep '# skip' | sed 's/^/    /' >&2
+        if (( strict )); then
+            cx_error "--strict：有跳過的測試就算失敗"
+            return "$EX_FAIL"
+        fi
+    fi
+    (( rc == 0 )) || return "$EX_FAIL"
+    cx_ok "cx 行為測試全數通過"
+}
+
 _test_back() {
     cx_step "後端測試（php artisan test）"
     if [[ $(cx_runner) == docker ]]; then
@@ -235,6 +282,7 @@ cmd_test_main() {
 
     # (2) 測試套件
     case $sub in
+        cli|self)       _test_cli "$@" ;;
         back|backend)   _test_back "$@" ;;
         front|frontend) _test_front "$@" ;;
         coverage|cov)   _test_coverage "$@" ;;

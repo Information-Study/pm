@@ -59,6 +59,7 @@ cx — pm 專案統一入口
 
 ── 第二階段：測試與掃描 ─────────────────────────────────────────────────────
   test up -d        起測試環境（不可變映像 + ModSecurity WAF）
+  test cli          cx 自己的行為測試（bats，涵蓋旗標／退出碼／閘門／dry-run…）
   test back|front|all|coverage|larastan
                     跑測試套件（back 走 sqlite :memory:，不需要 MySQL）
 

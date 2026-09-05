@@ -58,8 +58,11 @@ _lint_sh() {
         return "$EX_PRECOND"
     fi
     local -a files=("$CX_ROOT/cx")
+    # *.sh 與 bin/test 的 helper（*.bash）都要檢查。
+    # **不含 *.bats** —— `@test "…" {` 不是合法 bash，shellcheck 會對每一支
+    # 測試檔吐一堆 parse error，把真正的 finding 淹掉。
     while IFS= read -r -d '' f; do files+=("$f"); done \
-        < <(find "$CX_ROOT/bin" -name '*.sh' -type f -print0 | sort -z)
+        < <(find "$CX_ROOT/bin" \( -name '*.sh' -o -name '*.bash' \) -type f -print0 | sort -z)
     cx_info "${#files[@]} 個檔案"
     # 閘門只看 error，warning 仍然完整顯示 —— 與 ② SAST 那條 lane 的作法一致
     # （見 bin/lib/sarif_gate.py 與 docker-verification.md 的 A12：

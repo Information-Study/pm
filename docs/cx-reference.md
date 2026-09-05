@@ -848,6 +848,62 @@ cx uninstall [--rc]
 
 ---
 
+## `cx test cli` — cx 自己的行為測試（bats）
+
+```
+cx test cli [--strict]
+```
+
+`cx` 有 8000+ 行 bash，而在這之前**零行為測試**。既有的兩道都不執行任何
+cx 程式路徑：`cx lint sh` 是 shellcheck（靜態），`cx verify cli/docs/tui`
+是跨檔一致性（也是靜態）。`bin/cmd/lint.sh` 自己就寫著 shellcheck 抓不到本專案
+最貴的那類缺陷 —— `_setup_system_have` 少一個 `case` 分支是**完全合法的 bash**。
+
+| 檔案 | 涵蓋 |
+|---|---|
+| `00_dispatch.bats` | 全域旗標驗證、動詞解析、每個動詞的 `--help` 都跑得起來 |
+| `10_exitcodes.bats` | `EX_*` 的**數值契約**（CI 會拿去分支判斷，所以恰好一個地方硬編碼，而那裡是測試不是文件） |
+| `20_runner.bats` | 三條 runner 路徑、WSL interop 偵測 |
+| `30_dryrun.bats` | `--dry-run` 跑完之後整棵樹的指紋不變 |
+| `40_gates.bats` | 破壞性閘門（fresh 的打字確認、acl user rm、push 黑名單、deploy apply 拒絕 --yes） |
+| `50_archive.bats` | 封存的失效模式（截斷的 bundle、缺檔、對帳、冪等、備份不被直接刪） |
+| `60_fresh.bats` | 階段機、`--resume-from`、麵包屑、還原往返 |
+| `70_project.bats` | 改名之後所有推導值都跟著走 |
+| `80_verify.bats` | PASS/FAIL/SKIP 語意（含一個**正向對照**：故意製造缺陷，確認真的會 FAIL） |
+
+### 設計上的三個決定
+
+**fixture 跑的是真程式碼，對的是假的樹。** `cx --root <目錄>` 只要求該目錄有
+`.cxroot`，其餘全部從 `$CX_ROOT/bin/` 載入 —— 所以 fixture 把真的 `bin/` 與 `cx`
+symlink 進來。絕不 source `common.sh` 進 bats 再直接呼叫函式：那會繞過 cx 自己的
+旗標解析、`set -Eeuo pipefail`、ERR trap，以及 `cx:196` 的
+`"$fn" "$@" || _rc=$?` —— 而退出碼的契約正是活在那一行。
+破壞性測試（fresh／archive）用完整的 git fixture，且 helper 會斷言
+`CX_TEST_ROOT` 位於 bats 的臨時目錄底下才繼續。
+
+**Docker 不 mock。** 需要觀察「daemon 不可用」行為的用
+`DOCKER_HOST=unix:///nonexistent/docker.sock`；真的需要 daemon 的 `skip`。
+**不從 PATH 拿掉 docker** —— 「CLI 不存在」與「daemon 不通」是兩個不同的分支、
+不同的訊息，混在一起就是在測錯的程式碼。
+
+**bats 把 `skip` 算成成功，這與本專案的「SKIP ≠ PASS」直接衝突。**
+`cx test cli` 會把跳過的數量與原因印出來，並支援 `--strict`
+（或 `CX_TEST_STRICT=1`）讓 CI 把任何跳過當成失敗。
+
+### 不 vendor bats-support / bats-assert
+
+它們同樣沒有 release asset，引進來就是兩個沒有校驗的下載，或一份 vendor 進
+public repo 的第三方 bash（那會被 `cx scan sca` 掃到，也會讓 `cx lint sh`
+開始檢查別人的程式碼）。需要的只有 `assert_success` / `assert_output`，
+那是 `bin/test/helpers/common.bash` 裡十幾行 —— 而且自己寫的版本可以印出
+完整的 cx argv 與輸出尾巴。
+
+安裝：`cx setup tools bats`。版本釘死（`CX_BATS_VERSION`），並帶一個
+**本專案自己記下的** SHA256 —— 上游沒有出校驗檔，所以那個雜湊防的是
+「釘版之後 URL 的內容被換掉」，**不是**「上游 release 被攻陷」。
+
+---
+
 ## `cx style` — 程式碼風格（**會改檔案**）
 
 ```

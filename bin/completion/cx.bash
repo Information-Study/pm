@@ -2,6 +2,13 @@
 # 安裝：cx install（會在 ~/.local/share/bash-completion/completions/ 建 symlink）
 # 手動：source /path/to/pm/bin/completion/cx.bash
 
+
+# shellcheck disable=SC2207
+#   COMPREPLY=($(compgen -W …)) 是 bash-completion 的標準寫法，全檔 34 處。
+#   SC2207 建議改用 mapfile，但那在補全腳本裡沒有好處（compgen 的輸出本來就
+#   是要按 IFS 分詞的），而且會讓這個檔案與所有參考資料長得不一樣。
+#   關掉這一條，其餘的 shellcheck 檢查仍然生效 —— 這個檔案是
+#   cx lint sh 的檢查範圍（2026-09-05 起）。
 _cx_completion() {
     local cur prev words cword
     if declare -F _init_completion >/dev/null 2>&1; then
@@ -98,7 +105,7 @@ _cx_completion() {
         verify)
             COMPREPLY=($(compgen -W "static runtime app ansible cli docs tui waf acl all --report --quiet --help -h" -- "$cur")) ;;
         test)
-            COMPREPLY=($(compgen -W "back front all coverage larastan up down restart ps logs sh build config dc --help -h" -- "$cur")) ;;
+            COMPREPLY=($(compgen -W "cli back front all coverage larastan up down restart ps logs sh build config dc --help -h" -- "$cur")) ;;
         dev|prod|up|down|restart|ps|logs|sh|build|config|dc)
             COMPREPLY=($(compgen -W "up down restart ps logs sh build config dc -d --build --no-cache -f -v --help -h" -- "$cur")) ;;
         scan)

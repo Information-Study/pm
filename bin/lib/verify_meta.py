@@ -438,6 +438,36 @@ def check_test_db_guard():
         row("PASS", "GRD-cxtest", "cx test 的 env 清單仍導向 sqlite")
 
 
+def check_bats_wiring():
+    """cx 的行為測試接線。
+
+    **只驗接線，不代表測試通過** —— 「測試有沒有過」這個宣稱只屬於
+    `cx test cli`，不屬於任何別的地方。這一項抓的是漂移：
+    有測試檔卻沒有動詞叫得到，或有動詞卻沒有測試檔。
+    """
+    tests = sorted((ROOT / "bin/test").glob("*.bats")) if (ROOT / "bin/test").is_dir() else []
+    sh = read("bin/cmd/test.sh")
+    has_arm = bool(re.search(r"^\s*cli\|self\)", sh, re.M))
+    comp = read("bin/completion/cx.bash")
+    m = re.search(r"^\s{8}test\)\n(.*?)(?=^\s{8}[a-z|*]+\)|\n\s{4}esac)", comp, re.S | re.M)
+    in_comp = bool(m and "cli" in m.group(1))
+
+    if not tests and not has_arm:
+        row("SKIP", "CLI-bats", "cx 行為測試的接線", "沒有 bin/test/*.bats，也沒有 cli 分支")
+        return
+    problems = []
+    if tests and not has_arm:
+        problems.append("有 bin/test/*.bats 但 cmd_test_main 沒有 cli) 分支")
+    if has_arm and not tests:
+        problems.append("有 cli) 分支但 bin/test/ 底下沒有 .bats")
+    if has_arm and not in_comp:
+        problems.append("補全的 test 子指令清單沒有 cli")
+    if problems:
+        row("FAIL", "CLI-bats", "cx 行為測試的接線", "；".join(problems))
+    else:
+        row("PASS", "CLI-bats", "cx 行為測試的接線", f"{len(tests)} 支 .bats")
+
+
 def main():
     families = sys.argv[1:] or ["cli", "docs", "tui"]
     if "cli" in families:
@@ -446,6 +476,7 @@ def main():
         check_cli_usage_flags()
         check_cli_help_sync()
         check_test_db_guard()
+        check_bats_wiring()
     if "tui" in families:
         check_tui()
     if "docs" in families:

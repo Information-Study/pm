@@ -372,7 +372,40 @@ _setup_tool_shellcheck() {
     cx_ok "shellcheck → $CX_LOCAL_BIN/shellcheck"
 }
 
-CX_SETUP_TOOLS='composer node ansible trivy gitleaks semgrep shellcheck'
+# bats-core 的 release **沒有任何 asset**（只有 GitHub 自動產生的原始碼壓縮檔），
+# 所以 _setup_gh_release_tarball 不適用 —— 它會 grep browser_download_url。
+#
+# 版本釘死，不追 latest：測試框架自己換版是會讓一整套測試同時變紅的那種事，
+# 而那時你正在查的是別的東西。
+#
+# ⚠ 下面那個 SHA256 是**本專案在釘版當下自己記下的**，不是上游發布的校驗值
+#   （上游沒有出）。它防的是「釘版之後那個 URL 的內容被換掉」，
+#   **不是**「上游 release 本身被攻陷」。不要把它當成比實際更強的保證。
+CX_BATS_VERSION="${CX_BATS_VERSION:-v1.14.0}"
+CX_BATS_SHA256="${CX_BATS_SHA256:-bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177}"
+
+_setup_tool_bats() {
+    cx_have bats && { cx_ok "bats 已存在：$(bats --version 2>/dev/null)"; return 0; }
+    cx_info "安裝 bats-core $CX_BATS_VERSION"
+    local tmp url
+    tmp=$(mktemp -d) || return 1
+    # shellcheck disable=SC2064
+    trap 'rm -rf "${tmp:-}"' RETURN
+    url="https://github.com/bats-core/bats-core/archive/refs/tags/${CX_BATS_VERSION}.tar.gz"
+    _setup_fetch "$url" "$tmp/bats.tar.gz" || return 1
+    if [[ -n $CX_BATS_SHA256 ]]; then
+        _setup_verify_sha "$tmp/bats.tar.gz" "$CX_BATS_SHA256" || return 1
+        cx_ok "SHA256 核對通過（本專案的釘版紀錄）"
+    fi
+    cx_run tar -xzf "$tmp/bats.tar.gz" -C "$tmp" || return 1
+    local src; src=$(find "$tmp" -maxdepth 1 -type d -name 'bats-core-*' | head -1)
+    [[ -n $src ]] || { cx_error "壓縮檔裡找不到 bats-core-*"; return 1; }
+    # bats 自己的 install.sh：免 root，裝到 ~/.local/{bin,libexec,lib}
+    cx_run "$src/install.sh" "$HOME/.local" || return 1
+    cx_ok "bats → $CX_LOCAL_BIN/bats"
+}
+
+CX_SETUP_TOOLS='composer node ansible trivy gitleaks semgrep shellcheck bats'
 
 # ── 需要 root 的系統工具 ────────────────────────────────────────────────────
 #
