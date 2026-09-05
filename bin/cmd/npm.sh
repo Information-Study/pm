@@ -35,7 +35,7 @@
 # 兩條路產生的 node_modules 都能被對方使用。
 # 刻意不用 Alpine：那會產生一份只有 Alpine 能用的 node_modules，
 # 之後在 host 上跑 npm run build 又會壞，而且錯誤訊息一模一樣。
-CX_NODE_GLIBC_IMAGE="${CX_NODE_GLIBC_IMAGE:-node:24.20-bookworm-slim}"
+CX_NODE_GLIBC_IMAGE="${CX_NODE_GLIBC_IMAGE:-$CX_IMG_NODE_GLIBC}"
 
 # ── backend 的兩條路 ────────────────────────────────────────────────────────
 # native：host 的 npm 直接跑（backend/node_modules 是 host 上的真實目錄）

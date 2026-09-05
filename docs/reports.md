@@ -12,7 +12,8 @@ reports/
 ├── verify/     cx verify 的驗收報告（Markdown，帶時間戳）
 ├── quality/    ① larastan.json、coverage-backend.xml、junit-backend.xml
 ├── sast/       ② semgrep.sarif
-├── sca/        ③ trivy-fs.json、composer-audit.json、npm-audit.json
+├── sca/        ③ trivy-fs.json、trivy-image-*.json、composer-audit.json、
+│                 npm-audit.json、sbom.cdx.json、scanner-image-digests.txt
 ├── dast/       ④ OWASP ZAP
 │   ├── detect/     WAF = DetectionOnly 那一輪的 report.json / report.html
 │   ├── blocking/   WAF = On 那一輪
@@ -68,7 +69,7 @@ ls -t reports/verify | head -3 # 最近三份
 |---|---|---|
 | `cx scan code` | `reports/quality/larastan.json` | Larastan（level 5，設定在 `backend/phpstan.neon.dist`）；有 SonarQube 時另有 Quality Gate |
 | `cx scan sast` | `reports/sast/semgrep.sarif` | SARIF（只有這一個檔，沒有文字摘要）；`bin/lib/sarif_gate.py` 只把 **ERROR** 等級算成失敗 |
-| `cx scan sca` | `reports/sca/` | Trivy JSON + `composer audit` / `npm audit` 輸出 |
+| `cx scan sca` | `reports/sca/` | Trivy JSON（工作樹 + 每個映像）、`composer audit` / `npm audit` 輸出、CycloneDX SBOM、掃描器映像 digest |
 | `cx scan dast` | `reports/dast/{detect,blocking}/report.{json,html}` | HTML 那份最好讀；`compare/` 是 WAF 對照 |
 | `cx scan secrets` | `reports/secrets/gitleaks-*.json` | 三個 repo 各一份，`[]` 代表乾淨 |
 | `cx test coverage` | `reports/quality/coverage-backend.xml`、`junit-backend.xml` | Clover / JUnit 格式，給 CI 與 Sonar 用 |
@@ -88,6 +89,43 @@ ls -t reports/verify | head -3 # 最近三份
 「找到 SQL injection」在 CI 上長得一模一樣。
 
 ---
+
+## 3.5 SCA 的四類產物
+
+| 檔案 | 是什麼 | 是不是閘門 |
+|---|---|---|
+| `trivy-fs.json` | 掃**工作樹**：lockfile 的已知漏洞、祕密、設定錯誤 | 是 |
+| `trivy-image-*.json` | 掃**建好的映像層** | 是 |
+| `sbom.cdx.json` | CycloneDX 物料清單 | **否**，是產物 |
+| `scanner-image-digests.txt` | 這次實際用到的掃描器映像 digest | 否 |
+
+### 為什麼要分開掃工作樹與映像
+
+`trivy fs` 看不到映像層，而**祕密外洩正好只發生在映像層**。
+2026-09-05 實測：`pm/app:prod-prod` 裡有開發者的 `.env`，含真實的 `APP_KEY`
+與 `DB_PASSWORD` —— `.dockerignore` 的 `.env` 樣式錨定在 build context 根目錄，
+擋不住 `COPY backend/ ./` 帶進來的 `backend/.env`。
+那個缺陷存在的整段期間 `cx scan sca` 一路全綠，因為沒有任何一道在看映像。
+
+`trivy image` 不是新工具，是既有 Trivy 的另一個子命令。
+
+### SBOM 不是閘門
+
+產不出 SBOM 是**環境問題**（Trivy 不在），不是「這個專案有資安問題」。
+把它算進 lane 的退出碼會讓 SCA 因為一個產物缺席而變紅 ——
+那正是「永遠紅燈的 lane 沒有人會再看」。
+
+### 為什麼掃描器只釘 tag、不釘 digest
+
+釘死 digest 會讓掃描器停在舊的規則集與漏洞庫，**那比漂移更糟**。
+所以掃描器映像釘到明確版本 tag（`aquasec/trivy:0.74.0`），
+但不釘 digest；同時把每次解析出來的 digest 寫進
+`scanner-image-digests.txt`，事後就能回答「那份報告是哪一版掃出來的」，
+而不必犧牲情資的新鮮度。
+
+> 執行期映像（mysql、nginx、phpmyadmin、CRS…）的規則不同 ——
+> 它們一律釘到明確版本，由 `cx verify static` 的 `4b` 檢查把關，
+> 拒絕 `latest`、`stable`、以及只有 major 的浮動 tag。
 
 ## 4. DAST 的兩份報告要一起看
 

@@ -23,6 +23,10 @@ import re
 import subprocess
 import sys
 
+# 映像版本的單一事實來源是 bin/lib/common.sh；cx 會把它 export 進來。
+# 這裡的字面值只是「直接跑這支程式」時的備援，不是第二份宣告。
+CURL_IMAGE = os.environ.get("CX_IMG_CURL") or "curlimages/curl:8.11.1"
+
 # (名稱, 路徑, 是否為攻擊, POST body 或 None)
 CASES = [
     ("sqli-or-1-1",      "/?id=1%27%20OR%20%271%27=%271",              True,  None),
@@ -107,7 +111,7 @@ def probe(net, path, body=None):
     與 ZAP 的路徑完全一致（host 那條路要經過發布的埠，中間多一層 NAT）。
     """
     cmd = ["docker", "run", "--rm", "--network", net,
-           "curlimages/curl:8.11.1",
+           CURL_IMAGE,
            "-s", "-o", "/dev/null", "-m", "20", "-w", "%{http_code}"]
     if body is not None:
         cmd += ["-X", "POST",
@@ -128,7 +132,7 @@ def livewire_prefix(net):
     """
     out = subprocess.run(
         ["docker", "run", "--rm", "--network", net,
-         "curlimages/curl:8.11.1", "-s", "-m", "20",
+         CURL_IMAGE, "-s", "-m", "20",
          "http://waf:8080/admin/login"],
         capture_output=True, text=True)
     m = re.search(r"/livewire-[0-9a-zA-Z]+", out.stdout or "")

@@ -377,9 +377,19 @@ waf_exclusions_before:
     remove_ids: [920273, 920274]
   - id: 10011
     phase: 2
-    comment: Livewire —— phase 2（941 XSS / 942 SQLi 的誤判）。前綴形狀同 10010。
+    comment: >-
+      Livewire —— phase 2（941 XSS / 942 SQLi 的誤判）。前綴形狀同 10010。
+      逐條列 ID 的做法在這裡是**結構性錯誤**，不是漏了幾條而已：
+      Docker 側的 CRS 由 compose 釘住（4.28），原生側由 MyGuard 的 apt repo 決定
+      （目前 4.30），兩邊本來就不同版，而 CRS 每次改版都會新增規則。
+      2026-09-05 一天之內就被咬兩次 —— 先是 CRS 4 才有的 941390
+      （Javascript method detected），補上之後原生側又冒出 942550
+      （JSON-Based SQL Injection）。改成依 tag 移除，才不會每次上游加規則就再壞一次。
+      attack-sqli 與 attack-xss 是 CRS 4 穩定的標籤（942 家族 60 條全帶前者）。
+      範圍沒有變寬：原本列的 941/942 就是這兩個家族，只是列不齊。
+      這條路徑上真正的防線是 Laravel 的預備語句與轉義，加上後台本來就要登入。
     condition: 'REQUEST_URI "@rx ^/livewire(-[0-9a-zA-Z]+)?/"'
-    remove_ids: [941100, 941110, 941160, 942100, 942190, 942260, 942270, 942430, 942440]
+    remove_tags: ['attack-sqli', 'attack-xss']
   - id: 10012
     phase: 1
     comment: Filament 後台 /admin —— phase 1
@@ -389,9 +399,9 @@ waf_exclusions_before:
     phase: 2
     comment: >-
       Filament 後台 /admin —— phase 2。富文字欄位與表格篩選器送出的內容
-      幾乎必定會踩到 941/942。
+      幾乎必定會踩到 941/942。理由同 10011：依 tag 而不是逐條列 ID。
     condition: 'REQUEST_URI "@beginsWith /admin"'
-    remove_ids: [941100, 941160, 942100, 942270, 942430, 942440]
+    remove_tags: ['attack-sqli', 'attack-xss']
   - id: 10014
     phase: 1
     comment: >-

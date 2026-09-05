@@ -239,6 +239,47 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 
 完整的需求追溯與實測結果見 [`acceptance.md`](acceptance.md)。
 
+### 供應鏈釘版本，順手抓到 Docker 與原生跑在不同的 CRS 大版本上
+
+全庫的外部映像本來有九個是浮動的。把它們一一釘住的過程中，
+`owasp/modsecurity-crs:nginx-alpine` 揭露了一件比「版本漂移」嚴重得多的事：
+
+| | CRS 版本 | 來源 |
+|---|---|---|
+| Docker（`cx test`） | **3.3.10** | `:nginx-alpine` 這個 tag 完全沒有版本成分，而它當時指向的是 3.3 系列 |
+| 原生（Ansible） | **4.30.0** | MyGuard 的 apt repo |
+
+也就是說 **Docker 側量到的 WAF 行為，跟實際上線的那一套不是同一個大版本**，
+而 `docker/waf/.../main.conf` 從一開始就是照 CRS 4 寫的
+（裡面那條 `setvar:tx.crs_setup_version=400` 與 901001 的註解）。
+
+把 Docker 釘到 `4.28.0-nginx-alpine-202608131208` 之後，主動探測立刻紅了：
+攻擊仍然 100% 擋下，但**正常的 Livewire POST 被擋成 403** ——
+排除清單只對 CRS 3.3 調校過。追下去是連續兩條 CRS 4 才有的規則：
+
+1. `941390`（Javascript method detected）—— 補上之後 Docker 過了
+2. `942550`（JSON-Based SQL Injection）—— 原生的 4.30 又冒出這一條
+
+**兩次都代表原生部署的 Filament 後台一直有這個誤判，只是沒有人量過。**
+
+所以最後不是再補第三條 ID，而是改成**依 tag 移除**
+（`ctl:ruleRemoveByTag=attack-sqli` / `attack-xss`）：
+逐條列 ID 在這裡是結構性錯誤 —— 兩條路徑本來就跑不同版的 CRS，
+而 CRS 每次改版都會加規則。範圍沒有變寬（原本列的 941/942 就是這兩個家族，
+只是列不齊），而這兩條路徑之外的攻擊面完全沒有放寬。
+
+修完之後兩條路徑的實測（引擎都切到 `On`）：
+
+| | Docker（CRS 4.28） | 原生（CRS 4.30） |
+|---|---|---|
+| 6 項攻擊 | 全部 403 | 全部 403 |
+| 正常 Livewire POST | 通過 | 419（Laravel 自己擋 CSRF token —— 代表**過了 WAF**） |
+| `/admin/login`、`/` | 通過 | 200 / 200 |
+
+守門員是 `cx scan dast` 的主動探測（`bin/lib/waf_probe.py`）：
+它同時量「攻擊擋不擋得住」與「正常請求過不過得去」，
+而第二項正是這兩次缺陷唯一會現形的地方。
+
 一句話總結本輪的教訓：**這個專案已知的缺陷有一半以上不是「程式寫錯」，
 而是兩個地方對同一件事的說法不一致，而且沒有任何東西在盯著。**
 所以新增的檢查一律跨檔比對，而且兩邊都從實際的東西推導 ——

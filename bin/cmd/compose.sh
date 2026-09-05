@@ -127,7 +127,7 @@ _compose_check_poisoned_volumes() {
         docker volume inspect "${proj}_${vol}" >/dev/null 2>&1 || continue
         # 用一次性容器去 stat —— host 上的 volume 路徑非 root 讀不到。
         owner=$(docker run --rm -v "${proj}_${vol}:/x:ro" \
-                "${CX_IMG_ALPINE:-alpine:3.22}" stat -c '%u' /x 2>/dev/null) || continue
+                "${CX_IMG_ALPINE}" stat -c '%u' /x 2>/dev/null) || continue
         [[ $owner == 0 ]] && bad+=("${proj}_${vol}")
     done
     (( ${#bad[@]} )) || return 0

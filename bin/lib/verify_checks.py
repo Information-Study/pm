@@ -233,6 +233,83 @@ def check_version_pins(cfgs):
         out("PASS", "4", "版本鎖定", "mysql:8.4 / nginx:1.30-alpine")
 
 
+# 自家建置的映像（pm/app、pm/nuxt）tag 由模式組出來，不適用外部映像的規則。
+_LOCAL_IMAGE_RE = re.compile(r"^[A-Za-z0-9_.-]+/(app|nuxt):")
+
+# 沒有版本資訊的 tag。這些是**浮動**的：同一份 compose 在兩天之內可以拉到
+# 完全不同的東西，而 git log 上什麼都看不到。
+_FLOATING_TAGS = {"latest", "stable", "main", "master", "edge", "nightly", "dev"}
+
+
+def _tag_is_pinned(image):
+    """image 是否釘到了明確版本。回傳 (ok, 原因)。"""
+    ref = image.split("@")[0]              # digest 形式一律算釘住
+    if "@sha256:" in image:
+        return True, ""
+    host_or_ns, _, last = ref.rpartition("/")
+    if ":" not in last:
+        return False, "完全沒有 tag（等同 latest）"
+    tag = last.rsplit(":", 1)[1]
+    if tag.lower() in _FLOATING_TAGS:
+        return False, f"tag「{tag}」是浮動的"
+    if not any(c.isdigit() for c in tag):
+        # 例如 owasp/modsecurity-crs:nginx-alpine —— 有 tag，但沒有版本成分
+        return False, f"tag「{tag}」不含任何版本數字"
+    # 至少要有 major.minor。只有 major 的 tag（phpmyadmin:5、postgres:17-alpine）
+    # 仍然是浮動的：整個 5.x / 17.x 系列都可能在某天被換掉。
+    if not re.search(r"\d+\.\d+", tag):
+        return False, f"tag「{tag}」只有 major，仍然是浮動的（要 major.minor）"
+    return True, ""
+
+
+def check_external_image_pins(cfgs, root):
+    """所有外部映像都必須釘到明確版本 —— 不接受 latest／stable／無版本。
+
+    為什麼連掃描器也要釘：trivy 的漏洞庫與 semgrep 的規則集都是**執行期**
+    下載的，不烘在映像裡，所以釘住映像版本不會讓它漏掉新的 CVE。
+    反過來，讓掃描器浮動代表 CI 可能在沒有任何 commit 的情況下突然多出或
+    少掉一批 finding，而沒有人說得出為什麼。
+    """
+    seen = {}      # image -> 來源描述
+
+    for mode, doc in sorted(cfgs.items()):
+        for name, svc in sorted(services(doc).items()):
+            img = svc.get("image") or ""
+            if img and not _LOCAL_IMAGE_RE.match(img):
+                seen.setdefault(img, f"{mode}/{name}")
+
+    # cx 自己 docker run 起來的映像：單一事實來源在 bin/lib/common.sh
+    common = Path(root, "bin/lib/common.sh")
+    if common.exists():
+        for m in re.finditer(r'^(CX_IMG_[A-Z_]+)="\$\{\1:-([^}]+)\}"',
+                             common.read_text(encoding="utf-8"), re.M):
+            seen.setdefault(m.group(2), f"common.sh/{m.group(1)}")
+
+    # Dockerfile 的 FROM 與 COPY --from（ARG 預設值也算）
+    for df in sorted(Path(root, "docker").rglob("Dockerfile")):
+        txt = df.read_text(encoding="utf-8")
+        for m in re.finditer(r"^ARG\s+\w*IMAGE\w*=(\S+)", txt, re.M):
+            seen.setdefault(m.group(1), f"{df.parent.name}/ARG")
+        for m in re.finditer(r"^COPY\s+--from=([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+:\S+)",
+                             txt, re.M):
+            seen.setdefault(m.group(1), f"{df.parent.name}/COPY --from")
+
+    bad = []
+    for img, where in sorted(seen.items()):
+        if "${" in img:                    # 純變數引用，展開後的值會另外被看到
+            continue
+        ok, why = _tag_is_pinned(img)
+        if not ok:
+            bad.append(f"{img}（{where}：{why}）")
+
+    if bad:
+        out("FAIL", "4b", "外部映像一律釘版本（無 latest／無版本 tag）",
+            "; ".join(bad))
+    else:
+        out("PASS", "4b", "外部映像一律釘版本（無 latest／無版本 tag）",
+            f"{len(seen)} 個外部映像全部釘住")
+
+
 def check_dockerfiles(root):
     """3.2 不用 pecl；2.1 vendor-dev 不加 --no-autoloader；
     D12 prod 有 xdebug 斷言；D14 dev 不 COPY 原始碼；D15 nuxt 多 target。"""
@@ -526,6 +603,7 @@ def main():
     check_mysql_health_dep(cfgs)
     check_mount_sources(root, cfgs)
     check_version_pins(cfgs)
+    check_external_image_pins(cfgs, root)
     return 0
 
 

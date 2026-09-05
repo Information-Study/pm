@@ -217,7 +217,7 @@ print(n)
                     -v "$CX_ROOT:/usr/src:ro" \
                     -v "$CX_CACHE_DIR/sonar-work:/tmp/scannerwork" \
                     -e SONAR_SCANNER_OPTS="-Dsonar.working.directory=/tmp/scannerwork" \
-                    "${CX_IMG_SONAR_SCANNER:-sonarsource/sonar-scanner-cli:latest}" || rc=$?
+                    "$CX_IMG_SONAR_SCANNER" || rc=$?
                 # 這裡曾經寫 worst=$(...)。檔頭的註解正在講這個坑，而這一行自己犯了：
                 # worst 不是本函式的 local，寫進去的是呼叫者的變數，
                 # 但下面 return 的是 _lane_worst → scanner 的失敗被靜默吞掉。
@@ -261,7 +261,7 @@ _scan_sast() {
             -v "$CX_ROOT:/src:ro" \
             -v "$CX_REPORT_DIR:/out" \
             -w /src \
-            "${CX_IMG_SEMGREP:-semgrep/semgrep:latest}" \
+            "$CX_IMG_SEMGREP" \
             semgrep scan "${cfg[@]}" --sarif --output /out/sast/semgrep.sarif || rc=$?
     elif cx_have semgrep; then
         cx_info "Semgrep（原生）…"
@@ -296,6 +296,61 @@ _scan_sast() {
 # ---------------------------------------------------------------------------
 # ③ SCA — Trivy + composer audit + npm audit
 # ---------------------------------------------------------------------------
+# SBOM：不是閘門，是**產物**。
+#
+# 退出碼刻意不進 _lane_worst —— 產不出 SBOM 是環境問題（Trivy 不在），
+# 不是「這個專案有資安問題」。把它算進 lane 會讓 SCA 因為一個產物缺席而變紅，
+# 而那正是 A12 講的「永遠紅燈的 lane 沒有人會再看」。
+_scan_sca_sbom() {
+    local out="$CX_REPORT_DIR/sca/sbom.cdx.json" runner
+    runner=$(_scan_runner)
+    cx_info "產生 CycloneDX SBOM …"
+    if [[ $runner == docker ]] && cx_docker_ok; then
+        cx_run docker run --rm -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/tmp/trivy \
+            -v "$CX_CACHE_DIR/trivy:/tmp/trivy" \
+            -v "$CX_ROOT:/workspace:ro" \
+            -v "$CX_REPORT_DIR:/out" \
+            -w /workspace \
+            "$CX_IMG_TRIVY" \
+            fs --format cyclonedx --output /out/sca/sbom.cdx.json . \
+            >/dev/null 2>&1 || { cx_warn "SBOM 產生失敗（不影響 SCA 判定）"; return 0; }
+    elif cx_have trivy; then
+        cx_run env -C "$CX_ROOT" TRIVY_CACHE_DIR="$CX_CACHE_DIR/trivy" \
+            trivy fs --format cyclonedx --output "$out" . \
+            >/dev/null 2>&1 || { cx_warn "SBOM 產生失敗（不影響 SCA 判定）"; return 0; }
+    else
+        cx_warn "Trivy 不可用 —— 略過 SBOM"
+        return 0
+    fi
+    [[ -s $out ]] || { cx_warn "SBOM 是空的"; return 0; }
+    local n
+    n=$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("components") or []))' \
+        "$out" 2>/dev/null || echo '?')
+    cx_ok "SBOM：$n 個元件 → reports/sca/${out##*/}"
+}
+
+# 記下這次實際用到的掃描器映像 digest。
+#
+# 為什麼要記：掃描器**刻意只釘到版本 tag 而不釘 digest** —— 釘死 digest 會讓
+# 它停在舊的規則集與漏洞庫，那比漂移更糟。代價是同一個 tag 兩個月後可能是
+# 不同的建置，於是「當時掃出什麼」事後無法重現。把解析出來的 digest 寫進
+# 報告目錄，就能事後回答「那份報告是哪一版掃出來的」，而不必犧牲情資的新鮮度。
+_scan_record_image_digests() {
+    cx_docker_ok || return 0
+    local out="$CX_REPORT_DIR/sca/scanner-image-digests.txt" img d
+    : > "$out"
+    {
+        printf '# 本次掃描實際使用的映像（tag 釘住、digest 只記錄不強制）\n'
+        printf '# 產生時間：%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >> "$out"
+    for img in "$CX_IMG_TRIVY" "$CX_IMG_SEMGREP" "$CX_IMG_ZAP" "$CX_IMG_SONAR_SCANNER"; do
+        d=$(docker image inspect "$img" --format '{{index .RepoDigests 0}}' 2>/dev/null) || d='(本機未拉取)'
+        printf '%-58s %s\n' "$img" "${d:-（無 RepoDigest）}" >> "$out"
+    done
+    cx_ok "掃描器映像 digest → reports/sca/${out##*/}"
+}
+
 _scan_sca() {
     cx_step "③ SCA — Trivy + 套件管理器 audit"
     local runner _lane_worst=0 rc=0
@@ -309,7 +364,7 @@ _scan_sca() {
                 -v "$CX_ROOT:/workspace:ro" \
                 -v "$CX_REPORT_DIR:/out" \
                 -w /workspace \
-                "${CX_IMG_TRIVY:-aquasec/trivy:latest}" \
+                "$CX_IMG_TRIVY" \
                 fs --config /workspace/docker/security/trivy/trivy.yaml \
                    --scanners vuln,secret,misconfig --exit-code 1 \
                    --format json --output /out/sca/trivy-fs.json . || rc=$?
@@ -356,22 +411,44 @@ _scan_sca() {
             docker image inspect "$img" >/dev/null 2>&1 || continue
             found=$((found + 1))
             rc=0
+            local rep="$CX_REPORT_DIR/sca/trivy-image-${tag//[:\/]/-}.json"
+            : > "$rep"
+            # ⚠ 要用 --group-add 把 docker.sock 的群組加進去。
+            #   容器以 -u $(id -u):$(id -g) 執行（避免產出 root 擁有的報告檔），
+            #   而那個身分不在 docker 群組裡 —— 少了這一行，Trivy 會死在
+            #     permission denied ... unix:///var/run/docker.sock
+            #   然後回退去 registry 拉「pm/app」，得到 UNAUTHORIZED。
+            #
             # 只掃 secret 與 misconfig：vuln 由 trivy fs 的 lockfile 掃描負責，
             # 在這裡重跑一次只會產生同樣的 finding 兩份。
-            _scan_step "$EX_SCAN_SCA" "Trivy image：$tag" \
-                docker run --rm -u "$(id -u):$(id -g)" \
+            cx_info "Trivy image：$tag …"
+            docker run --rm -u "$(id -u):$(id -g)" \
+                    --group-add "$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)" \
                     -e TRIVY_CACHE_DIR=/tmp/trivy \
                     -v "$CX_CACHE_DIR/trivy:/tmp/trivy" \
                     -v /var/run/docker.sock:/var/run/docker.sock:ro \
                     -v "$CX_ROOT:/workspace:ro" \
                     -v "$CX_REPORT_DIR:/out" \
-                    "${CX_IMG_TRIVY:-aquasec/trivy:latest}" \
+                    "$CX_IMG_TRIVY" \
                     image --config /workspace/docker/security/trivy/trivy.yaml \
                           --scanners secret,misconfig --exit-code 1 \
                           --format json \
                           --output "/out/sca/trivy-image-${tag//[:\/]/-}.json" \
-                          "$img" || rc=$?
-            worst=$(_scan_max "$worst" "$rc")
+                          "$img" >/dev/null 2>&1 || rc=$?
+            # ⚠ 退出碼 1 有兩種完全不同的意思：真的掃到東西，或者根本沒跑成。
+            #   （同一個檔案下面的 npm audit 已經記過這個坑一次。）
+            #   Trivy 成功時一定會寫出含 "Results" 或 "SchemaVersion" 的 JSON；
+            #   FATAL 的時候輸出檔是空的。用產物判斷，不要只看退出碼。
+            if (( rc != 0 )) && ! grep -q '"SchemaVersion"' "$rep" 2>/dev/null; then
+                cx_error "Trivy image：$tag 沒跑成，不是掃出問題"
+                cx_dim "  這是環境問題（退出碼 $EX_PRECOND），不是 SCA finding"
+                worst=$(_scan_max "$worst" "$EX_PRECOND")
+            elif (( rc != 0 )); then
+                cx_warn "Trivy image：$tag 有 finding"
+                worst=$(_scan_max "$worst" "$EX_SCAN_SCA")
+            else
+                cx_ok "Trivy image：$tag 乾淨"
+            fi
         done
         (( found )) || cx_warn "沒有已建置的映像可掃（先跑 cx <模式> up -d --build）"
         return "$worst"
@@ -422,6 +499,9 @@ _scan_sca() {
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     fi
 
+    _scan_sca_sbom
+    _scan_record_image_digests
+
     return "$_lane_worst"
 }
 
@@ -460,7 +540,7 @@ _scan_dast() {
             --network "$net" \
             -v "$CX_REPORT_DIR/dast/$mode:/zap/wrk:rw" \
             -v "$CX_ROOT/docker/security/zap:/zap/pmconf:ro" \
-            "${CX_IMG_ZAP:-ghcr.io/zaproxy/zaproxy:stable}" \
+            "$CX_IMG_ZAP" \
             zap-baseline.py -t "$target" \
                 -c /zap/pmconf/baseline.conf \
                 -J report.json -r report.html || rc=$?
@@ -540,7 +620,7 @@ _scan_dast_probe() {
     local out="$CX_REPORT_DIR/dast/compare/waf-probe.json"
     cx_ensure_host_dirs "$CX_REPORT_DIR/dast/compare"
     cx_info "主動攻擊探測（WAF 攔截率的真實量測）…"
-    CX_ROOT="$CX_ROOT" CX_NET="$net" \
+    CX_ROOT="$CX_ROOT" CX_NET="$net" CX_IMG_CURL="$CX_IMG_CURL" \
         python3 "$CX_ROOT/bin/lib/waf_probe.py" "$out" || return 0
 }
 

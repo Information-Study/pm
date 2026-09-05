@@ -25,7 +25,7 @@ ARG APP_UID=1000
 ARG APP_GID=1000
 
 # install-php-extensions 會自己處理 build deps 的裝與卸，不需要手動 .build-deps。
-COPY --from=mlocati/php-extension-installer:2 /usr/bin/install-php-extensions /usr/local/bin/
+COPY --from=mlocati/php-extension-installer:2.11.12 /usr/bin/install-php-extensions /usr/local/bin/
 
 # intl 是 Filament v5 的硬性需求（claude.md §0.5）。
 # bcmath 雖然 Laravel 13 與 Filament v5 都沒要求，但成本極低且常被套件用到。
@@ -64,7 +64,7 @@ RUN set -eux; \
     if [ "$APP_GID" != "$cur_gid" ]; then groupmod -o -g "$APP_GID" www-data; fi; \
     if [ "$APP_UID" != "$cur_uid" ]; then usermod -o -u "$APP_UID" -g "$APP_GID" www-data; fi
 
-COPY --from=composer/composer:2-bin /composer /usr/local/bin/composer
+COPY --from=composer/composer:2.10.3-bin /composer /usr/local/bin/composer
 
 COPY docker/php/php.ini          /usr/local/etc/php/conf.d/zz-pm.ini
 COPY docker/php/www.conf         /usr/local/etc/php-fpm.d/zz-www.conf

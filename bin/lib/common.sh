@@ -4,6 +4,35 @@
 readonly EX_OK=0 EX_FAIL=1 EX_USAGE=2 EX_PRECOND=3 EX_ABORT=4
 readonly EX_SCAN_QUALITY=20 EX_SCAN_SAST=21 EX_SCAN_SCA=22 EX_SCAN_DAST=23
 
+# ── 外部映像的單一事實來源 ────────────────────────────────────────────────────
+# 每一個都**釘住明確版本**，沒有 latest、沒有無版本 tag。
+# 這些原本散在 scan.sh / fresh.sh / compose.sh 的 `${VAR:-預設}` 裡，
+# 要改版本得先找齊所有出現處 —— 集中在這裡之後，釘版是一次編輯，
+# 而 cx verify static 的 check_version_pins 也有一張表可以對。
+#
+# 為什麼掃描器也釘版本，卻不會因此漏掉新的 CVE：
+#   trivy 的漏洞資料庫、semgrep 的規則集都是**執行期下載**的，不烘在映像裡。
+#   釘住的是掃描器程式本身的版本，不是它的情資。反過來說，讓掃描器版本浮動
+#   代表 CI 可能在沒有任何 commit 的情況下，突然多出或少掉一批 finding，
+#   而沒有人說得出為什麼。
+#
+# 每一個都可以用同名環境變數覆寫，例如：
+#   CX_IMG_TRIVY=aquasec/trivy:0.75.0 cx scan sca
+CX_IMG_ALPINE="${CX_IMG_ALPINE:-alpine:3.22}"
+CX_IMG_NODE="${CX_IMG_NODE:-node:24.20-alpine}"
+CX_IMG_COMPOSER="${CX_IMG_COMPOSER:-composer:2.10.3}"
+CX_IMG_SEMGREP="${CX_IMG_SEMGREP:-semgrep/semgrep:1.175.0}"
+CX_IMG_TRIVY="${CX_IMG_TRIVY:-aquasec/trivy:0.74.0}"
+CX_IMG_ZAP="${CX_IMG_ZAP:-ghcr.io/zaproxy/zaproxy:2.17.0}"
+CX_IMG_SONAR_SCANNER="${CX_IMG_SONAR_SCANNER:-sonarsource/sonar-scanner-cli:12.1.0.3233_8.0.1}"
+CX_IMG_CURL="${CX_IMG_CURL:-curlimages/curl:8.11.1}"
+# npm.sh 用的 glibc 變體：backend 的部分 npm 相依有原生模組，musl 上會編不起來。
+CX_IMG_NODE_GLIBC="${CX_IMG_NODE_GLIBC:-node:24.20-bookworm-slim}"
+
+# scaffold 用的 npm 套件也要釘版本，否則 cx fresh --mode scaffold 產出的骨架
+# 會隨上游變動 —— 「重建一次」就不再是可重現的動作。
+CX_NUXI_VERSION="${CX_NUXI_VERSION:-3.37.0}"
+
 if [[ -t 2 ]]; then
     readonly C_RED=$'\033[31m' C_GRN=$'\033[32m' C_YLW=$'\033[33m'
     readonly C_BLU=$'\033[34m' C_DIM=$'\033[2m' C_RST=$'\033[0m'

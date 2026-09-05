@@ -50,7 +50,7 @@ services:
   phpmyadmin:
     pids_limit: 256
     mem_limit: 256m
-    image: ${PHPMYADMIN_IMAGE:-phpmyadmin:5}
+    image: ${PHPMYADMIN_IMAGE:-phpmyadmin:5.2.3}
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
@@ -88,7 +88,7 @@ services:
     # ModSecurity 的請求 body 緩衝是 MODSEC_REQ_BODY_LIMIT（約 12.5MB）/請求
     pids_limit: 256
     mem_limit: 512m
-    image: ${WAF_IMAGE:-owasp/modsecurity-crs:nginx-alpine}
+    image: ${WAF_IMAGE:-owasp/modsecurity-crs:4.28.0-nginx-alpine-202608131208}
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]

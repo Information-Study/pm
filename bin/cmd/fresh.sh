@@ -403,7 +403,7 @@ _fresh_rebuild_frontend() {
             #   --no-gitInit        三個 repo 的初始化統一由 _fresh_git_init 做。
             #                       非互動模式下這個布林旗標也是必填的 ——
             #                       「不給」不等於 false，會直接失敗（實測）。
-            cx_run npx --yes nuxi@latest init "$dir" \
+            cx_run npx --yes nuxi@"$CX_NUXI_VERSION" init "$dir" \
                 --template "${CX_NUXT_TEMPLATE:-minimal}" \
                 --packageManager npm --no-install --no-gitInit --force </dev/null \
                 || { cx_error "nuxi init 失敗"; return 1; }
@@ -413,8 +413,8 @@ _fresh_rebuild_frontend() {
             cx_run docker run --rm -u "$(id -u):$(id -g)" \
                 -v "$CX_ROOT:/w" -w /w \
                 -e HOME=/tmp \
-                "${CX_IMG_NODE:-node:24.20-alpine}" \
-                npx --yes nuxi@latest init frontend \
+                "$CX_IMG_NODE" \
+                npx --yes nuxi@"$CX_NUXI_VERSION" init frontend \
                 --template "${CX_NUXT_TEMPLATE:-minimal}" \
                 --packageManager npm --no-install --no-gitInit --force </dev/null \
                 || { cx_error "nuxi init 失敗（容器）"; return 1; }
@@ -449,7 +449,7 @@ _fresh_rebuild_backend() {
             run=(docker run --rm -u "$(id -u):$(id -g)"
                  -e HOME=/tmp
                  -v "$CX_ROOT:/w" -w /w
-                 "${CX_IMG_COMPOSER:-composer:2}")
+                 "$CX_IMG_COMPOSER")
             ;;
         *)  cx_error "重建後端需要 composer + php 或 Docker，都不可用"
             cx_dim "  cx setup tools composer && cx setup system php   或   啟用 Docker"
@@ -468,7 +468,7 @@ _fresh_rebuild_backend() {
         docker) runb=(docker run --rm -u "$(id -u):$(id -g)"
                       -e HOME=/tmp
                       -v "$CX_ROOT:/w" -w /w/backend
-                      "${CX_IMG_COMPOSER:-composer:2}") ;;
+                      "$CX_IMG_COMPOSER") ;;
     esac
 
     cx_info "composer require filament/filament:^5.0"
