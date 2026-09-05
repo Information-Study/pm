@@ -271,7 +271,12 @@ _git_config_identity() {
             "$(git config --global user.email 2>/dev/null)") || return "$EX_ABORT"
         else cx_die "$EX_USAGE" "非互動環境請給 --email"; fi
     fi
-    [[ $email == *@*.* ]] || cx_die "$EX_USAGE" "email 看起來不對：$email"
+    # git 自己不驗 email 格式，這裡只擋明顯打錯的（沒有 @、有空白）。
+    # 原本要求 @ 之後一定有點，會擋掉 dev@localhost 這類內網位址 ——
+    # 而 _git_identity_ok 是 cx git commit 的前置條件，擋掉的後果是
+    # 使用者只好改用裸 git，繞過這個三 repo 一起設的工具。
+    [[ $email == *@* && $email != *[[:space:]]* ]] \
+        || cx_die "$EX_USAGE" "email 看起來不對（需要 @、不能有空白）：$email"
 
     if (( global )); then
         cx_run git config --global user.name  "$name" || return "$EX_FAIL"
@@ -413,7 +418,9 @@ _git_commit() {
         _git_scan_secrets
     fi
 
-    cx_step "提交${_repo_note:-}"
+    local _repo_note=''
+    [[ $repo != all ]] && _repo_note="（僅 $repo）"
+    cx_step "提交$_repo_note"
     local r slug changed=0 n super_n=0 saw_super=0
     # ⚠ 每一步都要檢查退出碼。
     #   2026-09-05 實測：pre-commit hook 失敗時，原本的程式碼照樣印
@@ -669,27 +676,32 @@ _git_branch_new() {
     #
     #   dev 不存在時（例如剛 cx init 出來的新專案）不能硬失敗 ——
     #   退回 HEAD 並明說，讓使用者知道起點是什麼。
-    local base=${_GIT_BRANCH_FROM:-}
-    if [[ -z $base ]]; then
-        local _dev; _dev=$(_git_dev_branch)
-        if git -C "$CX_ROOT" show-ref --verify --quiet "refs/heads/$_dev"; then
-            base=$_dev
-        else
-            cx_warn "沒有 $_dev 分支 —— 這次從目前的 HEAD 開"
-            cx_dim "  要建立 gitflow 的開發主線： cx git branch new $_dev --from $(_git_main_branch)"
-        fi
-    fi
-    local r slug dirty=0
+    #   ⚠ 起點必須**逐個 repo** 解析，不能用主庫的答案代表三個 repo。
+    #     2026-09-05 實測：主庫有 dev、兩個子模組只有 main（clone 之後的常態），
+    #     用主庫的答案就會選中 dev，然後在子模組的存在性檢查死掉：
+    #       ✘ pm-backend 沒有起點 dev
+    #     於是 `cx git branch new` 與 `cx git feature start` 在預設情況下**完全不能用**。
+    local explicit_base=${_GIT_BRANCH_FROM:-}
+    local dev_branch; dev_branch=$(_git_dev_branch)
+
+    local r slug dirty=0 fellback=()
     while read -r r; do
         slug=$(_git_repo_slug "$r")
         [[ -n $(git -C "$r" status --porcelain) ]] && { cx_warn "$slug 有未提交變更"; dirty=1; }
         git -C "$r" show-ref --verify --quiet "refs/heads/$n" \
             && cx_die "$EX_PRECOND" "$slug 已經有分支 $n"
-        if [[ -n $base ]]; then
-            git -C "$r" rev-parse --verify --quiet "$base^{commit}" >/dev/null \
-                || cx_die "$EX_PRECOND" "$slug 沒有起點 $base"
+        if [[ -n $explicit_base ]]; then
+            # 明確指定的 --from 缺席就是硬錯誤 —— 使用者要的就是那個 ref
+            git -C "$r" rev-parse --verify --quiet "$explicit_base^{commit}" >/dev/null \
+                || cx_die "$EX_PRECOND" "$slug 沒有起點 $explicit_base"
+        elif ! git -C "$r" show-ref --verify --quiet "refs/heads/$dev_branch"; then
+            fellback+=("$slug")
         fi
     done < <(_git_repos_order "$repo")
+    if (( ${#fellback[@]} )); then
+        cx_warn "${fellback[*]} 沒有 $dev_branch 分支 —— 這幾個從各自目前的 HEAD 開"
+        cx_dim "  要讓它們也走 gitflow： cx git branch new $dev_branch --from $(_git_main_branch)"
+    fi
     (( dirty )) && { cx_confirm "有未提交變更" \
         "上列 repo 有未提交變更。\n\ngit 會把它們一起帶到新分支 $n。\n\n繼續嗎？" \
         || return "$EX_ABORT"; }
@@ -697,8 +709,15 @@ _git_branch_new() {
     cx_step "建立分支 $n"
     # 主庫先：submodule.recurse=true 會讓主庫的 switch 順便動子模組，
     # 所以子模組的 switch 必須排在後面才不會被覆蓋成 detached。
+    local base
     while read -r r; do
         slug=$(_git_repo_slug "$r")
+        # 每個 repo 各自決定起點：--from > 該 repo 的 dev > 該 repo 目前的 HEAD
+        base=$explicit_base
+        if [[ -z $base ]] \
+           && git -C "$r" show-ref --verify --quiet "refs/heads/$dev_branch"; then
+            base=$dev_branch
+        fi
         if [[ -n $base ]]; then
             cx_run git -C "$r" switch -c "$n" "$base" \
                 || { cx_error "$slug 建立分支失敗"; return "$EX_FAIL"; }

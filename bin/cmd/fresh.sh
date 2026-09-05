@@ -553,23 +553,11 @@ _fresh_carryover() {
         cx_dim "  舊版留在封存裡：$A/src-$c.tar.gz"
     done
 
-    # ── 重新接上測試資料庫防護 ──────────────────────────────────────────
-    #
-    # tests/ 在疊回清單裡，phpunit.xml **不在**（它是骨架檔，重建時由
-    # composer create-project 重新產生）。於是 tests/bootstrap.php 與
-    # DatabaseSafetyGuard.php 會回來，但 phpunit.xml 的 bootstrap= 變回
-    # vendor/autoload.php —— 防護的檔案都在，卻沒有人呼叫它了。
-    # 2026-09-05 的實跑確認了這個路徑：verify 階段當場擋下來。
-    #
-    # 這一行不是「把舊的 phpunit.xml 搬回來」（那會抵銷重建的意義），
-    # 而是把一個**跟著疊回來的檔案**重新接上。所以在這裡自動做，
-    # 而 _fresh_verify_rebuild 的斷言留著當後盾。
-    if [[ -f $CX_ROOT/backend/tests/bootstrap.php && -f $CX_ROOT/backend/phpunit.xml ]] \
-       && ! grep -q 'bootstrap="tests/bootstrap.php"' "$CX_ROOT/backend/phpunit.xml"; then
-        _fresh_step "重新接上測試資料庫防護（phpunit.xml 的 bootstrap=）" -- \
-            sed -i 's|bootstrap="vendor/autoload.php"|bootstrap="tests/bootstrap.php"|' \
-                "$CX_ROOT/backend/phpunit.xml" || return $?
-    fi
+    # 這裡曾經另外用 sed 把 phpunit.xml 的 bootstrap= 接回去。
+    # 現在 _fresh_rebuild 會在 carryover **之後**跑 scaffold_patch.py，
+    # 那支程式已經負責同一件事（而且是整組零件一起，不只 phpunit.xml）。
+    # 留兩份實作的話，兩邊的比對條件會各自演化：這裡只換字面上的
+    # vendor/autoload.php，scaffold_patch 換的是任何 bootstrap="…"。
 }
 
 _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
@@ -588,6 +576,8 @@ _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
     _fresh_rebuild_backend  || return 1
     _fresh_rebuild_frontend || return 1
 
+    [[ $mode == carryover ]] && { _fresh_carryover "$A" || return 1; }
+
     # ── 把「範本自己擁有的東西」裝回去 ──────────────────────────────────────
     #
     # composer create-project 與 nuxi init 產生的是**框架的**骨架，
@@ -597,10 +587,17 @@ _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
     #   * 沒有 ESLint 基線
     # 2026-09-05 實測：修這一段之前，cx init shop 產出的專案 cx verify cli
     # 有 9 個 FAIL，其中 6 個就是這兩組。
+    #
+    # ⚠ 必須排在 _fresh_carryover **之後**。
+    #   carryover 用 `cp -a -T` 把封存的 tests/ 疊上來，會覆蓋同名檔案 ——
+    #   排在前面的話，從「還沒有防護的舊專案」carryover 過來時，
+    #   剛裝好的 TestCase.php 會被舊版蓋掉（實測 assertResolvedConfig 由 1 變 0），
+    #   而 bootstrap.php 因為封存裡沒有反而留著 —— 一個半接上的防護，
+    #   Layer A 在跑、Layer B 不見了，而 _fresh_verify_rebuild 也不會發現。
+    #   範本擁有的檔案必須是**最後**寫入的那一個。
     cx_step "裝回範本自有的設定（測試防護 / ESLint）"
     cx_run python3 "$CX_ROOT/bin/lib/scaffold_patch.py" --root "$CX_ROOT" \
         || { cx_error "範本設定裝回失敗"; return 1; }
-    [[ $mode == carryover ]] && { _fresh_carryover "$A" || return 1; }
     return 0
 }
 

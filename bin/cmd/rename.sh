@@ -92,7 +92,13 @@ cmd_rename_main() {
         "新名稱「$new」不合法 —— 需符合 $_RENAME_RE
     它會被拼成 compose 專案名、docker 網路名、映像前綴、MySQL 帳號名與 Ansible 群組名。"
 
-    [[ $new != "$old" ]] || cx_die "$EX_USAGE" "新名稱與目前的名稱相同（$old）"
+    # 只改 --org 是合法的用法（cx re-init --org X 就走這條）。
+    # 原本這裡無條件擋下同名，於是那條路徑整個是死的：
+    # cx init 的 elif 分支呼叫 cmd_rename_main "$(cx_project)" --org …，
+    # 被這一行 cx_die，init 接到非零就 return EX_FAIL —— 什麼都沒做。
+    if [[ $new == "$old" && -z $org ]]; then
+        cx_die "$EX_USAGE" "新名稱與目前的名稱相同（$old）—— 只改組織請加 --org <組織>"
+    fi
 
     cx_step "改名：$old → $new"
 

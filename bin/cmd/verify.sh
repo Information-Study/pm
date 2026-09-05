@@ -430,13 +430,13 @@ _verify_report() {
 
 cmd_verify_main() {
     local -a scopes=()
-    local report='' quiet=0
+    local report=''
     while (( $# )); do
         case $1 in
             -h|--help|help) _verify_usage; return 0 ;;
             --report) report=$(cx_resolve "${2:?--report 需要路徑}"); shift 2 ;;
             --report=*) report=$(cx_resolve "${1#*=}"); shift ;;
-            --quiet) quiet=1; _VF_QUIET=1; shift ;;
+            --quiet) _VF_QUIET=1; shift ;;
             static|runtime|ansible|app|cli|docs|tui|waf|acl|all) scopes+=("$1"); shift ;;
             *) cx_error "未知的範圍：$1"; _verify_usage; return "$EX_USAGE" ;;
         esac

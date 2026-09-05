@@ -135,7 +135,16 @@ cx_confirm() {
     fi
     local -a args=(--title "$title" --yesno "$body" 24 92)
     (( danger )) && args+=(--defaultno)
-    _cx_dlg "${args[@]}" 1>&8 2>&9
+    local rc=0
+    _cx_dlg "${args[@]}" 1>&8 2>&9 || rc=$?
+    # rc=2 是「後端壞了」不是「使用者說不要」。對確認閘門來說兩者都該擋下
+    #（fail closed），但訊息不能一樣 —— 否則使用者會以為是自己按錯。
+    # _cx_dlg 已經印過原因，這裡補一句把它跟「取消」分開。
+    if (( rc >= 2 )); then
+        cx_error "無法顯示確認對話框 —— 當作「否」處理（這不是你按的）"
+        return 1
+    fi
+    return "$rc"
 }
 
 # 取一行輸入。三段式降級與其他 cx_* 一致：whiptail/dialog → 純文字 → 失敗。
@@ -159,9 +168,14 @@ cx_ask_line() {                     # cx_ask_line <標題> <提示> [預設值]
         _cx_read_tty got || return 1
         [[ -z $got && -n $def ]] && got=$def
     else
-        local f; f=$(mktemp)
-        _cx_dlg --title "$title" --inputbox "$body" 12 88 "$def" 2>"$f" 1>&8 \
-            || { rm -f "$f"; return 1; }
+        local f rc=0; f=$(mktemp)
+        _cx_dlg --title "$title" --inputbox "$body" 12 88 "$def" 2>"$f" 1>&8 || rc=$?
+        if (( rc )); then
+            rm -f "$f"
+            # 與 cx_confirm 同一個理由：後端壞掉不是「使用者取消」。
+            (( rc >= 2 )) && cx_error "無法顯示輸入框 —— 這不是你按了取消"
+            return 1
+        fi
         got=$(<"$f"); rm -f "$f"
     fi
     [[ -n $got ]] || return 1

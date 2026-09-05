@@ -98,11 +98,20 @@ _tui_run() {
     local -a child=("$CX_ROOT/cx" --ui plain --mode "$_TUI_MODE"
                     --runner "$_TUI_RUNNER" "${argv[@]}")
     if [[ -n $log ]] && cx_have script; then
-        script -qec "$(cx_q "${child[@]}")" "$log" </dev/tty >&8 2>&9 || rc=$?
+        # ⚠ SHELL 必須明確指定 bash。
+        #   script -c 是把字串交給 $SHELL（沒設就是 /bin/sh）去執行，而 cx_q 用的是
+        #   bash 的 printf %q —— 含換行或特殊字元的參數會被寫成 $'a\nb' 這種
+        #   **bash 專屬**的 ANSI-C 引號。在 dash（Debian/Ubuntu 的 /bin/sh）底下
+        #   $'a\nb' 會被當成字面的 $a\nb，而且不會報錯，只是安靜地傳錯東西。
+        #   選單會把使用者輸入的 commit 訊息、分支名、專案名、主機 IP 走這條路。
+        SHELL=/bin/bash script -qec "$(cx_q "${child[@]}")" "$log" \
+            </dev/tty >&8 2>&9 || rc=$?
     else
         # 沒有 script 就退回「直接接 tty」——顏色保住，失敗對話框少了輸出摘要。
-        "${child[@]}" </dev/tty >&8 2>&9 || rc=$?
+        # 先把已經建好的暫存檔刪掉再清空變數，否則它會留在 $TMPDIR 沒人回收。
+        [[ -n $log ]] && rm -f "$log"
         log=''
+        "${child[@]}" </dev/tty >&8 2>&9 || rc=$?
     fi
     if (( rc )); then
         printf '\n\033[31m✘ cx %s 結束於 exit %d\033[0m\n' "${argv[0]}" "$rc" >&9

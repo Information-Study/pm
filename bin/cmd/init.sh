@@ -150,15 +150,26 @@ cmd_init_main() {
     local newname=''
     # 明確要說明 → 0；忘了給名字 → EX_USAGE。全庫慣例
     # （bin/test/00_dispatch.bats 的「每個動詞的 --help」在守這件事）。
-    case ${1:-} in
-        -h|--help) _init_usage; return "$EX_OK" ;;
-    esac
+    #
+    # --help 出現在**任何位置**都算數。原本只看第一個參數，於是
+    # `cx init --help` 回 0 而 `cx init shop --help` 落到 _init_parse 回 2 ——
+    # 同一個旗標兩種退出碼。
+    local _a
+    for _a in "$@"; do
+        case $_a in -h|--help) _init_usage; return "$EX_OK" ;; esac
+    done
     if [[ $verb == init ]]; then
         [[ -n ${1:-} ]] || { _init_usage; return "$EX_USAGE"; }
         newname=$1; shift
     fi
     local _prc=0; _init_parse "$@" || _prc=$?
     (( _prc == 0 )) || return "$EX_USAGE"
+
+    # ${_INIT_ORG:+--org "$_INIT_ORG"} 這種寫法是**沒有加引號**的展開，
+    # 裡面的引號不構成分組 —— org 含空白時會被字詞分割成兩個參數，
+    # rename 會回報「多餘的參數：org」而不是它自己的合法性訊息。用陣列。
+    local -a _org_args=()
+    [[ -n $_INIT_ORG ]] && _org_args=(--org "$_INIT_ORG")
 
     # 改名的合法性由 cx rename 自己驗（同一組規則，不要有第二份）
     local token
@@ -172,7 +183,7 @@ cmd_init_main() {
         [[ -n $_INIT_REMOTE ]] && cx_dim "  cx git remote-set $_INIT_REMOTE"
         if [[ -n $newname ]]; then
             cx_info "以下是 rename 的變更點（fresh 的 dry-run 請單獨跑 cx --dry-run fresh）："
-            cmd_rename_main "$newname" ${_INIT_ORG:+--org "$_INIT_ORG"}
+            cmd_rename_main "$newname" "${_org_args[@]}"
         else
             cx_dim "  （re-init 不改名，所以沒有 rename 的變更點）"
             cx_dim "  fresh 的 dry-run 請單獨跑： cx --dry-run fresh --mode $_INIT_MODE"
@@ -186,7 +197,7 @@ cmd_init_main() {
     if [[ -n $newname ]]; then
         cx_step "改名：$(cx_project) → $newname"
         # rename 自己還會問一次；這裡已經過了 init 的閘門，所以直接放行
-        CX_ASSUME_YES=1 cmd_rename_main "$newname" ${_INIT_ORG:+--org "$_INIT_ORG"} \
+        CX_ASSUME_YES=1 cmd_rename_main "$newname" "${_org_args[@]}" \
             || { cx_error "改名失敗 —— 什麼都還沒破壞，可以直接重跑"; return "$EX_FAIL"; }
         # 重新載入身分，後面的 fresh / remote 才會用新名字
         # shellcheck source=/dev/null

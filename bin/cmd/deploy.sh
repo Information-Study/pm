@@ -383,7 +383,12 @@ _deploy_hosts() {
             fi
             cx_info "存檔後驗證一次："
             cx_run python3 "$py" --path "$inv" check --ansible ;;
-        init|show|check|add|rm)
+        show|check)
+            # 唯讀查詢不要包 cx_run —— 它在 --dry-run 之下不執行，
+            # 於是 `cx --dry-run deploy hosts show` 會什麼都不印。
+            # 想在動手之前先看狀態的人，正是最可能加 --dry-run 的人。
+            python3 "$py" --path "$inv" "$sub" "$@" ;;
+        init|add|rm)
             cx_run python3 "$py" --path "$inv" "$sub" "$@" ;;
         *) cx_error "hosts: 未知子指令 $sub（init|add|rm|show|check|edit）"
            return "$EX_USAGE" ;;

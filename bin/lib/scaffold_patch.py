@@ -119,9 +119,18 @@ def patch_frontend(root, tpl):
                 doc = None
         if doc is not None:
             dev = doc.setdefault("devDependencies", {})
-            added = [k for k, v in FRONTEND_DEV_DEPS.items() if dev.get(k) != v and k not in dev]
+            # 原本寫 `dev.get(k) != v and k not in dev` —— 第二個條件涵蓋第一個
+            #（不在 dev 裡時 dev.get(k) 必為 None，永遠不等於 v），所以版本比對
+            # 是死碼。後果是「已經有但版本不同」會被安靜略過，而工具還回報
+            #「已經是最新狀態，沒有變更」—— 對一個不成立的狀態下了斷言。
+            added = [k for k in FRONTEND_DEV_DEPS if k not in dev]
+            mismatch = [(k, dev[k], v) for k, v in FRONTEND_DEV_DEPS.items()
+                        if k in dev and dev[k] != v]
             for k, v in FRONTEND_DEV_DEPS.items():
                 dev.setdefault(k, v)
+            for k, have, want in mismatch:
+                # 不覆蓋使用者釘的版本，但也不要假裝沒看到
+                log(f"⚠ package.json 的 {k} 是 {have}，範本預期 {want}（保留你的版本）")
             if added:
                 # 保持 key 排序，diff 才穩定
                 doc["devDependencies"] = dict(sorted(dev.items()))

@@ -50,6 +50,12 @@ def load(path):
     web = set(((children.get("web") or {}).get("hosts") or {}) or {})
     dbp = set(((children.get("db_primary") or {}).get("hosts") or {}) or {})
 
+    # ⚠ 每台主機要記住**自己**屬於哪個環境群組。
+    #   原本只用 next() 取一個 env，然後 render() 把所有主機寫進那一個群組 ——
+    #   於是一個同時有 staging 與 production 的檔案，只要跑一次 add/rm，
+    #   production 群組就會整個消失、它的主機被搬進 staging，
+    #   而 pm_servers 也跟著少一個 child。hosts.yml 不進版控，沒有 diff 會提醒，
+    #   也沒有還原點。（2026-09-05 實測重現。）
     hosts = []
     for env_name in ENVS:
         grp = children.get(env_name) or {}
@@ -57,6 +63,7 @@ def load(path):
             v = v or {}
             hosts.append({
                 "name": name,
+                "env": env_name,
                 "ip": v.get("ansible_host", ""),
                 "user": v.get("ansible_user", ""),
                 "port": v.get("ansible_port"),
@@ -84,24 +91,30 @@ def render(env, hosts):
     add("# ⚠ 一個 inventory 檔 = 一個環境。兩個環境寫進同一個檔會讓 db_primary")
     add("#   變成兩台而被 preflight 擋下（--limit 不會讓 groups 變小）。")
     add("")
+    # 出現過的環境群組全部保留，主機各自回到自己的群組。
+    present = [e for e in ENVS if any(h.get("env", env) == e for h in hosts)] or [env]
     add("all:")
     add("  children:")
-    add("")
-    add(f"    {env}:")
-    add("      hosts:")
-    for h in hosts:
-        add(f"        {h['name']}:")
-        add(f"          ansible_host: {h['ip']}")
-        if h.get("user"):
-            add(f"          ansible_user: {h['user']}")
-        if h.get("port"):
-            add(f"          ansible_port: {h['port']}")
-        if h.get("key"):
-            add(f"          ansible_ssh_private_key_file: {h['key']}")
+    for e in present:
+        add("")
+        add(f"    {e}:")
+        add("      hosts:")
+        for h in hosts:
+            if h.get("env", env) != e:
+                continue
+            add(f"        {h['name']}:")
+            add(f"          ansible_host: {h['ip']}")
+            if h.get("user"):
+                add(f"          ansible_user: {h['user']}")
+            if h.get("port"):
+                add(f"          ansible_port: {h['port']}")
+            if h.get("key"):
+                add(f"          ansible_ssh_private_key_file: {h['key']}")
     add("")
     add("    pm_servers:")
     add("      children:")
-    add(f"        {env}: {{}}")
+    for e in present:
+        add(f"        {e}: {{}}")
     add("")
     add("    web:")
     add("      hosts:")
@@ -149,6 +162,12 @@ def problems(env, hosts):
             out.append(("W", f"{n} 沒有 ansible_user —— 會用你目前的登入帳號"))
         if h.get("key") and not os.path.exists(os.path.expanduser(str(h["key"]))):
             out.append(("W", f"{n} 的私鑰不存在：{h['key']}"))
+
+    envs_used = sorted({h.get("env") for h in hosts if h.get("env")})
+    if len(envs_used) > 1:
+        out.append(("E", f"同一個檔案裡有 {len(envs_used)} 個環境群組（{', '.join(envs_used)}）—— "
+                         "preflight 會因為 db_primary 超過一台而擋下。一個 inventory 檔 = 一個環境，"
+                         "請拆成 inventory/staging.yml 與 inventory/production.yml"))
 
     web = [h["name"] for h in hosts if h.get("web")]
     dbp = [h["name"] for h in hosts if h.get("db")]
@@ -218,7 +237,11 @@ def cmd_check(args):
 
 def cmd_add(args):
     env, hosts = load(args.path)
-    env = args.env or env or "staging"
+    # --env 只決定**這一台新主機**要放進哪個群組；既有主機留在原本的群組。
+    # 原本是 `env = args.env or env or "staging"` 再讓 render 把所有主機
+    # 寫進那一個 env —— `--env production` 會把既有的 staging 主機整批搬走。
+    new_env = args.env or env or "staging"
+    env = env or new_env
     if not HOSTNAME_RE.match(args.name):
         print(f"主機名不合法：{args.name}", file=sys.stderr)
         return 2
@@ -228,7 +251,7 @@ def cmd_add(args):
     # 第一台預設同時是 web 與 db_primary（單機拓撲，與 hosts.yml.example 一致）
     first = not hosts
     hosts.append({
-        "name": args.name, "ip": args.ip, "user": args.user,
+        "name": args.name, "env": new_env, "ip": args.ip, "user": args.user,
         "port": args.port, "key": args.key,
         "web": True if args.web is None else args.web,
         "db": (first if args.db is None else args.db),
