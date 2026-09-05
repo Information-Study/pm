@@ -170,8 +170,13 @@ cmd_init_main() {
         cx_dim "  cx fresh --mode $_INIT_MODE"
         (( _INIT_GH )) && cx_dim "  cx git remote-init"
         [[ -n $_INIT_REMOTE ]] && cx_dim "  cx git remote-set $_INIT_REMOTE"
-        cx_info "以下是 rename 的變更點（fresh 的 dry-run 請單獨跑 cx --dry-run fresh）："
-        [[ -n $newname ]] && cmd_rename_main "$newname" ${_INIT_ORG:+--org "$_INIT_ORG"}
+        if [[ -n $newname ]]; then
+            cx_info "以下是 rename 的變更點（fresh 的 dry-run 請單獨跑 cx --dry-run fresh）："
+            cmd_rename_main "$newname" ${_INIT_ORG:+--org "$_INIT_ORG"}
+        else
+            cx_dim "  （re-init 不改名，所以沒有 rename 的變更點）"
+            cx_dim "  fresh 的 dry-run 請單獨跑： cx --dry-run fresh --mode $_INIT_MODE"
+        fi
         return "$EX_OK"
     fi
 
