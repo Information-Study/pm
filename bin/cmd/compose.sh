@@ -72,7 +72,71 @@ _compose_prepare_dirs() {
             "$CX_ROOT/frontend/node_modules" \
             "$CX_ROOT/frontend/.nuxt" \
             "$CX_ROOT/frontend/.output"
+        _compose_check_poisoned_volumes
     fi
+    _compose_check_db_credentials
+}
+
+# 具名 volume 的另一個「訊息不指向原因」的坑。
+#
+# MySQL 的官方映像只在**資料目錄是空的**時候才會建立帳號。一旦
+# <專案>_mysql-data 有內容，之後改 .env 的 DB_PASSWORD 完全不會生效 ——
+# 容器照常起來、healthcheck 照常過，然後 app 的 entrypoint 在 migrate 那一步炸掉：
+#     SQLSTATE[HY000] [1045] Access denied for user 'pm'@'…' (using password: YES)
+# 而那句話不會告訴你「你的 .env 比資料庫還新」。
+#
+# 最常見的觸發：在同一台機器上換一個 checkout（worktree、另一份 clone）跑
+# cx setup env —— 那會產生一組**新的**隨機密碼，但 volume 是共用的。
+# 2026-09-05 實際踩到。
+_compose_check_db_credentials() {
+    cx_docker_ok || return 0
+    local proj vol created env_mtime vol_epoch
+    proj=$(cx_project_for "${CX_DC_MODE:-dev}")
+    vol="${proj}_mysql-data"
+    docker volume inspect "$vol" >/dev/null 2>&1 || return 0
+    [[ -f $CX_ROOT/.env ]] || return 0
+
+    created=$(docker volume inspect "$vol" --format '{{.CreatedAt}}' 2>/dev/null) || return 0
+    vol_epoch=$(date -d "$created" +%s 2>/dev/null) || return 0
+    env_mtime=$(stat -c %Y "$CX_ROOT/.env" 2>/dev/null) || return 0
+    (( env_mtime > vol_epoch )) || return 0
+
+    cx_warn ".env 比 $vol 新 —— 如果改過 DB_PASSWORD，資料庫並不知道"
+    cx_dim "  MySQL 只在資料目錄是空的時候建帳號。既有 volume 用的還是舊密碼，"
+    cx_dim "  症狀會是 app 的 entrypoint 在 migrate 炸掉：Access denied for user。"
+    cx_dim "  兩條路（擇一）："
+    cx_dim "    保留資料：把 .env 的 DB_PASSWORD／MYSQL_ROOT_PASSWORD 改回舊值"
+    cx_dim "    丟掉資料：cx ${CX_DC_MODE:-dev} down -v   （會要求確認）"
+}
+
+# 上面那段只治「這一次」。已經被種成 root:root 的**具名 volume** 會留著，
+# 而且重建映像救不回來 —— volume 只在第一次（空的時候）用映像的內容種子化。
+#
+# 症狀完全不指向 volume：
+#     ERROR EACCES: permission denied, open '/app/.nuxt/nuxt.json'
+# 於是人會去查 nuxt、查 bind mount、查 host 的權限，就是不會想到
+# 「三天前某一次 up 留下來的 volume 內容是 root 的」。2026-09-05 實際踩到。
+#
+# 這裡只做偵測與指路，不自動刪 —— volume 裡可能有別人正在用的東西，
+# 刪除一律要人自己決定。
+_compose_check_poisoned_volumes() {
+    cx_docker_ok || return 0
+    local proj vol owner bad=()
+    proj=$(cx_project_for "${CX_DC_MODE:-dev}")
+    for vol in nuxt-build nuxt-output nuxt-node-modules app-vendor; do
+        docker volume inspect "${proj}_${vol}" >/dev/null 2>&1 || continue
+        # 用一次性容器去 stat —— host 上的 volume 路徑非 root 讀不到。
+        owner=$(docker run --rm -v "${proj}_${vol}:/x:ro" \
+                "${CX_IMG_ALPINE:-alpine:3.22}" stat -c '%u' /x 2>/dev/null) || continue
+        [[ $owner == 0 ]] && bad+=("${proj}_${vol}")
+    done
+    (( ${#bad[@]} )) || return 0
+    cx_warn "下列具名 volume 的內容屬於 root，容器以非 root 身分跑會寫不進去："
+    local v
+    for v in "${bad[@]}"; do cx_dim "    $v"; done
+    cx_dim "  症狀會長得像 nuxt 或 composer 的錯（EACCES），不會提到 volume。"
+    cx_dim "  修正（會清掉快取，下次 up 會重新種子化）："
+    cx_dim "    cx ${CX_DC_MODE:-dev} down && docker volume rm ${bad[*]}"
 }
 
 _compose_require_env() {

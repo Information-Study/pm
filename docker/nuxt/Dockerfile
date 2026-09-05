@@ -40,9 +40,19 @@ RUN chmod +x /usr/local/bin/pm-nuxt-entrypoint
 
 # 不 COPY 原始碼 —— dev 模式 ./frontend:/app bind mount 會蓋掉。
 
-# node 映像自帶 uid/gid 1000 的 node 使用者，正好對上 host 端的呼叫者，
-# 所以 bind mount 進來的 frontend/ 寫得進去，而且不必以 root 跑 dev server。
-RUN chown -R node:node /app
+# .nuxt 與 .output 掛的是**具名 volume**，而具名 volume 只有在
+# 「映像裡那個路徑存在」的時候才會用映像的內容與擁有者去種子化。
+# 這兩個目錄在映像裡本來不存在 → Docker 直接建成 root:root 0755 →
+# 以 node 身分跑的 nuxt dev 寫不進去，而錯誤訊息是
+#     EACCES: permission denied, open '/app/.nuxt/nuxt.json'
+# 完全不會提到 volume 或權限來源。更糟的是 volume 會**留著**：
+# 一旦被種成 root:root，之後每一次 cx dev up 都會用同一個壞掉的 volume，
+# 重建映像也救不回來，只能 docker volume rm。
+# 2026-09-05 實測到這個狀態（volume 內容 root:root、日期是三天前）。
+#
+# 先建好並 chown，volume 就會用正確的擁有者種子化。
+RUN mkdir -p /app/.nuxt /app/.output /app/node_modules \
+ && chown -R node:node /app
 USER node
 
 EXPOSE 3000
