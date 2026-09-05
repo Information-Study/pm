@@ -376,6 +376,68 @@ def check_docs():
             row("PASS", "DOC-cx-verbs", "cx-reference 涵蓋每個動詞", f"{len(comp)} 個")
 
 
+# ══ GRD：測試資料庫防護的接線 ═════════════════════════════════════════════
+
+def check_test_db_guard():
+    """防護的三個零件必須同時在位，而且 phpunit.xml 要真的指過去。
+
+    最重要的是第一項。`_fresh_carryover` 的 KEEP 清單帶 `tests`，
+    但**不帶 `phpunit.xml`** —— 所以一次 carryover 重建會把 tests/bootstrap.php
+    疊回去，卻讓 phpunit.xml 被重新產生回 bootstrap="vendor/autoload.php"。
+    結果是：防護的檔案都還在，但已經沒有任何人呼叫它了。
+    那是最惡劣的一種失效 —— 看起來有防護，實際上沒有。
+    """
+    xml = read("backend/phpunit.xml")
+    if not xml:
+        row("SKIP", "GRD-wire", "phpunit.xml 指向測試防護", "讀不到 backend/phpunit.xml")
+        return
+
+    m = re.search(r'bootstrap="([^"]+)"', xml)
+    got = m.group(1) if m else "(未宣告)"
+    if got == "tests/bootstrap.php":
+        row("PASS", "GRD-wire", "phpunit.xml 指向測試防護", got)
+    else:
+        row("FAIL", "GRD-wire", "phpunit.xml 指向測試防護",
+            f'bootstrap="{got}"，應為 tests/bootstrap.php'
+            "（cx fresh --mode carryover 會重新產生 phpunit.xml 而不會帶回這一行）")
+
+    missing = [f for f in ("backend/tests/bootstrap.php", "backend/tests/DatabaseSafetyGuard.php")
+               if not (ROOT / f).exists()]
+    if missing:
+        row("FAIL", "GRD-files", "測試防護的檔案都在", "缺少：" + " ".join(missing))
+    else:
+        boot = read("backend/tests/bootstrap.php")
+        if "DatabaseSafetyGuard" in boot and "assertProcessEnv" in boot:
+            row("PASS", "GRD-files", "測試防護的檔案都在")
+        else:
+            row("FAIL", "GRD-files", "測試防護的檔案都在",
+                "bootstrap.php 沒有呼叫 DatabaseSafetyGuard::assertProcessEnv()")
+
+    # Layer B 一定要掛在 createApplication()，不能是 setUp()。
+    tc = read("backend/tests/TestCase.php")
+    if "assertResolvedConfig" not in tc:
+        row("FAIL", "GRD-layer2", "Layer B 掛在 createApplication()",
+            "TestCase.php 沒有呼叫 assertResolvedConfig()")
+    elif re.search(r"function\s+setUp\s*\(", tc):
+        row("FAIL", "GRD-layer2", "Layer B 掛在 createApplication()",
+            "掛在 setUp() —— RefreshDatabase 在 setUpTraits() 就清庫了，"
+            "那時候檢查已經太晚（順序見 InteractsWithTestCaseLifecycle）")
+    elif re.search(r"public\s+function\s+createApplication\s*\(", tc):
+        row("PASS", "GRD-layer2", "Layer B 掛在 createApplication()")
+    else:
+        row("FAIL", "GRD-layer2", "Layer B 掛在 createApplication()",
+            "找不到 public function createApplication()（父類別是 public，覆寫不能降可見度）")
+
+    # cx test 那條 shell 路徑不能與防護漂移
+    sh = read("bin/cmd/test.sh")
+    want = ("DB_CONNECTION=sqlite", "DB_DATABASE=:memory:")
+    lost = [w for w in want if w not in sh]
+    if lost:
+        row("FAIL", "GRD-cxtest", "cx test 的 env 清單仍導向 sqlite", "缺少：" + " ".join(lost))
+    else:
+        row("PASS", "GRD-cxtest", "cx test 的 env 清單仍導向 sqlite")
+
+
 def main():
     families = sys.argv[1:] or ["cli", "docs", "tui"]
     if "cli" in families:
@@ -383,6 +445,7 @@ def main():
         check_cli_setup_tools()
         check_cli_usage_flags()
         check_cli_help_sync()
+        check_test_db_guard()
     if "tui" in families:
         check_tui()
     if "docs" in families:
