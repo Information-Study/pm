@@ -14,9 +14,9 @@
 
 | 目錄 | 大小（本專案實測） | 重建指令 |
 |---|---|---|
-| `backend/vendor/` | 204 MB | `cx setup deps` |
-| `frontend/node_modules/` | 278 MB | `cx setup deps` |
-| `backend/node_modules/` | 89 MB | `cx setup deps` |
+| `src/backend/vendor/` | 204 MB | `cx setup deps` |
+| `src/frontend/node_modules/` | 278 MB | `cx setup deps` |
+| `src/backend/node_modules/` | 89 MB | `cx setup deps` |
 | `ansible/collections/` | 39 MB | `cx setup`（或 `cx deploy galaxy`） |
 | `reports/`（內容） | 依掃描次數 | `cx setup dirs`（連 `.gitignore` 一起補回）+ 重跑掃描 |
 | `.cx/`（快取與鎖） | 空的時候 52 KB，Trivy + Semgrep 規則抓滿之後 1.3 GB | `cx setup dirs` |
@@ -24,7 +24,7 @@
 一次全部刪掉再重建：
 
 ```bash
-rm -rf backend/vendor backend/node_modules frontend/node_modules \
+rm -rf src/backend/vendor src/backend/node_modules src/frontend/node_modules \
        ansible/collections reports .cx
 cx setup                 # 目錄骨架、collections（不覆蓋 .env）
 cx setup deps            # 三棵相依樹
@@ -39,9 +39,9 @@ cx help / cx git status / cx code / cx pma --url   仍然 rc=0
                                       cx 本身不依賴任何產出物
 cx doctor                             rc=3（正確：它就是該報缺東西）
 cx setup                              重建 reports/ 與 .cx/，且不覆蓋 .env
-cx setup deps                         重建 backend/vendor（204 MB）、
-                                      backend/node_modules（89 MB）、
-                                      frontend/node_modules（278 MB）
+cx setup deps                         重建 src/backend/vendor（204 MB）、
+                                      src/backend/node_modules（89 MB）、
+                                      src/frontend/node_modules（278 MB）
 cx deploy galaxy                      重建 ansible/collections（38 MB）
 cx dev restart nuxt                   容器當時在跑，一定要重啟
 之後 cx doctor 32/0/0、cx verify 39 通過 0 失敗、容器仍在、端點全 200
@@ -79,7 +79,7 @@ cx dev restart nuxt                   容器當時在跑，一定要重啟
 
 > **⚠ 容器正在跑的時候刪，要記得重啟。**
 > dev 的 nuxt 是「bind mount 原始碼 + 具名 volume 蓋住 node_modules」，
-> 照理說刪 host 的 `frontend/node_modules` 不該影響容器 ——
+> 照理說刪 host 的 `src/frontend/node_modules` 不該影響容器 ——
 > 但實測會讓正在跑的 dev server 壞掉：
 >
 > ```

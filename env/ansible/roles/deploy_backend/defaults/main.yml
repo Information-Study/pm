@@ -177,8 +177,8 @@ backend_view_cache: true
 backend_event_cache: true
 
 # route:cache 預設 **關閉**，這不是保守，是本專案的事實：
-#   backend/routes/web.php:5   Route::get('/', function () { ... })
-#   backend/routes/api.php:6   Route::get('/user', function (Request $request) { ... })
+#   src/backend/routes/web.php:5   Route::get('/', function () { ... })
+#   src/backend/routes/api.php:6   Route::get('/user', function (Request $request) { ... })
 # 兩支 route 檔都用 Closure，`php artisan route:cache` 會直接失敗：
 #   LogicException: Unable to prepare route [/] for serialization. Uses Closure.
 # 要打開它，得先把這兩個 Closure 改成 controller 方法（例如

@@ -31,7 +31,7 @@ setup() {
     run cx_bin --dry-run --yes fresh --phase delete
     assert_rc 0
     [ -e "$CX_TEST_ROOT/.git" ] || _fail_with "dry-run 真的刪了 .git"
-    [ -e "$CX_TEST_ROOT/backend" ] || _fail_with "dry-run 真的刪了 backend"
+    [ -e "$CX_TEST_ROOT/src/backend" ] || _fail_with "dry-run 真的刪了 backend"
 }
 
 @test "dry-run 的 migrate 不會產生 docker/legacy 的副本" {

@@ -58,7 +58,7 @@ _compose_prepare_dirs() {
         "$CX_ROOT/reports/waf" \
         "$CX_ROOT/.cx/cache"
 
-    # dev 模式把 ./backend 與 ./frontend bind mount 進容器，然後再用具名 volume
+    # dev 模式把 ./src/backend 與 ./src/frontend bind mount 進容器，然後再用具名 volume
     # 蓋回 vendor / node_modules / .nuxt / .output。
     #
     # 具名 volume 掛在「bind mount 底下」時，Docker 會在容器內建立掛載點 ——
@@ -68,10 +68,10 @@ _compose_prepare_dirs() {
     # 先以呼叫者身分把它們建好，Docker 就會沿用既有目錄而不是自己建。
     if [[ ${CX_DC_MODE:-} == dev ]]; then
         cx_ensure_host_dirs \
-            "$CX_ROOT/backend/vendor" \
-            "$CX_ROOT/frontend/node_modules" \
-            "$CX_ROOT/frontend/.nuxt" \
-            "$CX_ROOT/frontend/.output"
+            "$CX_ROOT/src/backend/vendor" \
+            "$CX_ROOT/src/frontend/node_modules" \
+            "$CX_ROOT/src/frontend/.nuxt" \
+            "$CX_ROOT/src/frontend/.output"
         _compose_check_poisoned_volumes
     fi
     _compose_check_db_credentials

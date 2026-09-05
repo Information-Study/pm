@@ -174,7 +174,7 @@ php_timezone: "{{ app_timezone }}"
 # ★ A2：這份清單絕對不可以含 proc_open（也不要含 putenv），
 #   而且產生出來的 ini 只能放進 fpm/conf.d，不可以放進 cli/conf.d。
 #
-#   本專案 backend/composer.json 的 post-autoload-dump 會跑
+#   本專案 src/backend/composer.json 的 post-autoload-dump 會跑
 #     @php artisan package:discover --ansi
 #     @php artisan filament:upgrade
 #   兩者都經 Symfony Process 呼叫 proc_open。禁掉就會得到
@@ -237,7 +237,7 @@ backend_schedule_timer: "{{ app_slug }}-schedule.timer"
 #         要水平擴充就開 N 個 fork 綁 N 個埠，nginx upstream 用 least_conn。
 #         instances 也絕不能用 'max' —— 容器 / cgroup 底下 CPU 數會被誤讀。
 #
-#    A20：frontend_mode 預設 ssr。本專案 frontend/nuxt.config.ts 已經是
+#    A20：frontend_mode 預設 ssr。本專案 src/frontend/nuxt.config.ts 已經是
 #           const ssr = process.env.NUXT_SSR !== 'false'
 #         （不是舊版那種寫死 ssr: false）。preflight 每次仍會 grep 確認，
 #         讓錯誤在 5 秒內出現，而不是等 npm ci + 半個 build 之後才發現。
@@ -276,7 +276,7 @@ frontend_extra_env: {}
 #    A19：DROP DATABASE test 預設關閉，而且 role 只在該 schema 沒有任何 table 時才動手。
 # ──────────────────────────────────────────────────────────────────────────────
 # ★ DB_HOST 必須是 127.0.0.1（TCP）或 localhost（unix socket）。
-#   backend/.env.example 裡的 DB_HOST=mysql 是 Docker compose 的服務名，原生部署用不到。
+#   src/backend/.env.example 裡的 DB_HOST=mysql 是 Docker compose 的服務名，原生部署用不到。
 db_host: "127.0.0.1"
 db_port: 3306
 db_name: &db_name "pm"
@@ -585,7 +585,7 @@ healthcheck_validate_certs: "{{ (tls_enable | bool) and not (certbot_staging | b
 healthcheck_retries: 12
 healthcheck_delay: 5
 healthcheck_timeout: 10
-# /up 是 Laravel 的內建健康端點（backend/bootstrap/app.php 的 health: '/up'）。
+# /up 是 Laravel 的內建健康端點（src/backend/bootstrap/app.php 的 health: '/up'）。
 # /admin/login 驗 Filament 面板真的起得來（ext-intl 缺了就會 500）。
 healthcheck_paths:
   - path: "/up"

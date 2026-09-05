@@ -26,7 +26,7 @@
       PHP CLI 沒有 proc_open（回傳 "{{ php_proc_open.stdout | default('') | trim }}"）。
       composer install 會立刻死於
       "The Process class relies on proc_open, which is not available on your PHP installation."
-      因為 backend/composer.json 的 post-autoload-dump 會跑
+      因為 src/backend/composer.json 的 post-autoload-dump 會跑
       package:discover 與 filament:upgrade。
       請檢查 {{ php_cli_conf_d }} 與 {{ php_conf_root }}/cli/php.ini 裡是否有 disable_functions。
     quiet: true

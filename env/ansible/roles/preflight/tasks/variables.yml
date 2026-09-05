@@ -158,7 +158,7 @@
     quiet: true
     fail_msg: >-
       php_disable_functions 含 proc_open（或 putenv）。
-      本專案 backend/composer.json 有 post-autoload-dump（package:discover + filament:upgrade），
+      本專案 src/backend/composer.json 有 post-autoload-dump（package:discover + filament:upgrade），
       走 Symfony Process，需要 proc_open。禁掉的話 composer install 會直接死在
       "The Process class relies on proc_open, which is not available on your PHP installation"。
       而且這個 ini 只能寫進 FPM pool，不可以寫進 CLI 的 php.ini。

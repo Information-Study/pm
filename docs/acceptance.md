@@ -70,7 +70,7 @@ cx test all            # 後端 PHPUnit + 前端型別檢查
 
 | 動詞 | docker | native | 備註 |
 |---|---|---|---|
-| `art` / `php` | ✔ | ✔ | 原生需要 `backend/vendor` |
+| `art` / `php` | ✔ | ✔ | 原生需要 `src/backend/vendor` |
 | `composer` | ✔ | ✔ | 兩邊的 vendor 不保證可互換（musl vs glibc） |
 | `npm` / `npm --backend` | ✔ | ✔ | backend 的容器路徑刻意用 glibc 映像 |
 | `db`（除 restore） | ✔ | ✔ | mysql client 跑在 mysql 容器裡 |

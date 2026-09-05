@@ -29,7 +29,7 @@ make_root() {                       # make_root [專案名]
     mkdir -p "$CX_TEST_ROOT"
     cat > "$CX_TEST_ROOT/.cxroot" <<CXR
 CX_PROJECT_NAME=$name
-CX_LAYOUT_VERSION=2
+CX_LAYOUT_VERSION=3
 CX_GH_ORG=Bats-Org
 CX_REPO_MAIN=$name
 CX_REPO_BACKEND=$name-backend
@@ -38,12 +38,12 @@ CXR
     ln -s "$CX_TEST_REAL_ROOT/bin" "$CX_TEST_ROOT/bin"
     ln -s "$CX_TEST_REAL_ROOT/cx"  "$CX_TEST_ROOT/cx"
     # 最小的前後端骨架。沒有它們的話，art / composer / npm 會在**前置檢查**
-    # 就結束（「找不到 backend/composer.json」），根本走不到 runner 判斷 ——
+    # 就結束（「找不到 src/backend/composer.json」），根本走不到 runner 判斷 ——
     # 於是測 runner 的案例會因為完全無關的理由失敗。
-    mkdir -p "$CX_TEST_ROOT/backend" "$CX_TEST_ROOT/frontend"
-    printf '{"name":"bats/backend"}\n'  > "$CX_TEST_ROOT/backend/composer.json"
-    printf '{"name":"bats-frontend"}\n' > "$CX_TEST_ROOT/frontend/package.json"
-    : > "$CX_TEST_ROOT/backend/artisan"
+    mkdir -p "$CX_TEST_ROOT/src/backend" "$CX_TEST_ROOT/src/frontend"
+    printf '{"name":"bats/backend"}\n'  > "$CX_TEST_ROOT/src/backend/composer.json"
+    printf '{"name":"bats-frontend"}\n' > "$CX_TEST_ROOT/src/frontend/package.json"
+    : > "$CX_TEST_ROOT/src/backend/artisan"
     export CX_TEST_ROOT
     printf '%s' "$CX_TEST_ROOT"
 }
@@ -76,7 +76,7 @@ make_repo() {                       # make_repo [專案名]
     mkdir -p "$CX_TEST_ROOT"
     cat > "$CX_TEST_ROOT/.cxroot" <<CXR
 CX_PROJECT_NAME=$name
-CX_LAYOUT_VERSION=2
+CX_LAYOUT_VERSION=3
 CX_GH_ORG=Bats-Org
 CX_REPO_MAIN=$name
 CX_REPO_BACKEND=$name-backend
@@ -110,13 +110,14 @@ CXR
     #   自己 mkdir 一個空的等於那一整段不執行，重建後系統是否完整就驗不到。
     ln -s "$CX_TEST_REAL_ROOT/templates" "$CX_TEST_ROOT/templates"
 
-    local c
+    local c d
     for c in . backend frontend; do
-        mkdir -p "$CX_TEST_ROOT/$c"
-        echo "content-$c" > "$CX_TEST_ROOT/$c/file.txt"
-        git -C "$CX_TEST_ROOT/$c" init -q -b main
-        git -C "$CX_TEST_ROOT/$c" -c user.email=b@b -c user.name=b add -A
-        git -C "$CX_TEST_ROOT/$c" -c user.email=b@b -c user.name=b commit -q -m "init $c"
+        d=$CX_TEST_ROOT/$c; [[ $c == . ]] || d=$CX_TEST_ROOT/src/$c
+        mkdir -p "$d"
+        echo "content-$c" > "$d/file.txt"
+        git -C "$d" init -q -b main
+        git -C "$d" -c user.email=b@b -c user.name=b add -A
+        git -C "$d" -c user.email=b@b -c user.name=b commit -q -m "init $c"
     done
     export CX_TEST_ROOT
     export CX_ARCHIVE_ROOT="$BATS_TEST_TMPDIR/arc-$name"
@@ -126,7 +127,7 @@ CXR
 # 真 submodule 的 fixture。
 #
 # ⚠ make_repo 建的是**三個各自獨立的巢狀 plain repo**，不是 submodule ——
-#   backend/.git 是目錄、沒有 .git/modules/、gitlink 也不存在。
+#   src/backend/.git 是目錄、沒有 .git/modules/、gitlink 也不存在。
 #   於是 archive.sh 處理指標檔的那一整段（rev-parse --absolute-git-dir、
 #   MANIFEST 的 <c>_gitdir=、cx_restore 的還原分支）在測試套件底下是**死碼**，
 #   而那正是真實專案的佈局。這個 fixture 就是為了把那條路蓋起來。
@@ -145,7 +146,7 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
     _assert_disposable "$CX_TEST_ROOT" || return 1
     mkdir -p "$CX_TEST_ROOT"
     {
-        printf 'CX_PROJECT_NAME=%s\nCX_LAYOUT_VERSION=2\nCX_GH_ORG=Bats-Org\n' "$name"
+        printf 'CX_PROJECT_NAME=%s\nCX_LAYOUT_VERSION=3\nCX_GH_ORG=Bats-Org\n' "$name"
         printf 'CX_REPO_MAIN=%s\nCX_REPO_BACKEND=%s-backend\nCX_REPO_FRONTEND=%s-frontend\n' \
             "$name" "$name" "$name"
         (( legacy )) || printf 'CX_GIT_MAIN_BRANCH=main\nCX_GIT_DEV_BRANCH=dev\n'
@@ -177,19 +178,19 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
     # 子模組要先是完整的 repo（有 commit），submodule add 才加得上去 ——
     # 對著沒有 commit 的 repo 會得到 "does not have a commit checked out"。
     for c in backend frontend; do
-        mkdir -p "$CX_TEST_ROOT/$c"
-        echo "content-$c" > "$CX_TEST_ROOT/$c/file.txt"
-        git -C "$CX_TEST_ROOT/$c" init -q -b main
-        git -C "$CX_TEST_ROOT/$c" "${g[@]}" add -A
-        git -C "$CX_TEST_ROOT/$c" "${g[@]}" commit -q -m "init $c"
-        git -C "$CX_TEST_ROOT/$c" branch dev
-        git -C "$CX_TEST_ROOT/$c" switch -q dev
+        mkdir -p "$CX_TEST_ROOT/src/$c"
+        echo "content-$c" > "$CX_TEST_ROOT/src/$c/file.txt"
+        git -C "$CX_TEST_ROOT/src/$c" init -q -b main
+        git -C "$CX_TEST_ROOT/src/$c" "${g[@]}" add -A
+        git -C "$CX_TEST_ROOT/src/$c" "${g[@]}" commit -q -m "init $c"
+        git -C "$CX_TEST_ROOT/src/$c" branch dev
+        git -C "$CX_TEST_ROOT/src/$c" switch -q dev
     done
 
     git -C "$CX_TEST_ROOT" init -q -b main
     echo root > "$CX_TEST_ROOT/file.txt"
     # ⚠ 第一個 commit **只能**放 file.txt，不可以 add -A。
-    # 此刻 backend/ 與 frontend/ 已經各自是 repo，add -A 會把它們當成
+    # 此刻 src/backend/ 與 src/frontend/ 已經各自是 repo，add -A 會把它們當成
     # 「embedded git repository」直接塞進索引，之後 submodule add 就會失敗
     # （路徑已在索引裡），而且它只是 warning，測試會安靜地拿到錯的佈局。
     # _fresh_git_init 的順序也是這樣：先 init，再 submodule add，最後才 add -A。
@@ -198,8 +199,14 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
     # protocol.file.allow=always 是必要的：CVE-2022-39253 之後 file:// 的
     # 子模組預設被擋（fatal: transport 'file' not allowed）。fresh.sh:785 同理。
     for c in backend frontend; do
+        # ⚠ --name 是必要的。不給的話子模組的**名字**會變成路徑（src/backend），
+        #   而真實專案是用 git mv 搬過去的 —— git mv 只改 path，名字仍是 backend。
+        #   兩者的差別看得到的地方：.git/modules/<名字> 的目錄名，以及
+        #   git.sh:_git_sub_target_branch 用 basename 去 .gitmodules 查 branch。
+        #   fixture 的拓撲與真實專案不一致的話，50_archive.bats 會以完全看不懂的
+        #   方式失敗（它斷言 .git/modules/backend 存在）。
         git -C "$CX_TEST_ROOT" -c protocol.file.allow=always "${g[@]}" \
-            submodule add --force -q -b dev "./$c" "$c" >/dev/null
+            submodule add --force -q --name "$c" -b dev "./src/$c" "src/$c" >/dev/null
     done
     # submodule add 對已經是 repo 的目錄不會 absorb gitdir（它只說
     # "Adding existing repo ... to the index"）—— 少了這一步，fixture 的佈局
@@ -217,8 +224,8 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
     git -C "$CX_TEST_ROOT" -c submodule.recurse=false switch -q dev
 
     # fixture 壞掉要當場看得出來，不可以安靜地退化成 make_repo 的佈局
-    [[ -f $CX_TEST_ROOT/backend/.git ]] || {
-        printf 'FIXTURE BROKEN: backend/.git 不是指標檔（submodule add 沒成功）\n' >&2
+    [[ -f $CX_TEST_ROOT/src/backend/.git ]] || {
+        printf 'FIXTURE BROKEN: src/backend/.git 不是指標檔（submodule add 沒成功）\n' >&2
         return 1; }
     [[ -d $CX_TEST_ROOT/.git/modules/backend ]] || {
         printf 'FIXTURE BROKEN: 缺少 .git/modules/backend\n' >&2; return 1; }
@@ -241,7 +248,7 @@ tree_digest() {                     # tree_digest [目錄]
     local r=${1:-$CX_TEST_ROOT}
     # 排除**所有**的 .git（不只頂層）與 .cx：
     #   .git —— preflight 會跑 git status / rev-parse，那會刷新索引，
-    #           於是 backend/.git/index 的大小與 mtime 會變。那不是
+    #           於是 src/backend/.git/index 的大小與 mtime 會變。那不是
     #           「dry-run 改動了檔案樹」，是 git 的正常行為。
     #           第一版只排除頂層的 .git，這個測試就為了錯的理由紅了。
     #   .cx  —— cx 的執行期狀態（鎖檔）。取鎖在 dry-run 下也是真的。

@@ -119,7 +119,7 @@
         fail_msg: >-
           {{ php_cli_binary }} 缺少 proc_open
           （rc={{ deploy_only_proc_open.rc }}，輸出「{{ deploy_only_proc_open.stdout | default('') | trim }}」）。
-          本專案 backend/composer.json 的 post-autoload-dump 會跑
+          本專案 src/backend/composer.json 的 post-autoload-dump 會跑
           @php artisan package:discover 與 @php artisan filament:upgrade，
           兩者都經 Symfony Process 呼叫 proc_open，少了它 composer install 必死於
           "The Process class relies on proc_open, which is not available on your PHP installation."

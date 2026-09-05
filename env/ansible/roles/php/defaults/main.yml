@@ -13,7 +13,7 @@ app_root: "/srv/{{ app_slug }}"
 deploy_user: deploy
 deploy_group: deploy
 # web_user / web_group 是 common role 定義的「php-fpm 與 nginx worker 的執行身分」。
-# common 把 backend/shared/storage 建成 02770 deploy:{{ web_group }}，
+# common 把 src/backend/shared/storage 建成 02770 deploy:{{ web_group }}，
 # 也就是說 FPM 必須以 web_user 執行才寫得進 Laravel 的 storage。
 # 改動這兩個值要連 common 一起改，否則會得到
 #   "The stream or file .../storage/logs/laravel.log could not be opened in append mode"

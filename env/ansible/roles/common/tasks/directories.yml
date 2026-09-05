@@ -32,7 +32,7 @@
 # nginx / php-fpm 以 www-data 執行，要能一路 traverse 到 current release。
 # app_root 的每一層父目錄至少要有 o+x 或屬於 www-data 群組；
 # 我們選擇「屬於 www-data 群組 + g+x」，所以 others 可以是 0。
-- name: 目錄 | 驗證 {{ web_user }} 能走到 backend/frontend
+- name: 目錄 | 驗證 {{ web_user }} 能走到 src/backend/frontend
   ansible.builtin.command:
     cmd: "/usr/bin/test -x {{ item | quote }}"
   become: true

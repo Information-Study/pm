@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── pm app 映像（php-fpm + nginx + supervisord）─────────────────────────────
-# build context 是專案根目錄，所以路徑寫 backend/... 與 env/docker/php/...
+# build context 是專案根目錄，所以路徑寫 src/backend/... 與 env/docker/php/...
 #
 # 六個 stage：base → vendor-dev / vendor-prod → dev / test / prod
 #
@@ -29,7 +29,7 @@ COPY --from=mlocati/php-extension-installer:2.11.12 /usr/bin/install-php-extensi
 
 # intl 是 Filament v5 的硬性需求（claude.md §0.5）。
 # bcmath 雖然 Laravel 13 與 Filament v5 都沒要求，但成本極低且常被套件用到。
-# pdo_sqlite 是給 backend/phpunit.xml 用的：它把測試導向 sqlite :memory:。
+# pdo_sqlite 是給 src/backend/phpunit.xml 用的：它把測試導向 sqlite :memory:。
 # 少了這個擴充，php artisan test 會是 "could not find driver"，而那看起來
 # 完全不像「擴充沒裝」，比較像資料庫設定錯了。
 RUN install-php-extensions \
@@ -105,7 +105,7 @@ EXPOSE 8080
 # ════════════════════════════════════════════════════════════════════════════
 FROM base AS vendor-dev
 
-COPY backend/composer.json backend/composer.lock ./
+COPY src/backend/composer.json src/backend/composer.lock ./
 # --no-scripts：此時還沒有原始碼，post-autoload-dump 的
 # artisan package:discover 與 artisan filament:upgrade 一定會失敗。
 # 這兩件事改由 entrypoint 在有原始碼時做。
@@ -123,7 +123,7 @@ RUN composer install \
 # ════════════════════════════════════════════════════════════════════════════
 FROM base AS vendor-prod
 
-COPY backend/composer.json backend/composer.lock ./
+COPY src/backend/composer.json src/backend/composer.lock ./
 RUN composer install \
         --no-interaction \
         --prefer-dist \
@@ -147,9 +147,9 @@ RUN composer install \
 FROM ${NODE_IMAGE} AS backend-assets
 
 WORKDIR /app
-COPY backend/package.json backend/package-lock.json ./
+COPY src/backend/package.json src/backend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY backend/ ./
+COPY src/backend/ ./
 RUN npm run build && test -d public/build
 # ════════════════════════════════════════════════════════════════════════════
 # dev —— 開發
@@ -160,7 +160,7 @@ RUN install-php-extensions xdebug
 
 COPY env/docker/php/zz-mode-dev.ini /usr/local/etc/php/conf.d/zz-mode.ini
 
-# 不 COPY 原始碼。dev 模式的 ./backend:/var/www/html bind mount 會把它蓋掉，
+# 不 COPY 原始碼。dev 模式的 ./src/backend:/var/www/html bind mount 會把它蓋掉，
 # 烘進來只是徒增 image 大小與「我改了檔怎麼沒生效」的困惑。
 # vendor 例外：它要被烘進來，好讓 compose 的具名 volume 用 image 內容種子化。
 COPY --from=vendor-dev --chown=www-data:www-data /var/www/html/vendor ./vendor
@@ -190,8 +190,8 @@ RUN install-php-extensions xdebug
 COPY env/docker/php/zz-mode-test.ini /usr/local/etc/php/conf.d/zz-mode.ini
 
 COPY --from=vendor-dev --chown=www-data:www-data /var/www/html/vendor ./vendor
-COPY --chown=www-data:www-data backend/ ./
-# 建好的 Vite 資產。放在 COPY backend/ 之後，才不會被原始碼覆蓋掉。
+COPY --chown=www-data:www-data src/backend/ ./
+# 建好的 Vite 資產。放在 COPY src/backend/ 之後，才不會被原始碼覆蓋掉。
 COPY --from=backend-assets --chown=www-data:www-data /app/public/build ./public/build
 
 # 原始碼進來之後才重建 optimized autoloader（--no-scripts 同理）。
@@ -216,8 +216,8 @@ FROM base AS prod
 COPY env/docker/php/zz-mode-prod.ini /usr/local/etc/php/conf.d/zz-mode.ini
 
 COPY --from=vendor-prod --chown=www-data:www-data /var/www/html/vendor ./vendor
-COPY --chown=www-data:www-data backend/ ./
-# 建好的 Vite 資產。放在 COPY backend/ 之後，才不會被原始碼覆蓋掉。
+COPY --chown=www-data:www-data src/backend/ ./
+# 建好的 Vite 資產。放在 COPY src/backend/ 之後，才不會被原始碼覆蓋掉。
 COPY --from=backend-assets --chown=www-data:www-data /app/public/build ./public/build
 
 RUN composer dump-autoload --classmap-authoritative --no-dev --no-scripts \

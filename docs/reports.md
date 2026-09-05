@@ -67,7 +67,7 @@ ls -t reports/verify | head -3 # 最近三份
 
 | 指令 | 產出 | 怎麼看 |
 |---|---|---|
-| `cx scan code` | `reports/quality/larastan.json` | Larastan（level 5，設定在 `backend/phpstan.neon.dist`）；有 SonarQube 時另有 Quality Gate |
+| `cx scan code` | `reports/quality/larastan.json` | Larastan（level 5，設定在 `src/backend/phpstan.neon.dist`）；有 SonarQube 時另有 Quality Gate |
 | `cx scan sast` | `reports/sast/semgrep.sarif` | SARIF（只有這一個檔，沒有文字摘要）；`bin/lib/sarif_gate.py` 只把 **ERROR** 等級算成失敗 |
 | `cx scan sca` | `reports/sca/` | Trivy JSON（工作樹 + 每個映像）、`composer audit` / `npm audit` 輸出、CycloneDX SBOM、掃描器映像 digest |
 | `cx scan dast` | `reports/dast/{detect,blocking}/report.{json,html}` | HTML 那份最好讀；`compare/` 是 WAF 對照 |
@@ -104,7 +104,7 @@ ls -t reports/verify | head -3 # 最近三份
 `trivy fs` 看不到映像層，而**祕密外洩正好只發生在映像層**。
 2026-09-05 實測：`pm/app:prod-prod` 裡有開發者的 `.env`，含真實的 `APP_KEY`
 與 `DB_PASSWORD` —— `.dockerignore` 的 `.env` 樣式錨定在 build context 根目錄，
-擋不住 `COPY backend/ ./` 帶進來的 `backend/.env`。
+擋不住 `COPY backend/ ./` 帶進來的 `src/backend/.env`。
 那個缺陷存在的整段期間 `cx scan sca` 一路全綠，因為沒有任何一道在看映像。
 
 `trivy image` 不是新工具，是既有 Trivy 的另一個子命令。

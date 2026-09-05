@@ -200,14 +200,14 @@ _db_admin() {
 
 # ═══ 原生路徑 ═══════════════════════════════════════════════════════════════
 # docker 路徑打的是 compose 的 mysql 容器；原生路徑打的是
-# backend/.env 指到的那台 MySQL（Ansible 部署出來的就是這種）。
+# src/backend/.env 指到的那台 MySQL（Ansible 部署出來的就是這種）。
 # 兩條路各自獨立，不互相依賴。
 
 # 連線設定的來源順序（後面的覆蓋前面的，但空值不算數）：
 #
 #   1. 專案根的 .env      —— 這個 repo 的真相。cx setup env 產生的隨機密碼在這裡，
 #                            compose 也是從這裡把值餵進容器。
-#   2. backend/.env       —— 真機部署的真相（Ansible 寫到 shared/.env）。
+#   2. src/backend/.env       —— 真機部署的真相（Ansible 寫到 shared/.env）。
 #                            但在 Docker 開發環境裡它的 DB_PASSWORD 是**空的** ——
 #                            容器的密碼是 compose 從根 .env 注入的環境變數，
 #                            不是寫在這個檔裡。所以空值必須略過，不能覆蓋掉根 .env。
@@ -224,9 +224,9 @@ _db_env_file_get() {
 }
 
 _db_native_load() {
-    local f_root="$CX_ROOT/.env" f_be="$CX_ROOT/backend/.env" v
+    local f_root="$CX_ROOT/.env" f_be="$CX_ROOT/src/backend/.env" v
     [[ -f $f_root || -f $f_be ]] || cx_die "$EX_PRECOND" \
-        "找不到 .env 也找不到 backend/.env —— 原生路徑的連線設定從那裡讀（先跑 cx setup env）"
+        "找不到 .env 也找不到 src/backend/.env —— 原生路徑的連線設定從那裡讀（先跑 cx setup env）"
 
     _DBN_DATABASE=$(_db_env_file_get "$f_root" DB_DATABASE)
     _DBN_USERNAME=$(_db_env_file_get "$f_root" DB_USERNAME)
@@ -243,12 +243,12 @@ _db_native_load() {
     : "${_DBN_HOST:=127.0.0.1}"
     : "${_DBN_PORT:=3306}"
     [[ -n $_DBN_DATABASE ]] || cx_die "$EX_PRECOND" \
-        "讀不到 DB_DATABASE（.env 與 backend/.env 都沒有）"
+        "讀不到 DB_DATABASE（.env 與 src/backend/.env 都沒有）"
     _db_native_apply_override
     _db_native_assert_host
 }
 
-# ⚠ backend/.env 記的是「容器眼中的世界」：DB_HOST 通常是 mysql
+# ⚠ src/backend/.env 記的是「容器眼中的世界」：DB_HOST 通常是 mysql
 # （compose 的 service 名），那個名字在 host 上解析不到。
 #
 # 所以原生路徑允許用環境變數覆寫，而且會在解析不到的時候把原因講清楚 ——
@@ -258,7 +258,7 @@ _db_native_load() {
 #
 #   CX_DB_HOST=127.0.0.1 CX_DB_PORT=3306  cx --runner native db status   # 打 dev 容器發布的埠
 #   CX_DB_HOST=127.0.0.1 CX_DB_PORT=13306 cx --runner native db status   # test
-#   （真機部署時 backend/.env 本來就是 127.0.0.1，不需要覆寫）
+#   （真機部署時 src/backend/.env 本來就是 127.0.0.1，不需要覆寫）
 _db_native_apply_override() {
     [[ -n ${CX_DB_HOST:-} ]] && _DBN_HOST=$CX_DB_HOST
     [[ -n ${CX_DB_PORT:-} ]] && _DBN_PORT=$CX_DB_PORT
@@ -272,12 +272,12 @@ _db_native_assert_host() {
         *) return 0 ;;        # 純數字與點 → 當成 IPv4，放行
     esac
     getent hosts "$_DBN_HOST" >/dev/null 2>&1 && return 0
-    cx_error "host 解析不到 backend/.env 的 DB_HOST=$_DBN_HOST"
+    cx_error "host 解析不到 src/backend/.env 的 DB_HOST=$_DBN_HOST"
     cx_dim "  那個檔記的是「容器眼中的世界」——「$_DBN_HOST」是 compose 的 service 名，"
     cx_dim "  只有在容器網路裡才解析得到，host 上不存在。"
     cx_dim "  原生路徑請指定實際位置，例如打 dev 容器發布的埠："
     cx_dim "    CX_DB_HOST=127.0.0.1 CX_DB_PORT=3306 cx --runner native db status"
-    cx_dim "  （真機部署時 backend/.env 本來就是 127.0.0.1，不需要覆寫）"
+    cx_dim "  （真機部署時 src/backend/.env 本來就是 127.0.0.1，不需要覆寫）"
     cx_dim "  或改用容器路徑： cx --runner docker db status"
     exit "$EX_PRECOND"
 }
@@ -322,7 +322,7 @@ _db_wait_native() {
 
 _db_status_native() {
     _db_native_load
-    cx_step "原生資料庫（backend/.env）"
+    cx_step "原生資料庫（src/backend/.env）"
     cx_info "連線：$_DBN_USERNAME@$_DBN_HOST:$_DBN_PORT／$_DBN_DATABASE"
     cx_info "資料表："
     _db_mysql_native -N -e "SHOW TABLES" 2>/dev/null | sed 's/^/    /' \
@@ -332,7 +332,7 @@ _db_status_native() {
 }
 
 # 原生的 artisan。與 cx art 的原生路徑同一套前置檢查，另外把解析好的連線設定
-# 餵給 Laravel —— 因為 backend/.env 在 Docker 開發環境裡的 DB_PASSWORD 是空的
+# 餵給 Laravel —— 因為 src/backend/.env 在 Docker 開發環境裡的 DB_PASSWORD 是空的
 # （容器的密碼是 compose 注入的環境變數）。不餵的話 MySQL 回
 #   Access denied for user 'pm'@'...' (using password: NO)
 # 看起來像密碼錯，其實是根本沒帶密碼。
@@ -346,8 +346,8 @@ _db_status_native() {
 # 同理也不會經過 cx_run 印出來。
 _db_artisan_native() {
     cx_runner_need_native "cx db" php
-    [[ -f $CX_ROOT/backend/vendor/autoload.php ]] || cx_die "$EX_PRECOND" \
-        "backend/vendor 不存在 —— 先跑 cx --runner native composer install"
+    [[ -f $CX_ROOT/src/backend/vendor/autoload.php ]] || cx_die "$EX_PRECOND" \
+        "src/backend/vendor 不存在 —— 先跑 cx --runner native composer install"
     _db_native_load
     (
         export DB_CONNECTION=mysql
@@ -356,7 +356,7 @@ _db_artisan_native() {
         export DB_DATABASE="$_DBN_DATABASE"
         export DB_USERNAME="$_DBN_USERNAME"
         export DB_PASSWORD="$_DBN_PASSWORD"
-        cd "$CX_ROOT/backend" && cx_run php artisan "$@"
+        cd "$CX_ROOT/src/backend" && cx_run php artisan "$@"
     )
 }
 
@@ -416,10 +416,10 @@ cmd_db_main() {
     esac
 
     # ── 原生路徑 ──────────────────────────────────────────────────────
-    # 打的是 backend/.env 指到的那台 MySQL（Ansible 部署出來的就是這種），
+    # 打的是 src/backend/.env 指到的那台 MySQL（Ansible 部署出來的就是這種），
     # 完全不碰 compose。刪除閘門在兩條路都一樣。
     if [[ $(cx_runner) == native ]]; then
-        cx_runner_banner "host 工具 + .env／backend/.env 的連線設定"
+        cx_runner_banner "host 工具 + .env／src/backend/.env 的連線設定"
         # 前置工具檢查要在這裡做，不能只放在各 helper 裡面：
         # helper 常常被包在 $(...) 或 pipeline 裡，那裡的 exit 只結束子 shell，
         # 於是流程照樣往下走，最後浮出來的是 127 command not found —— 

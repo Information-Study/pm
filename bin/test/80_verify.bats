@@ -46,16 +46,16 @@ setup() {
     # 那樣測到的是「沒有東西可驗」而不是「驗出問題會失敗」。
     # 這裡刻意做出 GRD-wire 要抓的那個缺陷：防護檔案在，但 phpunit.xml
     # 沒有指向它（就是 cx fresh --mode carryover 會造成的那個狀態）。
-    mkdir -p "$CX_TEST_ROOT/backend/tests"
-    cat > "$CX_TEST_ROOT/backend/tests/bootstrap.php" <<'PHP'
+    mkdir -p "$CX_TEST_ROOT/src/backend/tests"
+    cat > "$CX_TEST_ROOT/src/backend/tests/bootstrap.php" <<'PHP'
 <?php
 require __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/DatabaseSafetyGuard.php';
 Tests\DatabaseSafetyGuard::assertProcessEnv();
 PHP
-    : > "$CX_TEST_ROOT/backend/tests/DatabaseSafetyGuard.php"
+    : > "$CX_TEST_ROOT/src/backend/tests/DatabaseSafetyGuard.php"
     printf '<phpunit bootstrap="vendor/autoload.php"></phpunit>\n' \
-        > "$CX_TEST_ROOT/backend/phpunit.xml"
+        > "$CX_TEST_ROOT/src/backend/phpunit.xml"
 
     run cx_bin verify cli
     assert_rc "$EX_FAIL"
@@ -63,18 +63,18 @@ PHP
 }
 
 @test "同一個缺陷修好之後就 PASS（雙向）" {
-    mkdir -p "$CX_TEST_ROOT/backend/tests"
-    cat > "$CX_TEST_ROOT/backend/tests/bootstrap.php" <<'PHP'
+    mkdir -p "$CX_TEST_ROOT/src/backend/tests"
+    cat > "$CX_TEST_ROOT/src/backend/tests/bootstrap.php" <<'PHP'
 <?php
 require __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/DatabaseSafetyGuard.php';
 Tests\DatabaseSafetyGuard::assertProcessEnv();
 PHP
-    : > "$CX_TEST_ROOT/backend/tests/DatabaseSafetyGuard.php"
+    : > "$CX_TEST_ROOT/src/backend/tests/DatabaseSafetyGuard.php"
     printf '<phpunit bootstrap="tests/bootstrap.php"></phpunit>\n' \
-        > "$CX_TEST_ROOT/backend/phpunit.xml"
+        > "$CX_TEST_ROOT/src/backend/phpunit.xml"
     printf 'public function createApplication()\nDatabaseSafetyGuard::assertResolvedConfig\n' \
-        > "$CX_TEST_ROOT/backend/tests/TestCase.php"
+        > "$CX_TEST_ROOT/src/backend/tests/TestCase.php"
 
     run cx_bin verify cli
     assert_out_has "GRD-wire"

@@ -73,3 +73,31 @@ print(m.group(1) if m else '')
         [ -n "$output" ] || _fail_with "cx $v --help 沒有輸出"
     done
 }
+
+# ── 版面契約 ───────────────────────────────────────────────────────────────
+#
+# CX_LAYOUT_VERSION 在 2026-09-06 之前只在 doctor.sh 被**印出來**，
+# 沒有任何比較 —— 也就是一個裝飾。後果是「舊版面的樹跑新 cx」會用一堆
+# 看不出關聯的方式壞掉：缺 env/docker/compose/dev.yml、composer 找不到
+# src/backend/composer.json、ansible cd 失敗 —— 每個訊息都指向不同的方向。
+#
+# 兩個方向都要驗。只驗擋得住不驗放得過，會讓豁免清單變成沒人測的死碼。
+
+@test "舊版面的樹要被擋下（EX_PRECOND），並指出怎麼遷移" {
+    printf 'CX_PROJECT_NAME=old\nCX_LAYOUT_VERSION=2\nCX_GH_ORG=X\nCX_REPO_MAIN=old\nCX_REPO_BACKEND=old-b\nCX_REPO_FRONTEND=old-f\n' \
+        > "$CX_TEST_ROOT/.cxroot"
+    run cx_bin status
+    assert_rc "$EX_PRECOND"
+    assert_out_has "版面不相容"
+    # 訊息要說得出「怎麼修」，否則使用者只知道壞了
+    assert_out_has "src/"
+}
+
+@test "舊版面之下 doctor 仍然跑得起來（拿到舊樹的人正需要它）" {
+    printf 'CX_PROJECT_NAME=old\nCX_LAYOUT_VERSION=2\nCX_GH_ORG=X\nCX_REPO_MAIN=old\nCX_REPO_BACKEND=old-b\nCX_REPO_FRONTEND=old-f\n' \
+        > "$CX_TEST_ROOT/.cxroot"
+    run cx_bin doctor
+    # doctor 可能因為別的原因回非 0（工具缺東西），但**不可以**是版面閘門擋的
+    assert_out_lacks "版面不相容"
+    assert_out_has "layout v2"
+}

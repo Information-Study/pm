@@ -61,10 +61,10 @@ cx test back               # 跑後端測試 —— 這是測試
 | 子指令 | 別名 | 做什麼 | 需要容器嗎 | 需要什麼 |
 |---|---|---|---|---|
 | `back` | `backend` | `php artisan test` | 視 runner 而定 | **不需要 MySQL**（sqlite `:memory:`） |
-| `front` | `frontend` | `nuxt typecheck` | 視 runner 而定 | 原生路徑需 `frontend/node_modules` |
+| `front` | `frontend` | `nuxt typecheck` | 視 runner 而定 | 原生路徑需 `src/frontend/node_modules` |
 | `all` | —（**預設**） | `back` + `front` | 同上 | 不含 `cli`，也不含 `coverage` |
 | `coverage` | `cov` | 後端覆蓋率 | **一定要容器** | test 映像裡的 xdebug |
-| `larastan` | `code` | 轉呼叫 `cx scan code` | 否 | host 的 `backend/vendor/bin/phpstan` |
+| `larastan` | `code` | 轉呼叫 `cx scan code` | 否 | host 的 `src/backend/vendor/bin/phpstan` |
 | `cli` | `self` | `cx` 自己的 bats 行為測試 | 否 | `bats`（`cx setup tools bats`） |
 
 不帶子指令的 `cx test` 等於 `cx test all`。
@@ -79,7 +79,7 @@ cx test back               # 跑後端測試 —— 這是測試
 * **`cx test larastan` 不只是 Larastan。** 它 source `bin/cmd/scan.sh` 之後直接呼叫
   `cmd_scan_main code`，也就是整條 ① Quality lane（Larastan **加上** SonarQube scanner，
   如果 sonar 網路在且拿得到 token）。因此它的失敗退出碼是 **20**，不是 1。
-  另外 Larastan 走的是 **host 的 PHP**（`backend/vendor/bin/phpstan`），
+  另外 Larastan 走的是 **host 的 PHP**（`src/backend/vendor/bin/phpstan`），
   不進容器 —— 容器路徑沒有裝它。
 
 ### 1.2 測試資料庫的硬性防護（必讀）
@@ -88,7 +88,7 @@ cx test back               # 跑後端測試 —— 這是測試
 
 #### 為什麼需要它
 
-`backend/phpunit.xml` 用 `<env force="true">` 把 `DB_CONNECTION` 釘成 `sqlite`、
+`src/backend/phpunit.xml` 用 `<env force="true">` 把 `DB_CONNECTION` 釘成 `sqlite`、
 `DB_DATABASE` 釘成 `:memory:`。**在容器裡那是無效的**，2026-09-04 實測確認：
 
 ```
@@ -106,9 +106,9 @@ compose 的 environment:  →  讓 $_SERVER['DB_CONNECTION'] 一定有值（mysq
 
 | 零件 | 檔案 | 攔在哪裡 |
 |---|---|---|
-| 接線 | `backend/phpunit.xml` 的 `bootstrap="tests/bootstrap.php"` | 讓下面兩層有機會執行 |
-| Layer A | `backend/tests/bootstrap.php` → `DatabaseSafetyGuard::assertProcessEnv()` | **每一個進入點**都會經過（`vendor/bin/phpunit`、`php artisan test`、`composer test`、`cx test back` 的兩條 runner） |
-| Layer B | `backend/tests/TestCase.php` → `assertResolvedConfig($app)`，掛在 `createApplication()` | app boot 完之後的最終解析結果 |
+| 接線 | `src/backend/phpunit.xml` 的 `bootstrap="tests/bootstrap.php"` | 讓下面兩層有機會執行 |
+| Layer A | `src/backend/tests/bootstrap.php` → `DatabaseSafetyGuard::assertProcessEnv()` | **每一個進入點**都會經過（`vendor/bin/phpunit`、`php artisan test`、`composer test`、`cx test back` 的兩條 runner） |
+| Layer B | `src/backend/tests/TestCase.php` → `assertResolvedConfig($app)`，掛在 `createApplication()` | app boot 完之後的最終解析結果 |
 
 Layer B **必須掛在 `createApplication()`，不能掛在 `setUp()`**。
 `setUpTheTestEnvironment()` 的順序是 `refreshApplication()` → `createApplication()`，
@@ -401,7 +401,7 @@ cx scan <code|sast|sca|dast|secrets|all> [--runner docker|native|auto]
 
 | lane | 實際執行 | 需要容器在跑嗎 | 失敗碼 |
 |---|---|---|---|
-| `code` ① | host 的 `backend/vendor/bin/phpstan analyse`；另外在 docker runner 且 sonar 網路存在且拿得到 token 時跑 `sonar-scanner` 容器 | ✘（Sonar scanner 需要常駐的 SonarQube，`cx sonar up`） | 20 |
+| `code` ① | host 的 `src/backend/vendor/bin/phpstan analyse`；另外在 docker runner 且 sonar 網路存在且拿得到 token 時跑 `sonar-scanner` 容器 | ✘（Sonar scanner 需要常駐的 SonarQube，`cx sonar up`） | 20 |
 | `sast` ② | Semgrep（容器或原生），規則集來自 `env/docker/security/semgrep/rulesets.txt`；產出 SARIF 後由 `bin/lib/sarif_gate.py` 判級 | ✘ | 21 |
 | `sca` ③ | `trivy fs`（vuln+secret+misconfig）、**`trivy image` 掃已建好的映像**、`composer audit`、`npm audit`、CycloneDX SBOM、掃描器映像 digest | ✘，但映像那一段需要**已經 build 過** | 22 |
 | `dast` ④ | ZAP baseline 跑兩輪（`DetectionOnly` 與 `On`，每輪真的重建 waf 容器切引擎）＋ **主動攻擊探測**＋被動 alert 對照 | **✔ 需要 `cx test up -d`**（否則找不到 `<專案>_test_net`，以 `EX_PRECOND` 中止） | 23 |
@@ -635,11 +635,11 @@ CX_TEST_STRICT=1 cx test cli  # cx 自己的行為測試（bats）
 
 這一層**有一部分**是雙 runner 的：`cx style`、`cx test back` / `front`、
 `cx scan sast`、以及 `cx scan sca` 的 `trivy fs`，`--runner auto` 有 Docker daemon
-就走容器，沒有就走原生；走原生時需要 `backend/vendor` 與 `frontend/node_modules`，
+就走容器，沒有就走原生；走原生時需要 `src/backend/vendor` 與 `src/frontend/node_modules`，
 缺了會以 `EX_PRECOND` 硬失敗並告訴你補哪一個。
 
 其餘幾個**不是**雙 runner，`--runner` 對它們沒有作用，一律跑 host 上的工具：
-`cx scan code` 的 Larastan（`backend/vendor/bin/phpstan`）、`cx scan sca` 的
+`cx scan code` 的 Larastan（`src/backend/vendor/bin/phpstan`）、`cx scan sca` 的
 `composer audit` 與 `npm audit`、`cx scan secrets` 的 gitleaks、
 以及 `cx deploy syntax` / `lint` 的 ansible。
 反方向也有一個：`cx scan sca` 的 `trivy image` 只在 docker runner 之下才會跑。
@@ -659,7 +659,7 @@ cx deploy syntax && cx deploy lint   # 動到 ansible/ 才需要
 |---|---|
 | `cx style --check` | rc=0（非 0 代表格式沒跑過，跑 `cx style` 自動修）。兩邊都跑完才回傳最嚴重的碼 |
 | `cx test back` / `front` | rc=0。**rc=3 要當環境問題處理**（缺 `pdo_sqlite`／缺 `node_modules`／資料庫防護拒絕），不要當成「這次沒測到但沒關係」 |
-| `cx scan code` | rc=0。rc=20 = Larastan 有 error。⚠ `backend/vendor/bin/phpstan` 不存在時只印一行 `cx_warn` 並讓這道回 0 —— 所以要順帶確認終端機上真的出現了 `報告：reports/quality/larastan.json（errors=…）` 那一行，否則這個 0 是「沒跑」不是「乾淨」 |
+| `cx scan code` | rc=0。rc=20 = Larastan 有 error。⚠ `src/backend/vendor/bin/phpstan` 不存在時只印一行 `cx_warn` 並讓這道回 0 —— 所以要順帶確認終端機上真的出現了 `報告：reports/quality/larastan.json（errors=…）` 那一行，否則這個 0 是「沒跑」不是「乾淨」 |
 | `cx scan sast` | rc=0。rc=21 = 有 **ERROR 等級** finding；warning 會列出但不擋 |
 | `cx scan sca` | rc=0。rc=22 = 有 finding；例外必須進 `env/docker/security/trivy/.trivyignore.yaml` 且**有 `statement` 與 `expired_at`** |
 | `cx scan secrets` | rc=0，且三份 `gitleaks-*.json` 都**存在**且是 `[]`。檔案不存在 = 沒跑成 |
@@ -724,7 +724,7 @@ CX_TEST_STRICT=1 cx test cli
    若是 3，那是環境問題，**必須先修好再跑一次**，不能當成通過。
 4. 動到 WAF、CRS 排除規則、`env/docker/edge/`、`env/ansible/roles/nginx_myguard/` 任何一個時，
    **第 3 層必跑**，且 `waf-probe.json` 的 `normal_requests_falsely_blocked` 是空的。
-5. 動到 `backend/phpunit.xml`、`backend/tests/`、`bin/cmd/test.sh` 任何一個時，
+5. 動到 `src/backend/phpunit.xml`、`src/backend/tests/`、`bin/cmd/test.sh` 任何一個時，
    `cx verify cli` 的 `GRD-*` 四項**全部 PASS**。
 
 ### 一定要記錄下來的東西

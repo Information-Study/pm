@@ -14,7 +14,7 @@
 #      寫死名字等於放棄 -p 的隔離，三個模式無法並存（舊 compose 的 D11）。
 #
 #   3) **不可有原始碼 bind mount。**
-#      dev 才需要 ./backend:/var/www/html；test/prod 是不可變映像，
+#      dev 才需要 ./src/backend:/var/www/html；test/prod 是不可變映像，
 #      原始碼烘在 image 裡。寫在 base 會讓 test 掃到的其實是你工作區的髒檔案。
 #
 #   4) **網路必須明寫 name:。**

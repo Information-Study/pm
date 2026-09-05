@@ -10,7 +10,7 @@
             "port": 9003, // Xdebug 監聽端口
             "pathMappings": {
                 // 容器內路徑映射到本地路徑
-                "/var/www/html": "${workspaceFolder}/backend"
+                "/var/www/html": "${workspaceFolder}/src/backend"
             },
             "ignore": [
                 // 忽略這些目錄的文件進行調試
@@ -32,7 +32,7 @@
             "request": "attach", // 附加模式：連接到已運行的進程
             "address": "localhost", // 調試服務器地址
             "port": 9229, // Node.js 調試端口
-            "localRoot": "${workspaceFolder}/frontend", // 本地源代碼根目錄
+            "localRoot": "${workspaceFolder}/src/frontend", // 本地源代碼根目錄
             "remoteRoot": "/app", // 遠程（容器內）源代碼根目錄
             "restart": true, // 進程重啟時自動重新連接
             "skipFiles": [
@@ -47,7 +47,7 @@
             "type": "chrome", // 調試器類型：Chrome
             "request": "launch", // 啟動模式：打開新的瀏覽器實例
             "url": "http://localhost:3000", // 要調試的網頁 URL
-            "webRoot": "${workspaceFolder}/frontend", // Web 應用根目錄
+            "webRoot": "${workspaceFolder}/src/frontend", // Web 應用根目錄
             "sourceMaps": true, // 啟用 Source Maps 支持
             "userDataDir": "${workspaceFolder}/.vscode/chrome-debug", // Chrome 用戶數據目錄
             "runtimeArgs": [

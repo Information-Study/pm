@@ -26,7 +26,7 @@ docker compose \
 ### `--project-directory`
 
 compose 檔裡的相對路徑（build context、bind mount 來源）**以第一個 `-f` 的目錄為基準**，
-不是你的 cwd。沒有這個參數，從 `backend/` 執行時 `./backend` 會被解析成
+不是你的 cwd。沒有這個參數，從 `backend/` 執行時 `./src/backend` 會被解析成
 `pm/backend/backend`，錯誤訊息是 `no such file or directory`，
 而你正站在那個確實存在的目錄裡。
 
@@ -114,7 +114,7 @@ cx prod config | grep -A5 'edge:' | grep -A3 ports
 
 ### dev 的 vendor 為什麼是具名 volume
 
-dev 把 `./backend` bind mount 進 `/var/www/html`。host 的 `backend/vendor`
+dev 把 `./src/backend` bind mount 進 `/var/www/html`。host 的 `src/backend/vendor`
 如果存在，會直接蓋掉映像裡由 `composer install` 產生的那一份 ——
 而那一份才是照容器內的 PHP 版本與擴充解析出來的。
 

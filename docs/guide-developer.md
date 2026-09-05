@@ -234,7 +234,7 @@ detached HEAD **領先**追蹤分支時（你剛好在 detached 狀態下 commit
 |---|---|
 | `setup system`（需要 root） | `php` `nginx` `git` `docker`（含 compose v2）`mysql-client` `php-sqlite` `acl` `jq` |
 | `setup tools`（免 root，裝到 `~/.local`） | `composer` `node`（含 npm）`ansible`（含 ansible-lint / yamllint）`trivy` `gitleaks` `semgrep` `shellcheck` `bats` |
-| 不必安裝 | `artisan` —— 它是 `backend/artisan`，隨 Laravel 一起來 |
+| 不必安裝 | `artisan` —— 它是 `src/backend/artisan`，隨 Laravel 一起來 |
 
 > `shellcheck`、`bats`、`jq` 三個確實在實作的清單裡（`bin/cmd/setup.sh` 的
 > `CX_SETUP_TOOLS` / `CX_SETUP_SYSTEM_TOOLS`），`cx lint sh` 會叫你去裝 shellcheck、
@@ -332,7 +332,7 @@ echo $PATH | tr : '\n' | grep '\.local/bin' # 確認
 | | dev | test | prod |
 |---|---|---|---|
 | **拿來做什麼** | 寫程式。改完存檔就生效 | **被掃描**。ZAP 打 WAF、WAF 轉給 edge | 驗證正式組態的容器版本 |
-| 原始碼 | bind mount（`./backend` `./frontend` 掛進容器） | 烘進映像（不可變） | 烘進映像（不可變） |
+| 原始碼 | bind mount（`./src/backend` `./src/frontend` 掛進容器） | 烘進映像（不可變） | 烘進映像（不可變） |
 | `APP_ENV` / `APP_DEBUG` | `local` / `true` | `testing` / `false` | `production` / `false` |
 | `display_errors` | On | **Off** | **Off** |
 | xdebug | 有（`XDEBUG_MODE=debug`，`start_with_request=trigger`） | 裝了但預設 `off`，只有收覆蓋率時才臨時打開 | **無**（build 時斷言） |
@@ -424,9 +424,9 @@ runner: native（指定） — composer 2.10.3
 
 ### 3.2 兩條路的產出**不保證可以互換**
 
-- `backend/vendor`：容器是 `php:8.5-fpm-alpine`（musl），host 是 Ubuntu（glibc），
+- `src/backend/vendor`：容器是 `php:8.5-fpm-alpine`（musl），host 是 Ubuntu（glibc），
   擴充清單也不同。composer 會照「當下這個 php」解相依。
-- `frontend/node_modules`：同理。`cx npm --backend` 的 docker 路徑刻意用
+- `src/frontend/node_modules`：同理。`cx npm --backend` 的 docker 路徑刻意用
   **glibc 的 node 映像**（bookworm-slim）而不是 Alpine —— 用 Alpine 會產生一份只有
   Alpine 能用的 `node_modules`，之後在 host 上 `npm run build` 會炸
   `Cannot find module '@rolldown/binding-linux-x64-musl'`，而那個訊息看起來像
@@ -508,7 +508,7 @@ cx php scripts/oneoff.php
 ```
 
 `cx art` 是 artisan，`cx php` 是 php 本身。兩者共用同一份 runner 判斷與前置檢查
-（所以在同一個檔案裡）。原生路徑會先確認 `backend/vendor/autoload.php` 存在 ——
+（所以在同一個檔案裡）。原生路徑會先確認 `src/backend/vendor/autoload.php` 存在 ——
 缺了它 artisan 的錯誤是 `Failed opening required`，而不是「請先安裝相依」。
 
 不給參數會印用法並回 `EX_USAGE`(2)。
@@ -576,8 +576,8 @@ mysql client 是在 **mysql 容器裡**執行，不是 app 容器。app 是 Alpi
 `ERROR 2026 (HY000): TLS/SSL error: self-signed certificate in certificate chain`，
 看起來像 TLS 壞了，其實只是用錯 client。
 
-**原生路徑打的是 `backend/.env` 指到的那台 MySQL**（Ansible 部署出來的就是這種），
-完全不碰 compose。但 `backend/.env` 記的是「容器眼中的世界」，`DB_HOST=mysql` 在 host
+**原生路徑打的是 `src/backend/.env` 指到的那台 MySQL**（Ansible 部署出來的就是這種），
+完全不碰 compose。但 `src/backend/.env` 記的是「容器眼中的世界」，`DB_HOST=mysql` 在 host
 上解析不到，所以要覆寫：
 
 ```bash
@@ -653,8 +653,8 @@ cx style --check              # 只檢查不改 —— CI 用這個
 cx style php -- --dirty       # -- 之後的參數傳給 pint（只處理未提交的檔）
 ```
 
-兩個工具都**已經隨既有相依裝好**，不需要另外安裝：`backend/vendor/bin/pint`
-（composer 的 require-dev）與 `frontend/node_modules/.bin/prettier`（devDependencies）。
+兩個工具都**已經隨既有相依裝好**，不需要另外安裝：`src/backend/vendor/bin/pint`
+（composer 的 require-dev）與 `src/frontend/node_modules/.bin/prettier`（devDependencies）。
 
 兩個動詞都是**全部跑完才回傳最嚴重的退出碼**，不是遇到第一個問題就停 ——
 停在第一個的話，前端的格式問題永遠要等到後端乾淨的那一天才會被看見。
@@ -1015,7 +1015,7 @@ session、快取與上傳檔。
 ```bash
 cx acl check                      # 唯讀驗證（cx doctor 也會叫它）
 cx acl status                     # 看目前的 ACL
-cx acl status backend/storage     # 看單一路徑
+cx acl status src/backend/storage     # 看單一路徑
 cx acl apply                      # 套用前後端的權限模型
 cx acl apply backend              # 只處理 Laravel
 cx acl user add alice             # 讓 alice 可以改原始碼
@@ -1038,7 +1038,7 @@ cx acl drop                       # 移除 ACL，回到純 chmod
 | 路徑 | ACL | 對應部署模型 |
 |---|---|---|
 | `backend/`、`frontend/` 整棵樹 | `u:web:rX, u:dev:rwX, o::---` | `02750` |
-| `backend/storage`、`backend/bootstrap/cache` | `u:web:rwX, u:dev:rwX, o::---` | `02770` |
+| `src/backend/storage`、`src/backend/bootstrap/cache` | `u:web:rwX, u:dev:rwX, o::---` | `02770` |
 
 `o::---` 不是可有可無：web 與 dev 都已經有明確的 ACL 條目，others 不需要任何權限。
 實測沒帶它的後果是 web 身分以 umask 022 建出的 `laravel.log` 會是 `other::r--`，
@@ -1065,7 +1065,7 @@ cx acl drop                       # 移除 ACL，回到純 chmod
 | 想看什麼 | 怎麼看 |
 |---|---|
 | 容器的 stdout/stderr | `cx dev logs -f app`（預設 `--tail=200`），`cx dev logs -f nuxt edge` |
-| Laravel 的 `laravel.log`（dev） | `backend/storage/logs/laravel.log` —— dev 是 bind mount，檔案直接在 host 上 |
+| Laravel 的 `laravel.log`（dev） | `src/backend/storage/logs/laravel.log` —— dev 是 bind mount，檔案直接在 host 上 |
 | Laravel 的 log（test / prod） | 原始碼烘進映像，host 上沒有。`cx --mode test sh app` 進去看 `storage/logs/` |
 | 容器裡的任何東西 | `cx dev sh [服務]`（開的是 `sh`，Alpine 沒有 bash） |
 | 合併後的 compose 設定 | `cx dev config` —— 查「我改的那個值到底有沒有生效」 |

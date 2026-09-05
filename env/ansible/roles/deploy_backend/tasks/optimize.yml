@@ -145,7 +145,7 @@
              if ('Closure' in (backend_route_cache_result.stderr | default('')
                                ~ backend_route_cache_result.stdout | default('')))
              else '完整輸出見上一個任務。' }}
-          本專案 backend/routes/web.php 與 backend/routes/api.php 目前都是 Closure：
+          本專案 src/backend/routes/web.php 與 src/backend/routes/api.php 目前都是 Closure：
             Route::get('/', function () { ... });
             Route::get('/user', function (Request $request) { ... })->middleware('auth:sanctum');
           要用 route:cache，得先把它們改成 controller 方法，例如

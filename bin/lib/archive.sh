@@ -2,7 +2,7 @@
 # cx 封存函式庫。
 #
 # ⚠ 為什麼不能只 tar backend/ 和 frontend/：
-#   backend/.git 與 frontend/.git 是 32 bytes 的「指標檔」（gitdir: ../.git/modules/backend），
+#   src/backend/.git 與 src/frontend/.git 是 32 bytes 的「指標檔」（gitdir: ../.git/modules/backend），
 #   真正的物件庫在 <root>/.git/modules/<name>。
 #   只 tar 子目錄 → 只封存到那個指標 → 107 個 commit 全部遺失。
 #   所以每個子專案都要 (a) git bundle  (b) 單獨打包真實 gitdir  (c) 在 MANIFEST 記錄還原位置。
@@ -126,7 +126,7 @@ cx_backup() {
     # ---- 子專案 ----
     local c
     for c in backend frontend; do
-        [[ -d $CX_ROOT/$c ]] || { cx_warn "$c 不存在，略過"; continue; }
+        [[ -d $CX_ROOT/src/$c ]] || { cx_warn "$c 不存在，略過"; continue; }
         # ⚠ symlink 會產出「驗證全綠但沒有原始碼」的封存。
         #   `[[ -d ]]` 會跟隨 symlink 回報成功，但下面的 `tar -C "$CX_ROOT" -- "$c"`
         #   打包的是 symlink 本身（GNU tar 不加 -h 不跟隨），而
@@ -135,46 +135,49 @@ cx_backup() {
         #   然後 _fresh_delete 把樹刪掉 —— 而封存裡沒有任何程式碼。
         #   還原路徑也不對：cx_restore 會在原本是 symlink 的位置解出一個真目錄。
         #   這種佈局要先自己處理掉，封存不該猜。
-        if [[ -L $CX_ROOT/$c ]]; then
+        if [[ -L $CX_ROOT/src/$c ]]; then
             cx_die "$EX_FAIL" \
-                "$c 是 symlink（指向 $(readlink "$CX_ROOT/$c")）—— 封存無法正確處理，已中止。
+                "$c 是 symlink（指向 $(readlink "$CX_ROOT/src/$c")）—— 封存無法正確處理，已中止。
     tar 不會跟隨它，產出的封存會通過驗證但不含任何原始碼。
     請先把它換成真目錄（或把子專案移進來）再跑 cx fresh。"
         fi
         cx_step "封存 $c"
 
-        # 原始碼
+        # 原始碼。
+        # ⚠ tar 的路徑是**相對於 -C 的**，v3 版面下是 src/<名字>。
+        #   而封存檔名維持 src-<名字>.tar.gz —— 那是封存格式的一部分，
+        #   舊封存還原得回來這件事不該因為版面改了就斷掉。
         cx_run tar -czf "$A/src-$c.tar.gz" -C "$CX_ROOT" \
-            --exclude="$c/node_modules" --exclude="$c/vendor" \
-            --exclude="$c/.nuxt" --exclude="$c/.output" \
-            --exclude="$c/storage/logs" --exclude="$c/storage/framework/cache" \
-            -- "$c"             || cx_die "$EX_FAIL" "tar src-$c 失敗 —— 封存不完整，已中止"
+            --exclude="src/$c/node_modules" --exclude="src/$c/vendor" \
+            --exclude="src/$c/.nuxt" --exclude="src/$c/.output" \
+            --exclude="src/$c/storage/logs" --exclude="src/$c/storage/framework/cache" \
+            -- "src/$c"         || cx_die "$EX_FAIL" "tar src-$c 失敗 —— 封存不完整，已中止"
         [[ -s $A/src-$c.tar.gz ]]             || cx_die "$EX_FAIL" "src-$c.tar.gz 不存在或是空檔 —— 封存不完整，已中止"
         cx_ok "src-$c.tar.gz"
 
-        if cx_is_repo_root "$CX_ROOT/$c"; then
+        if cx_is_repo_root "$CX_ROOT/src/$c"; then
             # bundle 的 refs 必須「每個子專案各自計算」——
             # 不能算一次就重複用，否則 backend 在分支、frontend 是 detached 時會漏掉 frontend 的 HEAD。
             local refs=(--all)
-            cx_is_detached "$CX_ROOT/$c" && refs=(--all HEAD)
-            cx_run git -C "$CX_ROOT/$c" bundle create "$A/git-$c.bundle" "${refs[@]}"                 || cx_die "$EX_FAIL" "git bundle create 失敗（$c）—— 封存不完整，已中止"
+            cx_is_detached "$CX_ROOT/src/$c" && refs=(--all HEAD)
+            cx_run git -C "$CX_ROOT/src/$c" bundle create "$A/git-$c.bundle" "${refs[@]}"                 || cx_die "$EX_FAIL" "git bundle create 失敗（$c）—— 封存不完整，已中止"
             [[ -s $A/git-$c.bundle ]]                 || cx_die "$EX_FAIL" "git-$c.bundle 不存在或是空檔 —— 封存不完整，已中止"
             cx_ok "git-$c.bundle（refs: ${refs[*]}）"
 
             # 真實 gitdir + 還原位置
             local gd rel
-            gd=$(git -C "$CX_ROOT/$c" rev-parse --absolute-git-dir)
+            gd=$(git -C "$CX_ROOT/src/$c" rev-parse --absolute-git-dir)
             rel=$(realpath --relative-to="$CX_ROOT" "$gd")
             cx_run tar -czf "$A/gitdir-$c.tar.gz" -C "$(dirname "$gd")" -- "$(basename "$gd")"                 || cx_die "$EX_FAIL" "tar gitdir-$c 失敗 —— 封存不完整，已中止"
             [[ -s $A/gitdir-$c.tar.gz ]]                 || cx_die "$EX_FAIL" "gitdir-$c.tar.gz 不存在或是空檔 —— 封存不完整，已中止"
             cx_ok "gitdir-$c.tar.gz（真實位置：$rel）"
 
             {
-                echo "${c}_head=$(git -C "$CX_ROOT/$c" rev-parse HEAD)"
-                echo "${c}_commits=$(git -C "$CX_ROOT/$c" rev-list --count HEAD)"
-                echo "${c}_detached=$(cx_is_detached "$CX_ROOT/$c" && echo yes || echo no)"
+                echo "${c}_head=$(git -C "$CX_ROOT/src/$c" rev-parse HEAD)"
+                echo "${c}_commits=$(git -C "$CX_ROOT/src/$c" rev-list --count HEAD)"
+                echo "${c}_detached=$(cx_is_detached "$CX_ROOT/src/$c" && echo yes || echo no)"
                 echo "${c}_gitdir=$rel"
-                git -C "$CX_ROOT/$c" remote -v | sed "s/^/${c}_remote=/"
+                git -C "$CX_ROOT/src/$c" remote -v | sed "s/^/${c}_remote=/"
             } >> "$m"
         else
             cx_warn "$c 不是 git repo"
@@ -495,11 +498,11 @@ cx_restore() {
         [[ -f $A/src-$c.tar.gz ]] || continue
         cx_run tar -xzf "$A/src-$c.tar.gz" -C "$CX_ROOT" \
             || { cx_error "還原 $c 原始碼失敗"; fail=1; continue; }
-        cx_ok "$c/（原始碼；node_modules 與 vendor 不在封存內）"
+        cx_ok "src/$c/（原始碼；node_modules 與 vendor 不在封存內）"
     done
 
     # ── 5. 子模組的真實 gitdir ───────────────────────────────────────────
-    # 這一步是子模組專屬的坑：backend/.git 是一個 32 bytes 的指標檔
+    # 這一步是子模組專屬的坑：src/backend/.git 是一個 32 bytes 的指標檔
     #（gitdir: ../.git/modules/backend），真正的 gitdir 在別的地方。
     # 只還原 src tar 的話，backend/ 會是一棵沒有 git 的普通目錄。
     for c in backend frontend; do
@@ -543,8 +546,8 @@ cx_restore() {
     }
     _cx_restore_check "主庫" "$CX_ROOT" main || rc=1
     for c in backend frontend; do
-        [[ -d $CX_ROOT/$c ]] || continue
-        _cx_restore_check "$c" "$CX_ROOT/$c" "$c" || rc=1
+        [[ -d $CX_ROOT/src/$c ]] || continue
+        _cx_restore_check "$c" "$CX_ROOT/src/$c" "$c" || rc=1
     done
     unset -f _cx_restore_check
 

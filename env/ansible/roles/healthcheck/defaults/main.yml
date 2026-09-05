@@ -75,7 +75,7 @@ healthcheck_check_app: true
 healthcheck_scheme: "https"
 healthcheck_base_url: "{{ healthcheck_scheme }}://{{ app_domain }}"
 
-# Laravel 的健康檢查端點。backend/bootstrap/app.php 的 withRouting()
+# Laravel 的健康檢查端點。src/backend/bootstrap/app.php 的 withRouting()
 # 有 health: '/up'，所以這條路由確定存在。
 healthcheck_health_path: "/up"
 healthcheck_health_ok_status: [200]

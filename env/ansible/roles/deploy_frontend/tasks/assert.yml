@@ -122,7 +122,7 @@
     fail_msg: >-
       {{ item.item }} 不存在。
       {{ pm2_ecosystem_path }} 由 nodejs_pm2 role 產生（ecosystem.config.cjs，
-      副檔名一定是 .cjs —— frontend/package.json 有 "type": "module"，
+      副檔名一定是 .cjs —— src/frontend/package.json 有 "type": "module"，
       命名成 .js 會被當成 ESM 而爆 "module is not defined in ES module scope"）。
       修正：`ansible-playbook site.yml --tags pm2`。
       不想讓本 role 管 PM2 就設 frontend_pm2_manage: false，

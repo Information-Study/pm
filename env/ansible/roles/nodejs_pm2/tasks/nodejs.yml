@@ -253,7 +253,7 @@
       多半是發行版的 nodejs 贏了優先權（Ubuntu noble 內建 18.x）。
       檢查 /etc/apt/preferences.d/nodesource.pref 與
       `apt-cache policy nodejs` 的候選版本。
-      另外 frontend/package.json 的 engines 是
+      另外 src/frontend/package.json 的 engines 是
       "^22.19.0 || ^24.11.0 || >=26.0.0"，18.x 會讓 npm ci 直接拒絕。
     quiet: true
 

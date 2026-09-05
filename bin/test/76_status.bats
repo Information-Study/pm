@@ -51,9 +51,9 @@ assert set(d["containers"]) == {"dev", "test", "prod"}, d["containers"]
 
     # 讓子模組前進一個 commit，主庫的 gitlink 就落後了
     local g=(-c user.email=b@b -c user.name=b)
-    echo x > "$CX_TEST_ROOT/backend/x.txt"
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m x
+    echo x > "$CX_TEST_ROOT/src/backend/x.txt"
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" commit -q -m x
 
     run cx_bin status
     assert_rc 0

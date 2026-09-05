@@ -4,7 +4,7 @@
 # 兩條獨立的路：容器 或 原生。runner 由 --runner 決定。
 cmd_composer_main() {
     (( $# )) || { printf '用法：cx composer <composer 參數...>\n' >&2; return "$EX_USAGE"; }
-    [[ -f $CX_ROOT/backend/composer.json ]] || cx_die "$EX_PRECOND" "找不到 backend/composer.json"
+    [[ -f $CX_ROOT/src/backend/composer.json ]] || cx_die "$EX_PRECOND" "找不到 src/backend/composer.json"
 
     # 紅線：不得用 --ignore-platform-reqs 掩蓋相依衝突。
     # 兩條路都要擋 —— 原生路徑的平台需求跟容器不一樣，正是最容易想繞過的地方。
@@ -27,6 +27,6 @@ cmd_composer_main() {
         # 這是刻意的：原生路徑的 vendor 給 IDE 與原生 cx scan code 用，
         # 容器路徑的 vendor 由映像自己管。
         cx_runner_banner "composer $(composer --version 2>/dev/null | awk '{print $3}')"
-        cx_run env -C "$CX_ROOT/backend" composer "$@"
+        cx_run env -C "$CX_ROOT/src/backend" composer "$@"
     fi
 }

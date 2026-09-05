@@ -4,7 +4,7 @@
 ;
 ; 這個檔只會被放進 {{ php_fpm_conf_d }}，**絕不放進 {{ php_cli_conf_d }}**。
 ;
-; 理由（A2）：backend/composer.json 的 post-autoload-dump 會執行
+; 理由（A2）：src/backend/composer.json 的 post-autoload-dump 會執行
 ;     @php artisan package:discover --ansi
 ;     @php artisan filament:upgrade
 ; 這兩個腳本經由 Symfony Process 呼叫 proc_open。CLI 一旦套上 disable_functions，

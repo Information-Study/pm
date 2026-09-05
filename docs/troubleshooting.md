@@ -138,7 +138,7 @@ npm --version             # Windows 那支的版號會跟 node --version 對不�
 
 # 修
 export PATH="$HOME/.local/bin:$PATH"
-rm -rf frontend/node_modules backend/node_modules
+rm -rf src/frontend/node_modules src/backend/node_modules
 cx setup deps
 ```
 
@@ -158,7 +158,7 @@ cx setup deps
 
 ```
 ✘ PATH 上有 Windows 的工具    npm=/mnt/c/Program Files/nodejs/npm
-✘ native frontend/node_modules  目錄在但沒有 nuxt —— 殘缺的安裝，重跑 cx setup deps
+✘ native src/frontend/node_modules  目錄在但沒有 nuxt —— 殘缺的安裝，重跑 cx setup deps
 ```
 
 ---
@@ -222,7 +222,7 @@ base 寫了 `8080:80`、prod overlay 寫了 `80:80`，結果是**兩個都發布
 ### build context 找不到明明存在的目錄
 
 compose 檔裡的相對路徑**以第一個 `-f` 的目錄為基準**，不是你的 cwd。
-少了 `--project-directory` 時，從 `backend/` 執行會把 `./backend`
+少了 `--project-directory` 時，從 `backend/` 執行會把 `./src/backend`
 解析成 `pm/backend/backend`。
 
 `cx` 一律帶 `--project-directory` 指向專案根目錄。
@@ -313,7 +313,7 @@ edge 沒把 `/sanctum/` 路由給 PHP 的話它會落到 Nuxt → 404 →
 edge 的 `nginx.conf` 有三層 map：沒線索用 scheme 推 →
 `Host:` 有埠就用它 → 上游給了合法的 `X-Forwarded-Port` 就沿用。
 
-同時 `backend/bootstrap/app.php` 要有 `trustProxies` 並限制在私有網段 ——
+同時 `src/backend/bootstrap/app.php` 要有 `trustProxies` 並限制在私有網段 ——
 不設定的話 Laravel 不信任任何 `X-Forwarded-*`，設成全部信任則是另一個極端
 （任何人都能用 `X-Forwarded-Host` 偽造密碼重設信裡的網址）。
 
@@ -337,7 +337,7 @@ nginx 的 `add_header` **不是累加的**。任何一個 `location` 只要有�
         "node_modules/nitropack/dist/presets/_nitro/runtime/nitro-dev"
 ```
 
-在 dev 容器**正在跑**的時候刪掉 host 的 `frontend/node_modules` 造成的。
+在 dev 容器**正在跑**的時候刪掉 host 的 `src/frontend/node_modules` 造成的。
 `/admin` 走 PHP 所以不受影響，很容易誤判成「前端的程式碼壞了」。
 
 ```bash
@@ -349,7 +349,7 @@ cx dev restart nuxt    # 再讓 dev server 重新解析模組
 
 ### `ViteManifestNotFoundException`
 
-`welcome.blade.php` 有 Vite 指令，但 `backend/public/build/manifest.json`
+`welcome.blade.php` 有 Vite 指令，但 `src/backend/public/build/manifest.json`
 不存在 —— 後端資產從來沒被建置過。
 
 ```bash
@@ -364,7 +364,7 @@ cx npm --backend run build
 
 ### `Cannot find module '@rolldown/binding-linux-x64-musl'`
 
-`backend/node_modules` 的原生模組是照安裝當下的 libc 編的。
+`src/backend/node_modules` 的原生模組是照安裝當下的 libc 編的。
 host 是 Ubuntu（glibc），掛進 Alpine（musl）容器就爆。
 
 訊息指向 npm 的 optional dependencies bug，其實只是 libc 不匹配。
@@ -708,7 +708,7 @@ preflight 會斷言。
 
 ### 在容器裡直接跑 `php artisan test`，結果打到真的開發資料庫
 
-`backend/phpunit.xml` 裡每一個 `<env>` 都寫了 `force="true"`，看起來已經把
+`src/backend/phpunit.xml` 裡每一個 `<env>` 都寫了 `force="true"`，看起來已經把
 `DB_CONNECTION` 釘死成 `sqlite`。**在容器裡它是無效的。**
 
 PHPUnit 的 `force` 只寫 `putenv()` 與 `$_ENV`，不寫 `$_SERVER`；
@@ -740,7 +740,7 @@ cx dc exec -T app php -r 'echo $_SERVER["DB_CONNECTION"], " / ", $_ENV["DB_CONNE
 自己驗一次（放一個故意失敗的測試，看 rc）：
 
 ```bash
-printf '<?php\nnamespace Tests\\Unit;\nuse PHPUnit\\Framework\\TestCase;\nclass TmpFailTest extends TestCase { public function test_x(): void { $this->assertTrue(false); } }\n' > backend/tests/Unit/TmpFailTest.php && cx test coverage; echo "rc=$?"; rm backend/tests/Unit/TmpFailTest.php
+printf '<?php\nnamespace Tests\\Unit;\nuse PHPUnit\\Framework\\TestCase;\nclass TmpFailTest extends TestCase { public function test_x(): void { $this->assertTrue(false); } }\n' > src/backend/tests/Unit/TmpFailTest.php && cx test coverage; echo "rc=$?"; rm src/backend/tests/Unit/TmpFailTest.php
 ```
 
 ### `cx test coverage` 噴 `fopen(/tmp/junit-backend.xml): Permission denied`，rc=255
@@ -760,10 +760,10 @@ docker exec -u 0 $(cx dc ps -q app) rm -f /tmp/coverage-backend.xml /tmp/junit-b
 
 容器路徑以 root 在 bind mount 的 `backend/` 裡留下 `root:root` 的檔案，
 原生 runner 以 uid 1000 執行就寫不進去。同樣的原因也會讓
-`backend/storage/` 多出 root 擁有的 `coverage-backend.xml` / `junit-backend.xml`，
+`src/backend/storage/` 多出 root 擁有的 `coverage-backend.xml` / `junit-backend.xml`，
 在 submodule 裡變成刪不掉的未提交變更（`cx fresh` 的 preflight 會抓到）。
 
-現在容器路徑用 `-u $(id -u):$(id -g)` 執行 —— `backend/storage` 與
+現在容器路徑用 `-u $(id -u):$(id -g)` 執行 —— `src/backend/storage` 與
 `bootstrap/cache` 本來就屬於 uid 1000，所以是安全的。清掉舊殘骸：
 
 ```bash
@@ -775,7 +775,7 @@ docker exec -u 0 $(cx dc ps -q app) sh -c 'rm -f /var/www/html/.phpunit.result.c
 ### `cx acl apply` 噴 `Operation not permitted`
 
 ```
-setfacl: backend/bootstrap/cache/packages.php: Operation not permitted
+setfacl: src/backend/bootstrap/cache/packages.php: Operation not permitted
 ```
 
 `setfacl` 需要**檔案的擁有者或 root** —— 同群組、甚至有寫入權都不夠。

@@ -9,8 +9,8 @@
 #   cx lint php / cx lint js 則是 --check 的別名，永遠不改檔案。
 #
 # 兩個工具都**已經隨既有相依裝好**，不需要額外安裝：
-#   backend/vendor/bin/pint            ← composer.json 的 require-dev
-#   frontend/node_modules/.bin/prettier ← package.json 的 devDependencies
+#   src/backend/vendor/bin/pint            ← composer.json 的 require-dev
+#   src/frontend/node_modules/.bin/prettier ← package.json 的 devDependencies
 # 在 2026-09-05 之前這兩個都沒有任何動詞叫得到，等於買了沒用。
 
 _style_usage() {
@@ -36,8 +36,8 @@ TXT
 # ── PHP：Pint ───────────────────────────────────────────────────────────────
 _style_php() {
     local check=$1; shift
-    [[ -f $CX_ROOT/backend/composer.json ]] || {
-        cx_warn "找不到 backend/composer.json，略過 PHP"; return "$EX_PRECOND"; }
+    [[ -f $CX_ROOT/src/backend/composer.json ]] || {
+        cx_warn "找不到 src/backend/composer.json，略過 PHP"; return "$EX_PRECOND"; }
 
     local -a args=()
     (( check )) && args+=(--test)
@@ -53,18 +53,18 @@ _style_php() {
             --entrypoint vendor/bin/pint app "${args[@]}"
     else
         cx_runner_need_native "cx style php" php
-        [[ -x $CX_ROOT/backend/vendor/bin/pint ]] || cx_die "$EX_PRECOND" \
-            "找不到 backend/vendor/bin/pint —— 先跑 cx --runner native composer install"
-        cx_runner_banner "backend/vendor/bin/pint"
-        cx_run env -C "$CX_ROOT/backend" vendor/bin/pint "${args[@]}"
+        [[ -x $CX_ROOT/src/backend/vendor/bin/pint ]] || cx_die "$EX_PRECOND" \
+            "找不到 src/backend/vendor/bin/pint —— 先跑 cx --runner native composer install"
+        cx_runner_banner "src/backend/vendor/bin/pint"
+        cx_run env -C "$CX_ROOT/src/backend" vendor/bin/pint "${args[@]}"
     fi
 }
 
 # ── 前端：Prettier ──────────────────────────────────────────────────────────
 _style_js() {
     local check=$1; shift
-    [[ -f $CX_ROOT/frontend/package.json ]] || {
-        cx_warn "找不到 frontend/package.json，略過前端"; return "$EX_PRECOND"; }
+    [[ -f $CX_ROOT/src/frontend/package.json ]] || {
+        cx_warn "找不到 src/frontend/package.json，略過前端"; return "$EX_PRECOND"; }
 
     local -a args=()
     if (( check )); then args+=(--check); else args+=(--write); fi
@@ -82,10 +82,10 @@ _style_js() {
             --entrypoint npx nuxt prettier "${args[@]}"
     else
         cx_runner_need_native "cx style js" npm
-        [[ -x $CX_ROOT/frontend/node_modules/.bin/prettier ]] || cx_die "$EX_PRECOND" \
-            "找不到 frontend/node_modules/.bin/prettier —— 先跑 cx --runner native npm ci"
-        cx_runner_banner "frontend/node_modules/.bin/prettier"
-        cx_run env -C "$CX_ROOT/frontend" node_modules/.bin/prettier "${args[@]}"
+        [[ -x $CX_ROOT/src/frontend/node_modules/.bin/prettier ]] || cx_die "$EX_PRECOND" \
+            "找不到 src/frontend/node_modules/.bin/prettier —— 先跑 cx --runner native npm ci"
+        cx_runner_banner "src/frontend/node_modules/.bin/prettier"
+        cx_run env -C "$CX_ROOT/src/frontend" node_modules/.bin/prettier "${args[@]}"
     fi
 }
 

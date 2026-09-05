@@ -5,7 +5,7 @@
 # 被指定的那一邊不可用時硬失敗，不會偷偷換另一邊跑。
 cmd_art_main() {
     (( $# )) || { printf '用法：cx art <artisan 參數...>\n例：cx art migrate:status\n' >&2; return "$EX_USAGE"; }
-    [[ -f $CX_ROOT/backend/artisan ]] || cx_die "$EX_PRECOND" "找不到 backend/artisan"
+    [[ -f $CX_ROOT/src/backend/artisan ]] || cx_die "$EX_PRECOND" "找不到 src/backend/artisan"
 
     if [[ $(cx_runner) == docker ]]; then
         cx_runner_need_docker "cx art"
@@ -16,10 +16,10 @@ cmd_art_main() {
         cx_runner_need_native "cx art" php
         # vendor/ 是原生路徑的硬需求：artisan 第一行就 require vendor/autoload.php，
         # 缺了它的錯誤是 "Failed opening required" 而不是「請先安裝相依」。
-        [[ -f $CX_ROOT/backend/vendor/autoload.php ]] || cx_die "$EX_PRECOND" \
-            "backend/vendor 不存在 —— 先跑 cx --runner native composer install"
+        [[ -f $CX_ROOT/src/backend/vendor/autoload.php ]] || cx_die "$EX_PRECOND" \
+            "src/backend/vendor 不存在 —— 先跑 cx --runner native composer install"
         cx_runner_banner "php $(php -r 'echo PHP_VERSION;' 2>/dev/null)"
-        cx_run env -C "$CX_ROOT/backend" php artisan "$@"
+        cx_run env -C "$CX_ROOT/src/backend" php artisan "$@"
     fi
 }
 
@@ -40,6 +40,6 @@ cmd_php_main() {
     else
         cx_runner_need_native "cx php" php
         cx_runner_banner "php $(php -r 'echo PHP_VERSION;' 2>/dev/null)"
-        cx_run env -C "$CX_ROOT/backend" php "$@"
+        cx_run env -C "$CX_ROOT/src/backend" php "$@"
     fi
 }

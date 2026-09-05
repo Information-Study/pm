@@ -17,7 +17,7 @@ APP_ROOT=/var/www/html
 cd "$APP_ROOT"
 
 # ── 1. vendor 保險 ─────────────────────────────────────────────────────────
-# dev 模式把 ./backend bind mount 進來，會遮掉 image 裡的 vendor（舊 compose 的 D6）。
+# dev 模式把 ./src/backend bind mount 進來，會遮掉 image 裡的 vendor（舊 compose 的 D6）。
 # compose 用具名 volume 掛回 vendor 來解決，但如果有人手動 down -v 過，
 # 具名 volume 會是空的 —— 這時要能自己救回來，而不是在下一步 fatal。
 if [ ! -f vendor/autoload.php ]; then
@@ -63,8 +63,8 @@ else
         php artisan key:generate --force --no-interaction || die "key:generate 失敗"
     fi
     # 這支腳本以 root 執行，而 dev 模式的 .env 其實是 host 上的檔案
-    # （./backend bind mount 進來）。不 chown 的話 host 端的你會發現
-    # backend/.env 是 root:root，改不動也刪不掉。
+    # （./src/backend bind mount 進來）。不 chown 的話 host 端的你會發現
+    # src/backend/.env 是 root:root，改不動也刪不掉。
     # www-data 的 uid/gid 在 build 時已經對齊成 APP_UID/APP_GID。
     chown www-data:www-data .env 2>/dev/null || true
     chmod 640 .env 2>/dev/null || true
@@ -165,7 +165,7 @@ if [ "${APP_ENV:-local}" = "production" ] || [ "${APP_MODE:-dev}" = "prod" ]; th
     php artisan config:cache --no-interaction || die "config:cache 失敗"
     php artisan event:cache  --no-interaction || log "event:cache 有警告（繼續）"
     php artisan view:cache   --no-interaction || log "view:cache 有警告（繼續）"
-    # route:cache 對含 closure 的路由會失敗。backend/routes/*.php 目前有 closure，
+    # route:cache 對含 closure 的路由會失敗。src/backend/routes/*.php 目前有 closure，
     # 所以刻意不做 —— 失敗訊息（"Unable to prepare route ... for serialization"）
     # 很容易被誤讀成路由壞了。
 else

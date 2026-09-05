@@ -2,7 +2,7 @@
 # bind mount 原始碼 + HMR + xdebug + phpMyAdmin。埠段 8080 / 3000 / 3306 / 8891。
 #
 # vendor 與 node_modules 用**具名 volume 蓋回去**，這是舊 compose 的 D6：
-# ./backend:/var/www/html 會把 image 裡烘好的 vendor 整個遮掉，
+# ./src/backend:/var/www/html 會把 image 裡烘好的 vendor 整個遮掉，
 # 容器在 entrypoint 就 `Failed opening required 'vendor/autoload.php'`。
 # 具名 volume 掛在「image 中已存在的路徑」上時，Docker 會用 image 內容種子化它，
 # 所以掛上去反而救回 vendor。（掛在 image 中不存在的路徑才會變成 root:root 空目錄。）
@@ -21,7 +21,7 @@ services:
     # 「容器隨機重啟」，那會浪費好幾小時去查錯的方向。
     pids_limit: 1024
     volumes:
-      - ./backend:/var/www/html
+      - ./src/backend:/var/www/html
       - app-vendor:/var/www/html/vendor
     extra_hosts:
       # xdebug 要連回 host 的 IDE。Linux/WSL 上這個名字不會自動存在。
@@ -38,7 +38,7 @@ services:
       # dev 額外把 Nuxt 直接曝出來，方便繞過 edge debug HMR。
       - "${NUXT_PORT:-3000}:3000"
     volumes:
-      - ./frontend:/app
+      - ./src/frontend:/app
       - nuxt-node-modules:/app/node_modules
       - nuxt-build:/app/.nuxt
       - nuxt-output:/app/.output

@@ -76,7 +76,7 @@ esac
 
 ### Larastan
 
-`level: 5`，設定在 `backend/phpstan.neon.dist`（另有 `checkModelProperties: true`）。
+`level: 5`，設定在 `src/backend/phpstan.neon.dist`（另有 `checkModelProperties: true`）。
 第 5 級的意思是「型別完整但不強制所有 array 泛型」，新專案可以逐步往上提。
 
 報告 `reports/quality/larastan.json` 是 **JSONL**（一行一個 JSON 物件），
@@ -244,9 +244,9 @@ ModSecurity + OWASP CRS，只在 test 模式的 `waf` 服務裡。
 
 | | 做法 | 檔案 |
 |---|---|---|
-| 信任的代理 | `trustProxies(at: [私有網段])` | `backend/bootstrap/app.php` |
+| 信任的代理 | `trustProxies(at: [私有網段])` | `src/backend/bootstrap/app.php` |
 | 訪客導向 | API / JSON 請求回 401 而不是重導到 `/login` | 同上 |
-| 測試隔離 | `phpunit.xml` 每個 `<env>` 都有 `force="true"` | `backend/phpunit.xml` |
+| 測試隔離 | `phpunit.xml` 每個 `<env>` 都有 `force="true"` | `src/backend/phpunit.xml` |
 | 型別檢查 | `vue-tsc` + `tsconfig.json` extends `.nuxt/tsconfig.json` | `frontend/` |
 
 ### `trustProxies` 為什麼要限制網段

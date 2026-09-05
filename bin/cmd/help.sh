@@ -29,7 +29,7 @@ cmd_help_main() {
     setup deps              backend 的 composer install + npm ci + vite build，
                             frontend 的 npm ci
     setup env|dirs|guard    只做其中一項
-                            （artisan 不必安裝 —— 它是 backend/artisan）
+                            （artisan 不必安裝 —— 它是 src/backend/artisan）
   doctor            檢查工具鏈、Docker daemon、埠、子模組、執行位元
   status [--short|--json]
                     這棵樹現在是什麼狀態：身分／模式／runner／容器／分支／
@@ -54,7 +54,7 @@ cmd_help_main() {
   php <參數>        直接跑 php（-v / -m / -r / 一次性腳本）
   composer <參數>   composer（在 backend/；容器或原生）
   npm <參數>        npm（在 frontend/；容器或原生）
-    npm --backend <參數>  在 backend/ 執行（Laravel 端的 Vite 資產）
+    npm --backend <參數>  在 src/backend/ 執行（Laravel 端的 Vite 資產）
   db status|shell|migrate|fresh|seed|dump|restore|admin|wait
   pma [--url]       開啟 phpMyAdmin（dev 與 test 有；prod 刻意沒有）
   open [目標]       開啟服務網址：front / back / api / pma / sonar / list

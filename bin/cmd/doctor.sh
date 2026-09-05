@@ -23,7 +23,7 @@ cmd_doctor_main() {
         for _sm in backend frontend; do
             [[ -d $CX_ROOT/$_sm ]] || { _sm_missing+=("$_sm（目錄不存在）"); continue; }
             # 判準是「有沒有 .git」，不是「目錄空不空」—— 子模組初始化之後
-            # backend/.git 是一個指標**檔**（gitdir: ...），不是目錄。
+            # src/backend/.git 是一個指標**檔**（gitdir: ...），不是目錄。
             [[ -e $CX_ROOT/$_sm/.git ]] || _sm_missing+=("$_sm")
         done
         if (( ${#_sm_missing[@]} )); then
@@ -98,7 +98,7 @@ cmd_doctor_main() {
         _fl "PHP" "未安裝"
     fi
     cx_have composer && _ok "Composer" "$(composer --version 2>/dev/null | awk '{print $3}')" || _fl "Composer" "未安裝"
-    [[ -x $CX_ROOT/backend/vendor/bin/phpstan ]] && _ok "Larastan" "已安裝" || _wr "Larastan" "未安裝"
+    [[ -x $CX_ROOT/src/backend/vendor/bin/phpstan ]] && _ok "Larastan" "已安裝" || _wr "Larastan" "未安裝"
 
     cx_step "前端工具鏈"
     if cx_have node; then
@@ -108,7 +108,7 @@ cmd_doctor_main() {
             || _wr "Node 版本" "Nuxt 4 需要 ^22.19 || ^24.11 || >=26"
     else _fl "Node" "未安裝"; fi
     cx_have npm && _ok "npm" "$(npm --version)" || _fl "npm" "未安裝"
-    [[ -d $CX_ROOT/frontend/node_modules/nuxt ]] && _ok "frontend 相依" "已安裝" || _wr "frontend 相依" "尚未 npm ci"
+    [[ -d $CX_ROOT/src/frontend/node_modules/nuxt ]] && _ok "frontend 相依" "已安裝" || _wr "frontend 相依" "尚未 npm ci"
 
     cx_step "DevSecOps"
     cx_have trivy    && _ok "Trivy" "$(trivy --version 2>/dev/null | head -1 | awk '{print $2}')" \
@@ -225,17 +225,17 @@ cmd_doctor_main() {
 
     # 原生的 vendor / node_modules：容器路徑不需要它們（映像自帶），
     # 但原生路徑少了就什麼都跑不動。
-    [[ -f $CX_ROOT/backend/vendor/autoload.php ]] \
-        && _ok "native backend/vendor" "已安裝" \
-        || _wr "native backend/vendor" "缺（cx --runner native composer install）"
+    [[ -f $CX_ROOT/src/backend/vendor/autoload.php ]] \
+        && _ok "native src/backend/vendor" "已安裝" \
+        || _wr "native src/backend/vendor" "缺（cx --runner native composer install）"
     # 只檢查目錄存在是不夠的：Windows npm 跑出來的殘骸也是一個「存在的目錄」
     # （實測 24 KB，裡面沒有 nuxt）。要檢查真正的進入點在不在。
-    if [[ -d $CX_ROOT/frontend/node_modules/nuxt ]]; then
-        _ok "native frontend/node_modules" "已安裝"
-    elif [[ -d $CX_ROOT/frontend/node_modules ]]; then
-        _fl "native frontend/node_modules" "目錄在但沒有 nuxt —— 殘缺的安裝，重跑 cx setup deps"
+    if [[ -d $CX_ROOT/src/frontend/node_modules/nuxt ]]; then
+        _ok "native src/frontend/node_modules" "已安裝"
+    elif [[ -d $CX_ROOT/src/frontend/node_modules ]]; then
+        _fl "native src/frontend/node_modules" "目錄在但沒有 nuxt —— 殘缺的安裝，重跑 cx setup deps"
     else
-        _wr "native frontend/node_modules" "缺（cx --runner native npm ci）"
+        _wr "native src/frontend/node_modules" "缺（cx --runner native npm ci）"
     fi
 
     # 原生的 cx test back 走 sqlite :memory:，缺了 pdo_sqlite 的錯誤是
@@ -246,7 +246,7 @@ cmd_doctor_main() {
             || _wr "native pdo_sqlite" "缺 —— 原生後端測試不可用（sudo apt install php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null)-sqlite3）"
     fi
 
-    # 原生的 cx db 用 host 的 mysql client 打 backend/.env 指到的那台。
+    # 原生的 cx db 用 host 的 mysql client 打 src/backend/.env 指到的那台。
     cx_have mysql \
         && _ok "native mysql client" "cx --runner native db 可用" \
         || _wr "native mysql client" "缺 —— 原生 cx db 不可用（sudo apt install mysql-client）"

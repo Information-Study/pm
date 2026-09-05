@@ -18,8 +18,8 @@
 #   2026-09-05 實測確認（cx fresh --phase delete 之後 cx dev config → EX_PRECOND）。
 FRESH_PRESERVE=(
     bin cx .cxroot templates docs claude.md
-    .vscode reports ansible .env .env.example .gitignore
-    docker sonar-project.properties .semgrepignore
+    .vscode reports env .env .env.example .gitignore
+    sonar-project.properties .semgrepignore
     docker-compose.yml .dockerignore
 )
 # ── 遷移：搬到 docker/ 之後才刪除原處（使用者要求保留 docker 自定義設定）──
@@ -43,7 +43,12 @@ _fresh_keep_dirs() {                # _fresh_keep_dirs <backend|frontend>
 }
 
 # ── 刪除：確認後移除 ──────────────────────────────────────────
-FRESH_DELETE=( .git .gitmodules backend frontend init.sh refresh.sh README.md )
+# ⚠ src 是**一個**項目（v3 版面），不是 backend + frontend 兩個。
+#   fresh.sh:218 的 PF-07 用這幾張清單判斷頂層項目是否「已分類」，
+#   而未分類只 warn 並保留 —— 漏改的症狀是 cx fresh 跑完之後 src/ 與 env/
+#   被當成未知項保留，而重建流程以為自己刪乾淨了，交出一棵無法啟動的樹。
+#   那是一個不會報錯的錯。
+FRESH_DELETE=( .git .gitmodules src init.sh refresh.sh README.md )
 
 # ── git-only：只抹 git 紀錄，程式碼原封不動 ──────────────────────────────
 #
@@ -187,12 +192,14 @@ _fresh_preflight() {
     # 未提交變更
     local c n
     for c in . backend frontend; do
-        [[ -d $CX_ROOT/$c ]] || continue
-        cx_is_repo_root "$CX_ROOT/$c" || continue
-        n=$(git -C "$CX_ROOT/$c" status --porcelain | grep -vc '^?? claude.md$' || true)
+        # ⚠ 這個迴圈含 `.`（主庫），所以路徑不能無條件加 src/ —— 主庫在根目錄。
+        local rp; rp=$CX_ROOT; [[ $c == . ]] || rp=$(cx_sub_path "$c")
+        [[ -d $rp ]] || continue
+        cx_is_repo_root "$rp" || continue
+        n=$(git -C "$rp" status --porcelain | grep -vc '^?? claude.md$' || true)
         if (( n > 0 )); then
             cx_warn "PF-04 $c 有 $n 項未提交變更（會一併封存）"
-            git -C "$CX_ROOT/$c" status --short | sed 's/^/      /' >&2
+            git -C "$rp" status --short | sed 's/^/      /' >&2
         else
             cx_ok "PF-04 $c 無未提交變更"
         fi
@@ -200,10 +207,10 @@ _fresh_preflight() {
 
     # 未推送 commit
     for c in backend frontend; do
-        [[ -d $CX_ROOT/$c ]] || continue
-        cx_is_repo_root "$CX_ROOT/$c" || continue
-        if git -C "$CX_ROOT/$c" branch -r --contains HEAD >/dev/null 2>&1 \
-           && [[ -n $(git -C "$CX_ROOT/$c" branch -r --contains HEAD 2>/dev/null) ]]; then
+        [[ -d $CX_ROOT/src/$c ]] || continue
+        cx_is_repo_root "$CX_ROOT/src/$c" || continue
+        if git -C "$CX_ROOT/src/$c" branch -r --contains HEAD >/dev/null 2>&1 \
+           && [[ -n $(git -C "$CX_ROOT/src/$c" branch -r --contains HEAD 2>/dev/null) ]]; then
             cx_ok "PF-05 $c 的 HEAD 已存在於遠端"
         else
             cx_warn "PF-05 $c 的 HEAD 不在任何遠端分支上 —— 只靠本地封存"
@@ -377,16 +384,16 @@ _fresh_gate() {
 
   .git/            主庫 git 歷史（$(sed -n 's/^main_commits=//p' "$A/MANIFEST.txt" | head -1) commits）
   .gitmodules      子模組設定
-  backend/.git     子模組指標檔（$(sed -n 's/^backend_commits=//p' "$A/MANIFEST.txt" | head -1) commits 的歷史隨主庫 .git/modules/ 一起消失）
-  frontend/.git    子模組指標檔（$(sed -n 's/^frontend_commits=//p' "$A/MANIFEST.txt" | head -1) commits）
+  src/backend/.git     子模組指標檔（$(sed -n 's/^backend_commits=//p' "$A/MANIFEST.txt" | head -1) commits 的歷史隨主庫 .git/modules/ 一起消失）
+  src/frontend/.git    子模組指標檔（$(sed -n 's/^frontend_commits=//p' "$A/MANIFEST.txt" | head -1) commits）
 
 **你的程式碼原封不動。** backend/ 與 frontend/ 底下的程式碼完全不會被碰，
 也不會重建骨架 —— 這個模式只做「抹掉歷史，重新開始記錄」。
 
 會被**重新產生**的（那是 git 初始化的一部分，不是重建）：
   .gitmodules              submodule add 產生
-  backend/.gitignore       從 templates/gitignore/ 複製
-  frontend/.gitignore      （兩個子模組都是 PUBLIC repo，忽略規則不能少）
+  src/backend/.gitignore       從 templates/gitignore/ 複製
+  src/frontend/.gitignore      （兩個子模組都是 PUBLIC repo，忽略規則不能少）
 
 資料庫備份狀態：$msg_db
 
@@ -457,20 +464,20 @@ _fresh_delete() {                   # _fresh_delete [模式]
             _fresh_nuke "$CX_ROOT/$t" || return 1
         done
         # 子模組的真實物件庫在 .git/modules/ 底下，隨主庫的 .git 一起消失。
-        # 但 backend/.git 與 frontend/.git 是**指標檔**，指向剛被刪掉的地方 ——
+        # 但 src/backend/.git 與 src/frontend/.git 是**指標檔**，指向剛被刪掉的地方 ——
         # 留著的話 git submodule add 會說 "already exists in the index"
         # 或直接把一個壞掉的指標加進新的 repo。
         local c
         for c in backend frontend; do
-            [[ -e $CX_ROOT/$c/.git ]] && { _fresh_nuke "$CX_ROOT/$c/.git" || return 1; }
+            [[ -e $CX_ROOT/src/$c/.git ]] && { _fresh_nuke "$CX_ROOT/src/$c/.git" || return 1; }
         done
         if (( CX_DRY_RUN )); then
             cx_dim "  [dry-run] 略過刪除後的斷言（實際上什麼都沒刪）"
         else
             [[ ! -e $CX_ROOT/.gitmodules ]] || { cx_error ".gitmodules 仍存在"; return 1; }
             [[ ! -e $CX_ROOT/.git ]]        || { cx_error ".git 仍存在"; return 1; }
-            [[ ! -e $CX_ROOT/backend/.git ]]  || { cx_error "backend/.git 仍存在"; return 1; }
-            [[ ! -e $CX_ROOT/frontend/.git ]] || { cx_error "frontend/.git 仍存在"; return 1; }
+            [[ ! -e $CX_ROOT/src/backend/.git ]]  || { cx_error "src/backend/.git 仍存在"; return 1; }
+            [[ ! -e $CX_ROOT/src/frontend/.git ]] || { cx_error "src/frontend/.git 仍存在"; return 1; }
         fi
         cx_ok "斷言通過：三個 .git 與 .gitmodules 皆已移除（程式碼原封不動）"
         return 0
@@ -494,16 +501,16 @@ _fresh_delete() {                   # _fresh_delete [模式]
     #   閘門**之後**的失敗一律交還控制權，這是本檔的通則。
     [[ ! -e $CX_ROOT/.gitmodules ]] || { cx_error ".gitmodules 仍存在"; return 1; }
     [[ ! -e $CX_ROOT/.git ]]        || { cx_error ".git 仍存在"; return 1; }
-    [[ ! -e $CX_ROOT/backend ]]     || { cx_error "backend/ 仍存在"; return 1; }
-    [[ ! -e $CX_ROOT/frontend ]]    || { cx_error "frontend/ 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/src/backend ]]     || { cx_error "backend/ 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/src/frontend ]]    || { cx_error "frontend/ 仍存在"; return 1; }
     fi
     cx_ok "斷言通過：.git / .gitmodules / backend / frontend 皆已移除"
 
     # 重建空目錄，且必須由「當前使用者」建立。
     # 否則 Docker 之後會以 root:root 0755 自動建立 bind mount 來源，
     # 容器內 uid 1000 寫不進去，非 root 的操作者也刪不掉。
-    cx_run mkdir -p "$CX_ROOT/backend" "$CX_ROOT/frontend"
-    [[ -O $CX_ROOT/backend && -O $CX_ROOT/frontend ]] \
+    cx_run mkdir -p "$CX_ROOT/src/backend" "$CX_ROOT/src/frontend"
+    [[ -O $CX_ROOT/src/backend && -O $CX_ROOT/src/frontend ]] \
         || { cx_error "backend/ frontend/ 擁有者不是目前使用者"; return 1; }
     cx_ok "已建立空的 backend/ frontend/（擁有者 $(id -un)）"
 }
@@ -557,7 +564,7 @@ _fresh_dir_ready() {                # _fresh_dir_ready <path>
 }
 
 _fresh_rebuild_frontend() {
-    local dir="$CX_ROOT/frontend"
+    local dir="$CX_ROOT/src/frontend"
     cx_step "重建前端（Vue 3 + Nuxt 4）"
     _fresh_dir_ready "$dir" || return 1
 
@@ -600,7 +607,7 @@ _fresh_rebuild_frontend() {
 }
 
 _fresh_rebuild_backend() {
-    local dir="$CX_ROOT/backend"
+    local dir="$CX_ROOT/src/backend"
     cx_step "重建後端（Laravel 13 + Filament v5 + Larastan）"
     # composer create-project 不接受「已存在且非空」的目標，空目錄則沒問題。
     _fresh_dir_ready "$dir" || return 1
@@ -651,7 +658,7 @@ _fresh_rebuild_backend() {
         --no-interaction --no-scripts </dev/null \
         || { cx_error "安裝 Larastan 失敗"; return 1; }
 
-    [[ -f $dir/artisan ]] || { cx_error "backend/artisan 不存在 —— 骨架不完整"; return 1; }
+    [[ -f $dir/artisan ]] || { cx_error "src/backend/artisan 不存在 —— 骨架不完整"; return 1; }
     cx_ok "backend/ 骨架完成"
     cx_dim "  Filament 面板與 Larastan 設定要在相依裝好之後才能產生："
     cx_dim "    cx setup deps && cx art filament:install --panels && cx scan code"
@@ -680,9 +687,9 @@ _fresh_carryover() {
         while IFS= read -r d; do
             [[ -n $d ]] || continue
             [[ -d $tmp/$c/$d ]] || continue
-            cx_run mkdir -p "$CX_ROOT/$c/$(dirname "$d")" || return 1
+            cx_run mkdir -p "$CX_ROOT/src/$c/$(dirname "$d")" || return 1
             # -T：把來源目錄的**內容**疊上去，而不是變成子目錄
-            cx_run cp -a -T "$tmp/$c/$d" "$CX_ROOT/$c/$d" || return 1
+            cx_run cp -a -T "$tmp/$c/$d" "$CX_ROOT/src/$c/$d" || return 1
             n=$((n + 1))
         done < <(_fresh_keep_dirs "$c")
         cx_ok "$c：疊回 $n 個目錄"
@@ -758,21 +765,21 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
 
     # ── 結構 ────────────────────────────────────────────────────────────
     local f
-    for f in backend/artisan backend/composer.json backend/phpunit.xml; do
+    for f in src/backend/artisan src/backend/composer.json src/backend/phpunit.xml; do
         [[ -f $CX_ROOT/$f ]] && cx_ok "存在：$f" || { cx_error "缺少：$f"; fail=1; }
     done
-    if [[ -f $CX_ROOT/frontend/nuxt.config.ts || -f $CX_ROOT/frontend/nuxt.config.js ]]; then
-        cx_ok "存在：frontend/nuxt.config"
+    if [[ -f $CX_ROOT/src/frontend/nuxt.config.ts || -f $CX_ROOT/src/frontend/nuxt.config.js ]]; then
+        cx_ok "存在：src/frontend/nuxt.config"
     else
-        cx_error "缺少：frontend/nuxt.config.{ts,js}"; fail=1
+        cx_error "缺少：src/frontend/nuxt.config.{ts,js}"; fail=1
     fi
-    [[ -f $CX_ROOT/frontend/package.json ]] \
-        && cx_ok "存在：frontend/package.json" || { cx_error "缺少：frontend/package.json"; fail=1; }
+    [[ -f $CX_ROOT/src/frontend/package.json ]] \
+        && cx_ok "存在：src/frontend/package.json" || { cx_error "缺少：src/frontend/package.json"; fail=1; }
 
     # 三個必要套件 —— 骨架建起來了不代表相依對
     local pkg
     for pkg in laravel/framework filament/filament larastan/larastan; do
-        grep -q "\"$pkg\"" "$CX_ROOT/backend/composer.json" 2>/dev/null \
+        grep -q "\"$pkg\"" "$CX_ROOT/src/backend/composer.json" 2>/dev/null \
             && cx_ok "composer.json 含 $pkg" || { cx_error "composer.json 缺少 $pkg"; fail=1; }
     done
 
@@ -797,9 +804,9 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
     # 「already exists and is not a valid git repo」，而訊息不會提到是殘留。
     local c
     for c in backend frontend; do
-        if [[ -e $CX_ROOT/$c/.git ]]; then
+        if [[ -e $CX_ROOT/src/$c/.git ]]; then
             cx_error "$c/.git 已存在 —— 上一次重建的殘留，會讓 submodule add 失敗"
-            cx_dim "  處理：rm -rf $CX_ROOT/$c/.git 之後重跑 --resume-from git-init"
+            cx_dim "  處理：rm -rf $CX_ROOT/src/$c/.git 之後重跑 --resume-from git-init"
             fail=1
         fi
     done
@@ -815,13 +822,16 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
         for c in backend frontend; do
             [[ -f $A/src-$c.tar.gz ]] || continue
             tar -xzf "$A/src-$c.tar.gz" -C "$tmp" 2>/dev/null || continue
+            # tar 的內容是 src/<c>/…（v3 版面），舊封存則是 <c>/… ——
+            # 兩種都要讀得懂，否則舊封存的 carryover 會靜默地什麼都沒疊回去。
+            local base="$tmp/src/$c"; [[ -d $base ]] || base="$tmp/$c"
             while IFS= read -r d; do
-                [[ -n $d && -d $tmp/$c/$d ]] || continue
-                if [[ ! -d $CX_ROOT/$c/$d ]]; then
+                [[ -n $d && -d $base/$d ]] || continue
+                if [[ ! -d $CX_ROOT/src/$c/$d ]]; then
                     cx_error "carryover 沒疊回：$c/$d"; fail=1; continue
                 fi
-                n_arc=$(find "$tmp/$c/$d" -type f | wc -l)
-                n_tree=$(find "$CX_ROOT/$c/$d" -type f | wc -l)
+                n_arc=$(find "$base/$d" -type f | wc -l)
+                n_tree=$(find "$CX_ROOT/src/$c/$d" -type f | wc -l)
                 if (( n_tree < n_arc )); then
                     cx_error "carryover 疊回不完整：$c/$d（封存 $n_arc 個檔，樹上只有 $n_tree 個）"
                     fail=1
@@ -836,8 +846,8 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
     # carryover 的 KEEP 帶 tests 但**不帶 phpunit.xml**，所以重建會把
     # tests/bootstrap.php 疊回去、卻讓 phpunit.xml 回到 vendor/autoload.php
     # —— 防護的檔案都在，但沒有人呼叫它了。
-    if [[ -f $CX_ROOT/backend/tests/bootstrap.php ]]; then
-        if grep -q 'bootstrap="tests/bootstrap.php"' "$CX_ROOT/backend/phpunit.xml" 2>/dev/null; then
+    if [[ -f $CX_ROOT/src/backend/tests/bootstrap.php ]]; then
+        if grep -q 'bootstrap="tests/bootstrap.php"' "$CX_ROOT/src/backend/phpunit.xml" 2>/dev/null; then
             cx_ok "測試資料庫防護的接線完整"
         elif [[ $mode == carryover ]]; then
             cx_error "tests/bootstrap.php 疊回來了，但 phpunit.xml 沒有指向它"
@@ -892,19 +902,19 @@ _fresh_git_init() {
     main_br=$(_git_main_branch); dev_br=$(_git_dev_branch)
     local c
     for c in backend frontend; do
-        [[ -d $CX_ROOT/$c ]] || { cx_error "$c 不存在，無法初始化"; return 1; }
-        if [[ -e $CX_ROOT/$c/.git ]]; then
+        [[ -d $CX_ROOT/src/$c ]] || { cx_error "$c 不存在，無法初始化"; return 1; }
+        if [[ -e $CX_ROOT/src/$c/.git ]]; then
             cx_ok "$c 已經是 git repo，略過"
             continue
         fi
-        cx_run git -C "$CX_ROOT/$c" init -b "$main_br" || return 1
+        cx_run git -C "$CX_ROOT/src/$c" init -b "$main_br" || return 1
         # .gitignore 從 templates/ 拿 —— 那是本專案維護的版本，
         # 比框架自帶的更貼近這裡的目錄佈局（vendor 的 volume、reports/ 等）。
         [[ -f $CX_ROOT/templates/gitignore/$c ]] \
-            && cx_run cp "$CX_ROOT/templates/gitignore/$c" "$CX_ROOT/$c/.gitignore"
-        cx_run git -C "$CX_ROOT/$c" add -A || return 1
-        cx_run git -C "$CX_ROOT/$c" commit -q -m "初始化 $(cx_project)-$c" || return 1
-        cx_ok "$c：$(git -C "$CX_ROOT/$c" rev-parse --short HEAD 2>/dev/null)"
+            && cx_run cp "$CX_ROOT/templates/gitignore/$c" "$CX_ROOT/src/$c/.gitignore"
+        cx_run git -C "$CX_ROOT/src/$c" add -A || return 1
+        cx_run git -C "$CX_ROOT/src/$c" commit -q -m "初始化 $(cx_project)-$c" || return 1
+        cx_ok "$c：$(git -C "$CX_ROOT/src/$c" rev-parse --short HEAD 2>/dev/null)"
     done
 
     if [[ ! -e $CX_ROOT/.git ]]; then
@@ -932,13 +942,13 @@ _fresh_git_init() {
         #   的目標。原本寫 dev_br，於是範本自己（main）與 cx init 產物（dev）
         #   對同一個指令行為不同 —— 兩份會漂移的事實。
         cx_run git -C "$CX_ROOT" -c protocol.file.allow=always \
-            submodule add --force -b "$main_br" "./$c" "$c" || return 1
+            submodule add --force --name "$c" -b "$main_br" "./src/$c" "src/$c" || return 1
         cx_run git -C "$CX_ROOT" config --file .gitmodules "submodule.$c.url" "$url" || return 1
         cx_ok "$c → $url"
     done
 
     # ⚠ submodule add 對「已經是有效 repo」的目錄**不會 absorb gitdir** ——
-    # 它只印 "Adding existing repo at 'backend' to the index"，於是 backend/.git
+    # 它只印 "Adding existing repo at 'backend' to the index"，於是 src/backend/.git
     # 留成真目錄、.git/modules/ 是空的。那跟任何人 clone 下來看到的佈局**不一樣**：
     #   * 別人 clone 得到指標檔 + .git/modules/backend
     #   * cx init 產出的卻是各自獨立的 .git 目錄

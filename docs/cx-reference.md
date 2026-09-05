@@ -68,7 +68,7 @@ cx setup [子指令]
 |---|---|---|
 | `system`（要 root） | `php`（cli + 8 個擴充）・`nginx`・`git`・`docker`（含 compose v2）・`mysql-client`・`php-sqlite`・`acl`・`jq` | 系統 |
 | `tools`（免 root） | `composer`・`node`（含 `npm` / `npx`）・`ansible`（含 `ansible-lint` / `yamllint`）・`trivy`・`gitleaks`・`semgrep`・`shellcheck`・`bats` | `~/.local` |
-| 不必安裝 | `artisan` —— 它是 `backend/artisan`，隨 Laravel 一起來 | — |
+| 不必安裝 | `artisan` —— 它是 `src/backend/artisan`，隨 Laravel 一起來 | — |
 
 打錯邊不會只丟一句「未知的工具」，會直接告訴你正確的指令：
 
@@ -382,7 +382,7 @@ default ACL（`setfacl -d`）讓**每一個新建的檔案與目錄**自動帶�
 web 建檔 → dev 可寫   ✔
 dev 建檔 → web 可寫   ✔
 無關帳號讀 laravel.log / .env   ✘ 讀不到
-web 改 backend/artisan          ✘ 擋住（web 只該讀原始碼）
+web 改 src/backend/artisan          ✘ 擋住（web 只該讀原始碼）
 ```
 
 ### 三種權限分開處理
@@ -409,8 +409,8 @@ web 改 backend/artisan          ✘ 擋住（web 只該讀原始碼）
 `artisan package:discover` 與 `storage:link` 在 bind mount 裡留下 `root:root`：
 
 ```
-root:root  backend/bootstrap/cache/packages.php
-root:root  backend/public/storage
+root:root  src/backend/bootstrap/cache/packages.php
+root:root  src/backend/public/storage
 ```
 
 entrypoint 已經修好（生成後立刻 `chown` 回 `www-data`；symlink 那個要用 `-h`，
@@ -495,7 +495,7 @@ backend 也有自己的 `package.json`（Vite + Tailwind，建置 Laravel 端的
 它**不能**用 `app` service：`app` 是 `php:8.5-fpm-alpine`，裡面沒有 node，
 實測是 `exec: "npm": executable file not found in $PATH`。
 
-它也**不能**用 Alpine 的 node 映像：`backend/node_modules` 是掛在 host 上的
+它也**不能**用 Alpine 的 node 映像：`src/backend/node_modules` 是掛在 host 上的
 真實目錄，原生模組（Vite 8 的 rolldown binding）照安裝當下的 libc 編。
 host 是 Ubuntu（glibc），掛進 Alpine（musl）會是
 ```
@@ -1046,7 +1046,7 @@ preflight → 封存 → 驗證封存 → 閘門 → 刪三個 .git 與 .gitmodu
 等於讓那四道各自演化然後分岔（`bin/cmd/init.sh` 開頭記過同一個教訓）。
 
 **會被重新產生的**（那是 git 初始化的一部分，不是重建）：
-`.gitmodules`、`backend/.gitignore`、`frontend/.gitignore`
+`.gitmodules`、`src/backend/.gitignore`、`src/frontend/.gitignore`
 （兩個子模組都是 PUBLIC repo，忽略規則不能少）。閘門的清單裡有寫。
 
 **不會**自動建立遠端 —— 要的話跑 `cx git remote-init` 或 `cx git remote-set`。
@@ -1082,7 +1082,7 @@ cx fresh --rollback [--from <封存目錄>]
 - **資料庫不在還原範圍**：把檔案還原與資料庫還原綁在一起，任一邊失敗都會讓
   另一邊處於不確定狀態，而資料庫還原不可逆。要還原資料庫用 `cx db restore`。
 
-> 子模組的 gitdir 是這一步的坑：`backend/.git` 是一個 32 bytes 的**指標檔**
+> 子模組的 gitdir 是這一步的坑：`src/backend/.git` 是一個 32 bytes 的**指標檔**
 > （`gitdir: ../.git/modules/backend`），真正的 gitdir 在別的地方。
 > 只還原 src tar 的話，`backend/` 會是一棵沒有 git 的普通目錄。
 
@@ -1353,8 +1353,8 @@ cx style [php|js|all] [--check] [-- 工具參數...]
 
 | 範圍 | 工具 | 位置 |
 |---|---|---|
-| `php` | Laravel Pint | `backend/vendor/bin/pint` |
-| `js` | Prettier | `frontend/node_modules/.bin/prettier` |
+| `php` | Laravel Pint | `src/backend/vendor/bin/pint` |
+| `js` | Prettier | `src/frontend/node_modules/.bin/prettier` |
 | `all` | 兩者（預設） | |
 
 兩個工具都**已經隨既有相依裝好**（`composer.json` 的 require-dev 與
@@ -1395,7 +1395,7 @@ cx lint [ansible|php|js|sh|all] [目錄]
 | ESLint | **會出錯的東西** —— 未使用的變數、Vue 的錯誤用法（`v-for` 沒 key…） |
 | Prettier | 只管排版 |
 
-`frontend/eslint.config.mjs` 刻意**不開任何排版類規則**，所以兩者不會互相打架，
+`src/frontend/eslint.config.mjs` 刻意**不開任何排版類規則**，所以兩者不會互相打架，
 也就不需要 `eslint-config-prettier` 去關掉一堆規則。
 `cx style js` 維持只做 Prettier `--write`（lint 不改檔案的紀律不變）。
 

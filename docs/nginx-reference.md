@@ -170,7 +170,7 @@ location 裡重新 include 一次。
 
 | | Docker | 原生 |
 |---|---|---|
-| 解析方式 | 一律 proxy 給 app 容器，由容器內的 `try_files $uri $uri/ /index.php` 決定 | `try_files $uri @frontend`，直接從磁碟讀 `backend/current/public` |
+| 解析方式 | 一律 proxy 給 app 容器，由容器內的 `try_files $uri $uri/ /index.php` 決定 | `try_files $uri @frontend`，直接從磁碟讀 `src/backend/current/public` |
 | `expires` | 未設（走 upstream 的回應） | `nginx_static_expires 30d`、`/storage/` `7d`、`/_nuxt/` `immutable` |
 
 **這是刻意的拓撲差異**：Docker 的 edge 容器**看不到** backend 的 `public/` volume，

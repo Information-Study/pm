@@ -79,7 +79,7 @@
          | map(attribute='item') | join(', ') }}。
       這些檔含 disable_functions，套到 CLI 之後 composer install 會死於
       "The Process class relies on proc_open, which is not available on your PHP installation."
-      （backend/composer.json 的 post-autoload-dump 會跑 package:discover 與 filament:upgrade）。
+      （src/backend/composer.json 的 post-autoload-dump 會跑 package:discover 與 filament:upgrade）。
       請手動移除該檔後重跑。
     quiet: true
 

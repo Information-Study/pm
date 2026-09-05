@@ -117,7 +117,7 @@ _lint_sh() {
 # ── 前端：ESLint ────────────────────────────────────────────────────────────
 #
 # 與 Prettier 的分工是硬的：ESLint 抓「會出錯的東西」（未使用的變數、用了沒
-# 定義的東西、Vue 的錯誤用法），Prettier 只管排版。frontend/eslint.config.mjs
+# 定義的東西、Vue 的錯誤用法），Prettier 只管排版。src/frontend/eslint.config.mjs
 # 刻意不開任何排版規則，所以兩者不會互相打架。
 #
 # eslint.config.mjs 會 import ./.nuxt/eslint.config.mjs —— 那份由 @nuxt/eslint
@@ -126,8 +126,8 @@ _lint_sh() {
 # 不是「程式有問題」，所以要分開回報 —— 否則剛 clone 下來的樹會看到一個
 # 假的 lint 失敗。
 _lint_js_eslint() {
-    [[ -f $CX_ROOT/frontend/package.json ]] || {
-        cx_warn "找不到 frontend/package.json，略過前端"; return "$EX_PRECOND"; }
+    [[ -f $CX_ROOT/src/frontend/package.json ]] || {
+        cx_warn "找不到 src/frontend/package.json，略過前端"; return "$EX_PRECOND"; }
 
     cx_step "前端靜態檢查 — ESLint"
     local rc=0
@@ -139,14 +139,14 @@ _lint_js_eslint() {
             --entrypoint npx nuxt eslint . || rc=$?
     else
         cx_runner_need_native "cx lint js" npm
-        [[ -x $CX_ROOT/frontend/node_modules/.bin/eslint ]] || { cx_warn \
-            "找不到 frontend/node_modules/.bin/eslint —— 先跑 cx --runner native npm ci"
+        [[ -x $CX_ROOT/src/frontend/node_modules/.bin/eslint ]] || { cx_warn \
+            "找不到 src/frontend/node_modules/.bin/eslint —— 先跑 cx --runner native npm ci"
             return "$EX_PRECOND"; }
-        [[ -f $CX_ROOT/frontend/.nuxt/eslint.config.mjs ]] || { cx_warn \
-            "缺少 frontend/.nuxt/eslint.config.mjs —— 先跑 npx nuxt prepare（npm ci 的 postinstall 會做）"
+        [[ -f $CX_ROOT/src/frontend/.nuxt/eslint.config.mjs ]] || { cx_warn \
+            "缺少 src/frontend/.nuxt/eslint.config.mjs —— 先跑 npx nuxt prepare（npm ci 的 postinstall 會做）"
             return "$EX_PRECOND"; }
-        cx_runner_banner "frontend/node_modules/.bin/eslint"
-        cx_run env -C "$CX_ROOT/frontend" node_modules/.bin/eslint . || rc=$?
+        cx_runner_banner "src/frontend/node_modules/.bin/eslint"
+        cx_run env -C "$CX_ROOT/src/frontend" node_modules/.bin/eslint . || rc=$?
     fi
     if (( rc == 0 )); then cx_ok "ESLint：0 finding"; else cx_warn "ESLint 有 finding"; fi
     return "$rc"

@@ -38,7 +38,7 @@ setup() {
 
 @test "還原之後要與 MANIFEST 對帳（HEAD 與 commit 數）" {
     local want; want=$(sed -n 's/^main_head=//p' "$ARC/MANIFEST.txt" | head -1)
-    rm -rf "$CX_TEST_ROOT/.git" "$CX_TEST_ROOT/backend" "$CX_TEST_ROOT/frontend"
+    rm -rf "$CX_TEST_ROOT/.git" "$CX_TEST_ROOT/src/backend" "$CX_TEST_ROOT/src/frontend"
     run cx_bin --yes fresh --rollback --from "$ARC"
     assert_rc 0
     local got; got=$(git -C "$CX_TEST_ROOT" rev-parse HEAD)

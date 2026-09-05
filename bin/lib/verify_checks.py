@@ -415,7 +415,7 @@ def check_dockerignore_secrets(root):
 
     2026-09-05 實測到的缺陷：`.dockerignore` 有 `.env` 與 `.env.*`，但那些樣式
     **錨定在 build context 根目錄**，只排除 <root>/.env。而 Dockerfile 是
-    `COPY backend/ ./` 與 `COPY frontend/ ./` —— 於是開發者的 backend/.env
+    `COPY backend/ ./` 與 `COPY frontend/ ./` —— 於是開發者的 src/backend/.env
     （含真實 APP_KEY 與 DB_PASSWORD）整份被烘進 test/prod 的映像層。
 
     映像層是撤不回來的，而當時 `cx scan sca` 一路全綠，因為 trivy fs 掃的是

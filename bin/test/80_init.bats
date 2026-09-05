@@ -81,8 +81,8 @@ setup() {
 
     # 舊行為：.git 被略過，然後 backend/ frontend/ README.md .gitmodules 全被刪掉，
     # 最後才由斷言 cx_die —— 而 cx_die 會 exit，麵包屑與救援指引都來不及寫。
-    [ -e "$CX_TEST_ROOT/backend" ]     || _fail_with "backend/ 被刪掉了"
-    [ -e "$CX_TEST_ROOT/frontend" ]    || _fail_with "frontend/ 被刪掉了"
+    [ -e "$CX_TEST_ROOT/src/backend" ]     || _fail_with "backend/ 被刪掉了"
+    [ -e "$CX_TEST_ROOT/src/frontend" ]    || _fail_with "frontend/ 被刪掉了"
     [ -e "$CX_TEST_ROOT/README.md" ]   || _fail_with "README.md 被刪掉了"
     [ -e "$CX_TEST_ROOT/.gitmodules" ] || _fail_with ".gitmodules 被刪掉了"
 }
@@ -170,8 +170,8 @@ setup() {
     make_submodule_repo full >/dev/null
     local mh bh fh
     mh=$(git -C "$CX_TEST_ROOT" rev-parse HEAD)
-    bh=$(git -C "$CX_TEST_ROOT/backend" rev-parse HEAD)
-    fh=$(git -C "$CX_TEST_ROOT/frontend" rev-parse HEAD)
+    bh=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse HEAD)
+    fh=$(git -C "$CX_TEST_ROOT/src/frontend" rev-parse HEAD)
 
     run cx_bin --yes init shop
     assert_rc 0
@@ -182,27 +182,27 @@ setup() {
     #   「舊歷史一個都不可達」，那由下面三條斷言負責。
     ! git -C "$CX_TEST_ROOT" cat-file -e "$mh^{commit}" 2>/dev/null \
         || _fail_with "主庫的舊 commit 還在"
-    ! git -C "$CX_TEST_ROOT/backend" cat-file -e "$bh^{commit}" 2>/dev/null \
+    ! git -C "$CX_TEST_ROOT/src/backend" cat-file -e "$bh^{commit}" 2>/dev/null \
         || _fail_with "backend 的舊 commit 還在"
-    ! git -C "$CX_TEST_ROOT/frontend" cat-file -e "$fh^{commit}" 2>/dev/null \
+    ! git -C "$CX_TEST_ROOT/src/frontend" cat-file -e "$fh^{commit}" 2>/dev/null \
         || _fail_with "frontend 的舊 commit 還在"
 
     [ "$(git -C "$CX_TEST_ROOT" rev-list --count HEAD)" = 1 ] \
         || _fail_with "主庫不是全新歷史"
-    [ "$(git -C "$CX_TEST_ROOT/backend" rev-list --count HEAD)" = 1 ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" rev-list --count HEAD)" = 1 ] \
         || _fail_with "backend 不是全新歷史"
     # 標準佈局：指標檔 + .git/modules（與 clone 下來的一致）
-    [ -f "$CX_TEST_ROOT/backend/.git" ] \
-        || _fail_with "backend/.git 不是指標檔 —— absorbgitdirs 沒生效"
+    [ -f "$CX_TEST_ROOT/src/backend/.git" ] \
+        || _fail_with "src/backend/.git 不是指標檔 —— absorbgitdirs 沒生效"
     grep -q '^CX_PROJECT_NAME=shop$' "$CX_TEST_ROOT/.cxroot" \
         || _fail_with ".cxroot 沒有改名"
 
     # 範本自己的系統接線必須活下來 —— 這是 scaffold 曾經整組弄丟的東西
-    [ -f "$CX_TEST_ROOT/backend/app/Providers/Filament/AdminPanelProvider.php" ] \
+    [ -f "$CX_TEST_ROOT/src/backend/app/Providers/Filament/AdminPanelProvider.php" ] \
         || _fail_with "缺少 Filament 面板"
-    grep -q AdminPanelProvider "$CX_TEST_ROOT/backend/bootstrap/providers.php" \
+    grep -q AdminPanelProvider "$CX_TEST_ROOT/src/backend/bootstrap/providers.php" \
         || _fail_with "面板沒有被註冊到 bootstrap/providers.php"
-    [ -f "$CX_TEST_ROOT/backend/routes/api.php" ] || _fail_with "缺少 routes/api.php"
-    ls "$CX_TEST_ROOT/backend/database/migrations/" | grep -q personal_access_tokens \
+    [ -f "$CX_TEST_ROOT/src/backend/routes/api.php" ] || _fail_with "缺少 routes/api.php"
+    ls "$CX_TEST_ROOT/src/backend/database/migrations/" | grep -q personal_access_tokens \
         || _fail_with "缺少 Sanctum 的 migration"
 }

@@ -24,7 +24,7 @@
 #              而且它在映像內自己 npm ci，不掛 host 的 node_modules）。
 #
 # ── 為什麼後端優先用 host 的 npm ────────────────────────────────────────────
-# backend/node_modules 是掛在 host 上的真實目錄，它的原生模組（Vite 8 的
+# src/backend/node_modules 是掛在 host 上的真實目錄，它的原生模組（Vite 8 的
 # rolldown binding）是照安裝當下的 libc 編的。
 # host 是 Ubuntu（glibc），把它掛進 Alpine（musl）容器會直接爆：
 #   Error: Cannot find native binding
@@ -38,13 +38,13 @@
 CX_NODE_GLIBC_IMAGE="${CX_NODE_GLIBC_IMAGE:-$CX_IMG_NODE_GLIBC}"
 
 # ── backend 的兩條路 ────────────────────────────────────────────────────────
-# native：host 的 npm 直接跑（backend/node_modules 是 host 上的真實目錄）
+# native：host 的 npm 直接跑（src/backend/node_modules 是 host 上的真實目錄）
 # docker：glibc 的 node 一次性容器（**不是** compose 的 nuxt service，
 #         那個容器的 node_modules 是 frontend 的具名 volume，跟 backend 無關）
 _npm_backend_native() {
     cx_runner_need_native "cx npm --backend" npm
     cx_runner_banner "host npm $(npm --version 2>/dev/null)"
-    cx_run env -C "$CX_ROOT/backend" npm "$@"
+    cx_run env -C "$CX_ROOT/src/backend" npm "$@"
 }
 
 _npm_backend_docker() {
@@ -52,7 +52,7 @@ _npm_backend_docker() {
     cx_runner_banner "$CX_NODE_GLIBC_IMAGE 一次性容器"
     cx_run docker run --rm \
         -u "$(id -u):$(id -g)" \
-        -v "$CX_ROOT/backend:/app" \
+        -v "$CX_ROOT/src/backend:/app" \
         -w /app \
         -e npm_config_cache=/tmp/.npm \
         -e HOME=/tmp \
@@ -70,7 +70,7 @@ _npm_backend() {
 _npm_frontend_native() {
     cx_runner_need_native "cx npm" npm
     cx_runner_banner "host npm $(npm --version 2>/dev/null)"
-    cx_run env -C "$CX_ROOT/frontend" npm "$@"
+    cx_run env -C "$CX_ROOT/src/frontend" npm "$@"
 }
 
 _npm_frontend_docker() {

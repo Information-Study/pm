@@ -1,6 +1,6 @@
 ---
 # A2：這一步是 proc_open 問題最容易爆的地方。
-# backend/composer.json 的 post-autoload-dump 有
+# src/backend/composer.json 的 post-autoload-dump 有
 #   "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump"
 #   "@php artisan package:discover --ansi"
 #   "@php artisan filament:upgrade"

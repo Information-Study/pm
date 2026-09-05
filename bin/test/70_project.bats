@@ -181,21 +181,24 @@ YML
     cp -r "$CX_TEST_REAL_ROOT/bin/lib" "$CX_TEST_REAL_ROOT/bin/completion" "$CX_TEST_ROOT/bin/"
     mkdir -p "$CX_TEST_ROOT/bin/cmd"
     cp "$CX_TEST_REAL_ROOT"/bin/cmd/*.sh "$CX_TEST_ROOT/bin/cmd/"
-    printf 'bin\ncx\n.cxroot\nbackend\nfrontend\n' > "$CX_TEST_ROOT/.gitignore"
-    local d
+    printf 'bin\ncx\n.cxroot\nsrc\n' > "$CX_TEST_ROOT/.gitignore"
+    local d p
     for d in . backend frontend; do
-        git -C "$CX_TEST_ROOT/$d" init -q -b main
-        git -C "$CX_TEST_ROOT/$d" config user.name t
-        git -C "$CX_TEST_ROOT/$d" config user.email t@t.co
-        [[ $d == . ]] || cp "$CX_TEST_ROOT/.gitignore" "$CX_TEST_ROOT/$d/.gitignore"
-        echo a > "$CX_TEST_ROOT/$d/f"
-        git -C "$CX_TEST_ROOT/$d" add -A
-        git -C "$CX_TEST_ROOT/$d" commit -qm base
-        git -C "$CX_TEST_ROOT/$d" branch dev
+        # v3 版面：子專案在 src/ 底下
+        p=$CX_TEST_ROOT/$d; [[ $d == . ]] || p=$CX_TEST_ROOT/src/$d
+        mkdir -p "$p"
+        git -C "$p" init -q -b main
+        git -C "$p" config user.name t
+        git -C "$p" config user.email t@t.co
+        [[ $d == . ]] || cp "$CX_TEST_ROOT/.gitignore" "$p/.gitignore"
+        echo a > "$p/f"
+        git -C "$p" add -A
+        git -C "$p" commit -qm base
+        git -C "$p" branch dev
         # 讓 main 前進，這樣 HEAD 與 dev 才分得出來
-        echo b > "$CX_TEST_ROOT/$d/f"
-        git -C "$CX_TEST_ROOT/$d" add -A
-        git -C "$CX_TEST_ROOT/$d" commit -qm "main 又前進了"
+        echo b > "$p/f"
+        git -C "$p" add -A
+        git -C "$p" commit -qm "main 又前進了"
     done
     run cx_raw --root "$CX_TEST_ROOT" --yes git branch new fix/from-dev
     assert_rc 0
@@ -214,20 +217,24 @@ YML
     mkdir -p "$CX_TEST_ROOT/bin/cmd"
     cp -r "$CX_TEST_REAL_ROOT/bin/lib" "$CX_TEST_REAL_ROOT/bin/completion" "$CX_TEST_ROOT/bin/"
     cp "$CX_TEST_REAL_ROOT"/bin/cmd/*.sh "$CX_TEST_ROOT/bin/cmd/"
-    printf 'bin\ncx\n.cxroot\nbackend\nfrontend\n' > "$CX_TEST_ROOT/.gitignore"
+    printf 'bin\ncx\n.cxroot\nsrc\n' > "$CX_TEST_ROOT/.gitignore"
     local d
+    local p
     for d in . backend frontend; do
-        git -C "$CX_TEST_ROOT/$d" init -q -b main
-        git -C "$CX_TEST_ROOT/$d" config user.name t
-        git -C "$CX_TEST_ROOT/$d" config user.email t@t.co
-        [[ $d == . ]] || cp "$CX_TEST_ROOT/.gitignore" "$CX_TEST_ROOT/$d/.gitignore"
-        echo a > "$CX_TEST_ROOT/$d/f"
-        git -C "$CX_TEST_ROOT/$d" add -A
-        git -C "$CX_TEST_ROOT/$d" commit -qm base
-        git -C "$CX_TEST_ROOT/$d" branch dev
-        echo b > "$CX_TEST_ROOT/$d/f"
-        git -C "$CX_TEST_ROOT/$d" add -A
-        git -C "$CX_TEST_ROOT/$d" commit -qm advance
+        # v3 版面：子專案在 src/ 底下（主庫仍在根目錄）
+        p=$CX_TEST_ROOT/$d; [[ $d == . ]] || p=$CX_TEST_ROOT/src/$d
+        mkdir -p "$p"
+        git -C "$p" init -q -b main
+        git -C "$p" config user.name t
+        git -C "$p" config user.email t@t.co
+        [[ $d == . ]] || cp "$CX_TEST_ROOT/.gitignore" "$p/.gitignore"
+        echo a > "$p/f"
+        git -C "$p" add -A
+        git -C "$p" commit -qm base
+        git -C "$p" branch dev
+        echo b > "$p/f"
+        git -C "$p" add -A
+        git -C "$p" commit -qm advance
     done
     # ⚠ 分支名刻意用 chore/ 而不是 hotfix/。2026-09-06 加入 cx git hotfix 之後，
     #   hotfix/* 與 feature/* 一樣在主庫被拒絕（finish 只看子模組，在主庫開等於

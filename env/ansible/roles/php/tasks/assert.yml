@@ -46,7 +46,7 @@
       - "'proc_close' not in php_disable_functions"
     fail_msg: >-
       php_disable_functions 含有 proc_open 家族的函式。
-      本專案的 backend/composer.json 有 post-autoload-dump
+      本專案的 src/backend/composer.json 有 post-autoload-dump
       （@php artisan package:discover、@php artisan filament:upgrade），
       這些腳本經 Symfony Process 呼叫 proc_open。禁掉之後 composer install 會直接死於
       "The Process class relies on proc_open, which is not available on your PHP installation."

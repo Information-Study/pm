@@ -8,7 +8,7 @@ frontend_release_static_root: "{{ frontend_release_path }}/{{ frontend_static_re
 frontend_release_client_dir: "{{ frontend_release_path }}/.output/public/_nuxt"
 frontend_managed_pm2_pattern: "^{{ frontend_app_prefix | regex_escape }}-[0-9]+$"
 
-# 三種模式的建置指令與預期產物。npm run 的腳本名來自 frontend/package.json：
+# 三種模式的建置指令與預期產物。npm run 的腳本名來自 src/frontend/package.json：
 #   "build": "nuxt build"、"generate": "nuxt generate"
 frontend_build_matrix:
   ssr:

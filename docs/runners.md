@@ -65,13 +65,13 @@ runner: native（指定） — composer 2.10.3
 
 | 動詞 | 需要 |
 |---|---|
-| `cx art` | `php` + `backend/vendor` |
+| `cx art` | `php` + `src/backend/vendor` |
 | `cx composer` | `composer`、`php` |
 | `cx npm` | `npm` |
 | `cx npm --backend` | `npm` |
-| `cx test back` | `php` + `pdo_sqlite` + `backend/vendor` |
-| `cx test front` | `npm` + `frontend/node_modules` |
-| `cx db migrate/seed/admin/fresh` | `php` + `backend/vendor` |
+| `cx test back` | `php` + `pdo_sqlite` + `src/backend/vendor` |
+| `cx test front` | `npm` + `src/frontend/node_modules` |
+| `cx db migrate/seed/admin/fresh` | `php` + `src/backend/vendor` |
 | `cx db status/shell/wait` | `mysql` client |
 | `cx db dump` | `mysqldump`、`gzip` |
 | `cx test coverage` | **只有容器路徑**（需要 test 映像裡的 xdebug） |
@@ -139,8 +139,8 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ══ 兩條 runner 各自的完整性 ══
   ✔ docker runner                daemon 可用、compose 與 Dockerfile 齊全
   ✔ native runner                php / composer / npm 齊全
-  ✔ native backend/vendor        已安裝
-  ✔ native frontend/node_modules 已安裝
+  ✔ native src/backend/vendor        已安裝
+  ✔ native src/frontend/node_modules 已安裝
   ⚠ native pdo_sqlite            缺 —— 原生後端測試不可用（sudo apt install php8.5-sqlite3）
   ⚠ native mysql client          缺 —— 原生 cx db 不可用（sudo apt install mysql-client）
 ```
@@ -151,7 +151,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 這是最容易踩到的地方。
 
-### `backend/vendor`
+### `src/backend/vendor`
 
 容器是 `php:8.5-fpm-alpine`（musl），host 是 Ubuntu（glibc），而且擴充清單不同。
 composer 會照「當下這個 php」解相依，所以兩邊解出來的樹可能不一樣。
@@ -172,7 +172,7 @@ composer 會照「當下這個 php」解相依，所以兩邊解出來的樹可�
 （向前相容），反過來則不行。
 
 前端則是完全隔離：容器裡的 `node_modules` 是具名 volume，由映像種子化，
-跟 host 的 `frontend/node_modules` 是兩份，互不影響。
+跟 host 的 `src/frontend/node_modules` 是兩份，互不影響。
 
 ---
 
@@ -184,10 +184,10 @@ composer 會照「當下這個 php」解相依，所以兩邊解出來的樹可�
 ### 連線設定的來源順序
 
 1. 專案根的 `.env` —— 這個 repo 的真相（`cx setup env` 產生的隨機密碼在這裡）
-2. `backend/.env` —— 真機部署的真相（Ansible 寫到 `shared/.env`）；**空值不算數**
+2. `src/backend/.env` —— 真機部署的真相（Ansible 寫到 `shared/.env`）；**空值不算數**
 3. `CX_DB_HOST` / `CX_DB_PORT` 環境變數 —— 臨時指定實際位置
 
-第 2 步的「空值不算數」不是小事：Docker 開發環境裡 `backend/.env` 的
+第 2 步的「空值不算數」不是小事：Docker 開發環境裡 `src/backend/.env` 的
 `DB_PASSWORD` 是**空的**（容器的密碼是 compose 注入的環境變數，不寫在那個檔），
 少了這條規則就會拿到空密碼，而 MySQL 回的是
 
@@ -199,7 +199,7 @@ Access denied for user 'pm'@'...' (using password: NO)
 
 ### `DB_HOST=mysql` 解析不到
 
-`backend/.env` 記的是「容器眼中的世界」，`mysql` 是 compose 的 service 名，
+`src/backend/.env` 記的是「容器眼中的世界」，`mysql` 是 compose 的 service 名，
 host 上不存在。原生路徑會先檢查並講清楚，而不是讓 Laravel 丟一大串
 vendor stack trace：
 
@@ -208,7 +208,7 @@ CX_DB_HOST=127.0.0.1 CX_DB_PORT=3306  cx --runner native db migrate   # dev 發�
 CX_DB_HOST=127.0.0.1 CX_DB_PORT=13306 cx --runner native db status    # test
 ```
 
-真機部署時 `backend/.env` 本來就是 `127.0.0.1`，不需要覆寫。
+真機部署時 `src/backend/.env` 本來就是 `127.0.0.1`，不需要覆寫。
 
 ### 密碼不進行程列表
 

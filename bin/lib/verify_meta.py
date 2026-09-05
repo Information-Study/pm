@@ -541,9 +541,9 @@ def check_test_db_guard():
     結果是：防護的檔案都還在，但已經沒有任何人呼叫它了。
     那是最惡劣的一種失效 —— 看起來有防護，實際上沒有。
     """
-    xml = read("backend/phpunit.xml")
+    xml = read("src/backend/phpunit.xml")
     if not xml:
-        row("SKIP", "GRD-wire", "phpunit.xml 指向測試防護", "讀不到 backend/phpunit.xml")
+        row("SKIP", "GRD-wire", "phpunit.xml 指向測試防護", "讀不到 src/backend/phpunit.xml")
         return
 
     m = re.search(r'bootstrap="([^"]+)"', xml)
@@ -555,12 +555,12 @@ def check_test_db_guard():
             f'bootstrap="{got}"，應為 tests/bootstrap.php'
             "（cx fresh --mode carryover 會重新產生 phpunit.xml 而不會帶回這一行）")
 
-    missing = [f for f in ("backend/tests/bootstrap.php", "backend/tests/DatabaseSafetyGuard.php")
+    missing = [f for f in ("src/backend/tests/bootstrap.php", "src/backend/tests/DatabaseSafetyGuard.php")
                if not (ROOT / f).exists()]
     if missing:
         row("FAIL", "GRD-files", "測試防護的檔案都在", "缺少：" + " ".join(missing))
     else:
-        boot = read("backend/tests/bootstrap.php")
+        boot = read("src/backend/tests/bootstrap.php")
         if "DatabaseSafetyGuard" in boot and "assertProcessEnv" in boot:
             row("PASS", "GRD-files", "測試防護的檔案都在")
         else:
@@ -568,7 +568,7 @@ def check_test_db_guard():
                 "bootstrap.php 沒有呼叫 DatabaseSafetyGuard::assertProcessEnv()")
 
     # Layer B 一定要掛在 createApplication()，不能是 setUp()。
-    tc = read("backend/tests/TestCase.php")
+    tc = read("src/backend/tests/TestCase.php")
     if "assertResolvedConfig" not in tc:
         row("FAIL", "GRD-layer2", "Layer B 掛在 createApplication()",
             "TestCase.php 沒有呼叫 assertResolvedConfig()")
@@ -649,26 +649,26 @@ def check_eslint_wiring():
     # 才有意義的東西，而 package.json 隨便一個 stub 都有（bats 的 fixture 就是
     # 一行 {"name":"bats-frontend"}）。沒有 nuxt.config.ts 就沒有 Nuxt 專案，
     # 這三項無從檢查 —— 那是 SKIP，不是 FAIL。
-    nuxt_cfg = next((f for f in ("frontend/nuxt.config.ts", "frontend/nuxt.config.js",
-                                 "frontend/nuxt.config.mjs") if exists(f)), None)
+    nuxt_cfg = next((f for f in ("src/frontend/nuxt.config.ts", "src/frontend/nuxt.config.js",
+                                 "src/frontend/nuxt.config.mjs") if exists(f)), None)
     if not nuxt_cfg:
-        why = "這棵樹沒有 frontend/nuxt.config.*（不是 Nuxt 專案）"
-        row("SKIP", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在", why)
+        why = "這棵樹沒有 src/frontend/nuxt.config.*（不是 Nuxt 專案）"
+        row("SKIP", "LNT-eslint-cfg", "src/frontend/eslint.config.mjs 存在", why)
         row("SKIP", "LNT-eslint-dep", "frontend 有 eslint 與 @nuxt/eslint", why)
         row("SKIP", "LNT-eslint-mod", "nuxt.config 的 modules 含 @nuxt/eslint", why)
         _eslint_cx_row()
         return
-    cfg = read("frontend/eslint.config.mjs")
-    if not exists("frontend/eslint.config.mjs"):
-        row("FAIL", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在",
+    cfg = read("src/frontend/eslint.config.mjs")
+    if not exists("src/frontend/eslint.config.mjs"):
+        row("FAIL", "LNT-eslint-cfg", "src/frontend/eslint.config.mjs 存在",
             "檔案不存在（cx fresh --mode carryover 不會把它帶回來）")
     elif ".nuxt/eslint.config.mjs" not in cfg:
-        row("FAIL", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在",
+        row("FAIL", "LNT-eslint-cfg", "src/frontend/eslint.config.mjs 存在",
             "沒有 import ./.nuxt/eslint.config.mjs —— Nuxt 的 auto-import 全域會全部報 no-undef")
     else:
-        row("PASS", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在", "並 extend .nuxt 的產生設定")
+        row("PASS", "LNT-eslint-cfg", "src/frontend/eslint.config.mjs 存在", "並 extend .nuxt 的產生設定")
 
-    pkg = read("frontend/package.json")
+    pkg = read("src/frontend/package.json")
     if True:
         try:
             dev = (json.loads(pkg).get("devDependencies") or {})
@@ -1011,7 +1011,7 @@ def check_git_branch_model():
 # sonar-project.properties / ansible YAML **完全讀不到 shell 變數**。
 # 結果會是「130 處變成可設定，40 處仍是死的字面值」—— 有人改了變數，
 # shell 那半跟著走、Dockerfile 那半不動，於是 .dockerignore 不再排除
-# backend/.env，而 Dockerfile 是 COPY src/backend/ ./。
+# src/backend/.env，而 Dockerfile 是 COPY src/backend/ ./。
 # 更糟的是那種半套抽象會**通過**「定義了沒人讀」那一類檢查（shell 確實讀了）。
 #
 # 所以是字面替換 + 底下這三條檢查。它們是這個決定的安全網，不是加分項。

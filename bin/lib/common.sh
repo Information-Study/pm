@@ -15,9 +15,23 @@ readonly EX_SCAN_QUALITY=20 EX_SCAN_SAST=21 EX_SCAN_SCA=22 EX_SCAN_DAST=23
 #   env/docker/compose/dev.yml、composer 找不到 src/backend/composer.json、
 #   ansible cd 失敗 —— 每一個訊息都指向不同的方向，沒有一個說出真正的原因。
 #   cx verify cli 的 LAY-version 檢查盯著這個值與 .cxroot 一致。
-readonly CX_LAYOUT_REQUIRED=2
+readonly CX_LAYOUT_REQUIRED=3
 # 版面無關的動詞。拿到舊樹的人正需要這幾個 —— 清單刻意很短。
 readonly CX_LAYOUT_EXEMPT_VERBS='help doctor install uninstall'
+
+# ── 子模組 ─────────────────────────────────────────────────────────────────
+#
+# 抽掉的是**重複的清單**，不是路徑的可設定性 —— 版面是編譯期常數（見
+# verify_meta.py 的 LAY 檢查說明）。這一對名字原本以 `for c in backend frontend`
+# 的形式散在 git.sh、archive.sh、fresh.sh、guard.sh、acl.sh、doctor.sh…
+# 每一處都是獨立的字面值。
+cx_submodules() { printf '%s\n' backend frontend; }
+# 子模組在樹上的絕對路徑。v3 版面是 src/<名字>。
+#
+# ⚠ 「名字」與「路徑」在這個專案裡是**兩件事**：.gitmodules 的
+#   [submodule "backend"] 是名字（git mv 不會改它），path = src/backend 是路徑。
+#   .git/modules/<名字> 用的是前者，這個函式回的是後者。
+cx_sub_path() { printf '%s/src/%s' "$CX_ROOT" "${1:?cx_sub_path 需要子模組名}"; }
 
 cx_assert_layout() {
     local got=${CX_LAYOUT_VERSION:-1}

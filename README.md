@@ -57,7 +57,7 @@ mysql-client / php-sqlite）+ `setup tools`（免 root，裝到 `~/.local`：com
 node〔含 npm〕/ ansible / trivy / gitleaks / semgrep）+ `setup deps`（vendor 與
 node_modules）。**cx 絕不偷偷跑 sudo** —— sudo 不可用時它只把 `apt-get` 那一行
 印出來讓你自己貼，然後繼續裝免 root 的那一半。
-（`artisan` 不必安裝，它是 `backend/artisan`。）
+（`artisan` 不必安裝，它是 `src/backend/artisan`。）
 
 被指定的那一邊不可用時會**硬失敗**，不會偷偷換另一邊跑。
 兩條路各自需要什麼、產出為何不可互換，見 [`docs/runners.md`](docs/runners.md)。
@@ -300,22 +300,29 @@ pm/
 │   ├── lib/                 common / ui / guard / archive + 幾支 python 輔助
 │   ├── cmd/                 每個動詞一個檔
 │   └── completion/cx.bash   bash 補全
-├── docker/
-│   ├── compose/             dev / test / prod / sonar 的 overlay
-│   ├── env/                 各模式的埠段與 build target
-│   ├── php/                 多階段 Dockerfile + nginx / php-fpm / supervisord 設定
-│   ├── nuxt/                多階段 Dockerfile（deps/dev/build/prod/static）
-│   ├── edge/                反向代理設定
-│   ├── entrypoint/          容器啟動流程
-│   ├── waf/                 ModSecurity CRS 排除規則
-│   ├── security/            trivy / semgrep / zap / gitleaks 設定
-│   └── legacy/              舊設定的 .orig 副本（只供對照）
-├── ansible/                 12 個 role + site.yml + playbooks
+├── env/                     環境定義
+│   ├── docker/
+│   │   ├── compose/         dev / test / prod / sonar 的 overlay（`<模式>.yml`）
+│   │   │                    與各模式的埠段、build target（`<模式>.env`）——
+│   │   │                    同目錄同檔名：模式 X 的一切就是這兩個檔
+│   │   ├── php/             多階段 Dockerfile + nginx / php-fpm / supervisord 設定
+│   │   ├── nuxt/            多階段 Dockerfile（deps/dev/build/prod/static）
+│   │   ├── edge/            反向代理設定
+│   │   ├── entrypoint/      容器啟動流程
+│   │   ├── waf/             ModSecurity CRS 排除規則
+│   │   ├── security/        trivy / semgrep / zap / gitleaks 設定
+│   │   └── legacy/          舊設定的 .orig 副本（只供對照）
+│   └── ansible/             12 個 role + site.yml + playbooks
 ├── docs/                    說明書、參考手冊、驗收與進度追蹤
 ├── reports/                 掃描與驗收輸出（目錄進版控，內容不進）
-├── backend/                 submodule → Information-Study/pm-backend
-└── frontend/                submodule → Information-Study/pm-frontend
+└── src/                     應用程式
+    ├── backend/             submodule → Information-Study/pm-backend
+    └── frontend/            submodule → Information-Study/pm-frontend
 ```
+
+> 這是 **v3 版面**（`.cxroot` 的 `CX_LAYOUT_VERSION=3`）。舊版面（四個目錄都在
+> 根目錄）的 checkout 跑新版 `cx` 會被擋下並告訴你怎麼遷移 —— 而不是用一堆
+> 看不出關聯的錯誤訊息壞掉。
 
 ---
 
@@ -410,7 +417,7 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 3. **不要繞過 `cx`。** 直接下 `docker compose` 幾乎一定會錯。
 4. **不要用 `--ignore-platform-reqs` 硬過相依衝突**（`cx composer` 會主動拒絕這個旗標）。
 5. **不要在容器裡裸跑 `php artisan test`，一律用 `cx test`。**
-   `backend/phpunit.xml` 的 `<env force="true">` 在容器裡**擋不住** compose 注入的
+   `src/backend/phpunit.xml` 的 `<env force="true">` 在容器裡**擋不住** compose 注入的
    環境變數（PHPUnit 的 force 不寫 `$_SERVER`，而 Laravel 讀 `$_SERVER` 優先），
      現在應用層還有 `DatabaseSafetyGuard`：連上非測試資料庫時以 **exit 3** 中止，
      所以裸跑不會真的打進開發資料庫。但它擋不住 `-c 別的.xml`，還是用 `cx test`。

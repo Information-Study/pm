@@ -73,8 +73,8 @@ _test_env_docker_args() {
 # 完全不會提到「請安裝 php-sqlite3」，所以這裡先擋並講清楚。
 _test_php_native() {
     cx_runner_need_native "cx test" php
-    [[ -f $CX_ROOT/backend/vendor/autoload.php ]] || cx_die "$EX_PRECOND" \
-        "backend/vendor 不存在 —— 先跑 cx --runner native composer install"
+    [[ -f $CX_ROOT/src/backend/vendor/autoload.php ]] || cx_die "$EX_PRECOND" \
+        "src/backend/vendor 不存在 —— 先跑 cx --runner native composer install"
     if ! php -m 2>/dev/null | grep -qix pdo_sqlite; then
         cx_error "原生 PHP 缺少 pdo_sqlite —— 後端測試走 sqlite :memory:，沒有它跑不起來"
         cx_dim "  Laravel 的訊息會是「could not find driver」，不會提到套件名"
@@ -86,7 +86,7 @@ _test_php_native() {
     cx_runner_banner "php $(php -r 'echo PHP_VERSION;' 2>/dev/null)"
     local -a envs=()
     while IFS= read -r kv; do envs+=("$kv"); done < <(_test_env_pairs)
-    cx_run env -C "$CX_ROOT/backend" "${envs[@]}" php artisan test "$@"
+    cx_run env -C "$CX_ROOT/src/backend" "${envs[@]}" php artisan test "$@"
 }
 
 _test_php() {
@@ -109,7 +109,7 @@ _test_php() {
     # phpunit 會在裡面留下 root:root 的 .phpunit.result.cache，
     # 之後 --runner native 跑同一套測試就會噴
     #   file_put_contents(.phpunit.result.cache): Permission denied
-    # backend/storage 與 bootstrap/cache 本來就屬於 uid 1000，所以這樣是安全的。
+    # src/backend/storage 與 bootstrap/cache 本來就屬於 uid 1000，所以這樣是安全的。
     local -a asuser=(-u "$(id -u):$(id -g)")
     if cx_dc_q ps --status running --services 2>/dev/null | grep -qx app; then
         cx_dc exec -T "${asuser[@]}" "${envs[@]}" app "$@"
@@ -249,10 +249,10 @@ _test_front() {
         cx_runner_need_native "cx test front" npm
         # node_modules 是原生路徑的硬需求。以前這裡是 cx_warn + return 0，
         # 也就是「跳過」還算成功 —— CI 上會變成一個永遠綠但什麼都沒做的步驟。
-        [[ -d $CX_ROOT/frontend/node_modules ]] || cx_die "$EX_PRECOND" \
-            "frontend/node_modules 不存在 —— 先跑 cx --runner native npm ci"
+        [[ -d $CX_ROOT/src/frontend/node_modules ]] || cx_die "$EX_PRECOND" \
+            "src/frontend/node_modules 不存在 —— 先跑 cx --runner native npm ci"
         cx_runner_banner "host npm $(npm --version 2>/dev/null)"
-        ( cd "$CX_ROOT/frontend" && cx_run npm run typecheck )
+        ( cd "$CX_ROOT/src/frontend" && cx_run npm run typecheck )
     fi
 }
 

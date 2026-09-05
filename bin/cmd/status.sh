@@ -54,14 +54,14 @@ _status_containers() {              # _status_containers <模式> → "跑著/�
 # 不一致不代表壞掉（feature 做到一半就是這樣），但它是「我現在該 commit 什麼」
 # 的答案，而 git status 只會說「有未提交的變更」，看不出是哪一種。
 _status_gitlink() {                 # _status_gitlink <子模組名> → 描述
-    # ⚠ 不可以寫成 `local c=$1 d="$CX_ROOT/$c"`。bash 的 local 會先把**所有**
+    # ⚠ 不可以寫成 `local c=$1 d="$CX_ROOT/src/$c"`。bash 的 local 會先把**所有**
     #   名字宣告成 local（此刻是 unset），才依序賦值 —— 於是 d 的右邊讀到的
     #   是剛被遮蔽掉、還沒賦值的 c，在 set -u 之下直接 unbound variable。
     #   實測 bash 5.3.9。同一行的後面引用前面，只在沒有 local 時才成立。
     local c d idx head
-    c=$1; d="$CX_ROOT/$c"
+    c=$1; d="$CX_ROOT/src/$c"
     [[ -e $d/.git ]] || { printf '（未初始化）'; return 0; }
-    idx=$(git -C "$CX_ROOT" ls-files --stage -- "$c" 2>/dev/null | awk '{print $2}')
+    idx=$(git -C "$CX_ROOT" ls-files --stage -- "src/$c" 2>/dev/null | awk '{print $2}')
     head=$(git -C "$d" rev-parse HEAD 2>/dev/null || echo '')
     [[ -n $idx && -n $head ]] || { printf '（讀不到）'; return 0; }
     if [[ $idx == "$head" ]]; then

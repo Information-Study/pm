@@ -6,7 +6,7 @@
 #   spa    → NUXT_SSR=false npm run build     → .output/server/index.mjs
 #   static → NUXT_SSR=false npm run generate  → .output/public/
 #
-# frontend/nuxt.config.ts 的第 9 行是
+# src/frontend/nuxt.config.ts 的第 9 行是
 #     const ssr = process.env.NUXT_SSR !== 'false'
 # 所以 NUXT_SSR 這個變數真的有作用（release.yml 已經複查過沒被寫死）。
 

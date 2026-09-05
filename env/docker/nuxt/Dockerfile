@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── pm nuxt 映像 ────────────────────────────────────────────────────────────
-# build context 是專案根目錄，路徑寫 frontend/...
+# build context 是專案根目錄，路徑寫 src/frontend/...
 #
 # 五個 stage：deps → dev / build → prod / static
 #
@@ -23,7 +23,7 @@ ARG NGINX_IMAGE=nginx:1.30-alpine
 FROM ${NODE_IMAGE} AS deps
 
 WORKDIR /app
-COPY frontend/package.json frontend/package-lock.json ./
+COPY src/frontend/package.json src/frontend/package-lock.json ./
 # npm ci 而非 npm install：ci 嚴格照 lockfile，install 會在 lockfile 過期時
 # 悄悄改版本 —— 而 vue-router 一旦被 dedupe 到 v4，首次導航就壞。
 RUN npm ci --no-audit --no-fund
@@ -38,7 +38,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY env/docker/entrypoint/nuxt.sh /usr/local/bin/pm-nuxt-entrypoint
 RUN chmod +x /usr/local/bin/pm-nuxt-entrypoint
 
-# 不 COPY 原始碼 —— dev 模式 ./frontend:/app bind mount 會蓋掉。
+# 不 COPY 原始碼 —— dev 模式 ./src/frontend:/app bind mount 會蓋掉。
 
 # .nuxt 與 .output 掛的是**具名 volume**，而具名 volume 只有在
 # 「映像裡那個路徑存在」的時候才會用映像的內容與擁有者去種子化。
@@ -68,7 +68,7 @@ ARG NUXT_PUBLIC_API_BASE_URL=
 
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY frontend/ ./
+COPY src/frontend/ ./
 
 # spa / static 的 API base URL 在這裡被烘進 bundle。
 ENV NUXT_PUBLIC_API_BASE_URL=${NUXT_PUBLIC_API_BASE_URL}

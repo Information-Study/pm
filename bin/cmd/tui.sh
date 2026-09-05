@@ -421,8 +421,8 @@ _tui_git_branch() {
                 # 結尾的 || true 是必要的：<(...) 子 shell 裡 errexit 仍有效。
                 while read -r b; do
                     [[ -n $b ]] || continue
-                    git -C "$CX_ROOT/backend"  show-ref --verify --quiet "refs/heads/$b" || continue
-                    git -C "$CX_ROOT/frontend" show-ref --verify --quiet "refs/heads/$b" || continue
+                    git -C "$CX_ROOT/src/backend"  show-ref --verify --quiet "refs/heads/$b" || continue
+                    git -C "$CX_ROOT/src/frontend" show-ref --verify --quiet "refs/heads/$b" || continue
                     br+=("$b" "三個 repo 皆有")
                 done < <(git -C "$CX_ROOT" for-each-ref --format='%(refname:short)' refs/heads/ \
                          2>/dev/null || true)

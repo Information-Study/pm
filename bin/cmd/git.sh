@@ -60,9 +60,9 @@ TXT
 _git_repos_order() {                # _git_repos_order [main|backend|frontend|all]
     local f=${1:-all}
     case $f in
-        all)      printf '%s\n' "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT" ;;
-        backend)  printf '%s\n' "$CX_ROOT/backend" ;;
-        frontend) printf '%s\n' "$CX_ROOT/frontend" ;;
+        all)      printf '%s\n' "$CX_ROOT/src/backend" "$CX_ROOT/src/frontend" "$CX_ROOT" ;;
+        backend)  printf '%s\n' "$CX_ROOT/src/backend" ;;
+        frontend) printf '%s\n' "$CX_ROOT/src/frontend" ;;
         main)     printf '%s\n' "$CX_ROOT" ;;
         *) cx_die "$EX_USAGE" "--repo 只能是 main|backend|frontend|all，收到：$f" ;;
     esac
@@ -70,9 +70,9 @@ _git_repos_order() {                # _git_repos_order [main|backend|frontend|al
 _git_repos_super_first() {          # _git_repos_super_first [main|backend|frontend|all]
     local f=${1:-all}
     case $f in
-        all)      printf '%s\n' "$CX_ROOT" "$CX_ROOT/backend" "$CX_ROOT/frontend" ;;
-        backend)  printf '%s\n' "$CX_ROOT/backend" ;;
-        frontend) printf '%s\n' "$CX_ROOT/frontend" ;;
+        all)      printf '%s\n' "$CX_ROOT" "$CX_ROOT/src/backend" "$CX_ROOT/src/frontend" ;;
+        backend)  printf '%s\n' "$CX_ROOT/src/backend" ;;
+        frontend) printf '%s\n' "$CX_ROOT/src/frontend" ;;
         main)     printf '%s\n' "$CX_ROOT" ;;
         *) cx_die "$EX_USAGE" "--repo 只能是 main|backend|frontend|all，收到：$f" ;;
     esac
@@ -112,8 +112,8 @@ _git_sub_target_branch() {          # _git_sub_target_branch <子模組名>
 
 _git_repo_slug() {
     case $1 in
-        "$CX_ROOT/backend")  printf '%s\n' "$CX_REPO_BACKEND"  ;;
-        "$CX_ROOT/frontend") printf '%s\n' "$CX_REPO_FRONTEND" ;;
+        "$CX_ROOT/src/backend")  printf '%s\n' "$CX_REPO_BACKEND"  ;;
+        "$CX_ROOT/src/frontend") printf '%s\n' "$CX_REPO_FRONTEND" ;;
         "$CX_ROOT")          printf '%s\n' "$CX_REPO_MAIN"     ;;
     esac
 }
@@ -207,7 +207,7 @@ _git_last_fetch() {
 
 # 這個路徑本身是不是一個 git repo 的根？
 # 不能只用 `git -C "$r" rev-parse --git-dir` —— 那會沿著父目錄往上找，
-# 所以「$CX_ROOT/backend 是空目錄、但 $CX_ROOT 是 repo」時它會回傳成功。
+# 所以「$CX_ROOT/src/backend 是空目錄、但 $CX_ROOT 是 repo」時它會回傳成功。
 # 移到 common.sh 成為 cx_is_repo_root —— archive.sh 與 fresh.sh 也需要同一個判準，
 # 而它們載入不到 git.sh。這裡保留別名，避免動到既有的十幾個呼叫點。
 _git_is_repo_root() { cx_is_repo_root "$@"; }
@@ -235,8 +235,8 @@ _git_sync() {
     for c in backend frontend; do
         b=$(_git_sub_target_branch "$c")
 
-        if git -C "$CX_ROOT/$c" symbolic-ref -q HEAD >/dev/null 2>&1; then
-            local cur; cur=$(git -C "$CX_ROOT/$c" branch --show-current)
+        if git -C "$CX_ROOT/src/$c" symbolic-ref -q HEAD >/dev/null 2>&1; then
+            local cur; cur=$(git -C "$CX_ROOT/src/$c" branch --show-current)
             if [[ $cur == "$b" ]]; then
                 cx_ok "$c 已在分支 $cur"
             elif _git_is_protected_branch "$cur"; then
@@ -245,10 +245,10 @@ _git_sync() {
                 # 的單一 branch 值留下的（見 _git_sub_target_branch 的說明）。
                 # 症狀：git status 說子模組有未提交變更，實際上只是站錯了線。
                 # 這裡只在工作區乾淨時才切 —— 髒的話切過去會把改動帶走。
-                if [[ -n $(git -C "$CX_ROOT/$c" status --porcelain) ]]; then
+                if [[ -n $(git -C "$CX_ROOT/src/$c" status --porcelain) ]]; then
                     cx_warn "$c 在 $cur、應該在 $b，但工作區不乾淨 —— 沒有切換"
                     cx_dim "  先 cx git commit --repo $c，再跑一次 cx git sync"
-                elif cx_run git -C "$CX_ROOT/$c" switch -q "$b" 2>/dev/null; then
+                elif cx_run git -C "$CX_ROOT/src/$c" switch -q "$b" 2>/dev/null; then
                     cx_ok "$c：$cur → $b（跟上主庫目前的線）"
                 else
                     cx_warn "$c 在 $cur、應該在 $b，但 $b 不存在 —— 先跑 cx git flow-init"
@@ -283,31 +283,31 @@ _git_sync() {
         #     HEAD 領先   → -B 快轉（保住 detached 期間的 commit）
         #     分支領先    → **保持 detached**，請使用者自己決定
         #     分岔        → 保持 detached，報錯
-        head=$(git -C "$CX_ROOT/$c" rev-parse HEAD)
-        if ! git -C "$CX_ROOT/$c" rev-parse --verify --quiet "refs/heads/$b" >/dev/null; then
+        head=$(git -C "$CX_ROOT/src/$c" rev-parse HEAD)
+        if ! git -C "$CX_ROOT/src/$c" rev-parse --verify --quiet "refs/heads/$b" >/dev/null; then
             # 分支還不存在：直接以目前的 HEAD 建出來，不可能丟東西
-            if cx_run git -C "$CX_ROOT/$c" checkout -q -B "$b" "$head"; then
+            if cx_run git -C "$CX_ROOT/src/$c" checkout -q -B "$b" "$head"; then
                 cx_ok "$c → $b（新建，原本是 detached HEAD）"
             else
                 cx_error "$c 建立 $b 失敗"; return "$EX_FAIL"
             fi
             continue
         fi
-        local btip; btip=$(git -C "$CX_ROOT/$c" rev-parse "refs/heads/$b")
+        local btip; btip=$(git -C "$CX_ROOT/src/$c" rev-parse "refs/heads/$b")
         if [[ $head == "$btip" ]]; then
-            if cx_run git -C "$CX_ROOT/$c" checkout -q "$b"; then
+            if cx_run git -C "$CX_ROOT/src/$c" checkout -q "$b"; then
                 cx_ok "$c → $b（原本是 detached HEAD，內容相同）"
             else
                 cx_error "$c 切換到 $b 失敗"; return "$EX_FAIL"
             fi
-        elif git -C "$CX_ROOT/$c" merge-base --is-ancestor "$btip" "$head" 2>/dev/null; then
+        elif git -C "$CX_ROOT/src/$c" merge-base --is-ancestor "$btip" "$head" 2>/dev/null; then
             cx_warn "$c 的 detached HEAD（${head:0:7}）領先 $b —— 用 -B 把分支帶過來，不丟 commit"
-            if cx_run git -C "$CX_ROOT/$c" checkout -q -B "$b" "$head"; then
+            if cx_run git -C "$CX_ROOT/src/$c" checkout -q -B "$b" "$head"; then
                 cx_ok "$c → $b（快轉）"
             else
                 cx_error "$c 切換到 $b 失敗"; return "$EX_FAIL"
             fi
-        elif git -C "$CX_ROOT/$c" merge-base --is-ancestor "$head" "$btip" 2>/dev/null; then
+        elif git -C "$CX_ROOT/src/$c" merge-base --is-ancestor "$head" "$btip" 2>/dev/null; then
             cx_warn "$c 保持 detached —— $b（${btip:0:7}）比目前的 gitlink（${head:0:7}）新"
             cx_dim "  硬切過去會**倒退** $b，中間的 commit 只剩 reflog 找得到。"
             cx_dim "  你大概是想要其中一個："
@@ -767,7 +767,7 @@ _git_flow_side() {                  # _git_flow_side <明確指定或空> <kind>
     local pwd_real; pwd_real=$(cd "${CX_INVOKE_PWD:-$PWD}" 2>/dev/null && pwd -P || printf '%s' "$PWD")
     local c
     for c in backend frontend; do
-        [[ $pwd_real == "$CX_ROOT/$c" || $pwd_real == "$CX_ROOT/$c"/* ]] && { printf '%s' "$c"; return 0; }
+        [[ $pwd_real == "$CX_ROOT/src/$c" || $pwd_real == "$CX_ROOT/src/$c"/* ]] && { printf '%s' "$c"; return 0; }
     done
     cx_die "$EX_USAGE" "$(printf '%s\n' \
         "要指定哪一邊： cx git $kind start <名稱> --repo backend|frontend" \
@@ -833,7 +833,7 @@ _git_flow_line() {                  # _git_flow_line <feature|hotfix> [子指令
         finish)
             local side; side=$(_git_flow_side "$want" "$kind") || return "$EX_USAGE"
             # 沒給名稱就用該子模組目前所在的分支（不是主庫的 —— 主庫沒有工作分支）
-            local cur; cur=$(git -C "$CX_ROOT/$side" branch --show-current 2>/dev/null || echo '')
+            local cur; cur=$(git -C "$CX_ROOT/src/$side" branch --show-current 2>/dev/null || echo '')
             local n=${1:-$cur}
             [[ -n $n ]] || cx_die "$EX_USAGE" "$kind finish 需要名稱，或先把 $side 切到那個分支上"
             [[ $n == "$pfx"* ]] || n="$pfx$n"
@@ -841,9 +841,9 @@ _git_flow_line() {                  # _git_flow_line <feature|hotfix> [子指令
         list)
             local c
             for c in backend frontend; do
-                [[ -e $CX_ROOT/$c/.git ]] || continue
-                printf '\n%s%s%s\n' "$C_BLU" "$(_git_repo_slug "$CX_ROOT/$c")" "$C_RST"
-                git -C "$CX_ROOT/$c" for-each-ref \
+                [[ -e $CX_ROOT/src/$c/.git ]] || continue
+                printf '\n%s%s%s\n' "$C_BLU" "$(_git_repo_slug "$CX_ROOT/src/$c")" "$C_RST"
+                git -C "$CX_ROOT/src/$c" for-each-ref \
                     --format='  %(refname:short)  %(committerdate:relative)' \
                     "refs/heads/$pfx*" 2>/dev/null || true
             done
@@ -866,7 +866,7 @@ _git_hotfix()  { _git_flow_line hotfix  "$@"; }
 
 _git_flow_start() {                 # _git_flow_start <分支> <側別> <dev>
     local n=$1 side=$2 dev=$3
-    local d="$CX_ROOT/$side" slug; slug=$(_git_repo_slug "$d")
+    local d="$CX_ROOT/src/$side" slug; slug=$(_git_repo_slug "$d")
     [[ -e $d/.git ]] || cx_die "$EX_PRECOND" "$side 還不是 git repo"
     git -C "$d" show-ref --verify --quiet "refs/heads/$n" \
         && cx_die "$EX_PRECOND" "$slug 已經有分支 $n"
@@ -895,7 +895,7 @@ _git_flow_start() {                 # _git_flow_start <分支> <側別> <dev>
 # 混進來會讓 finish 變成一個「做了三件不可逆的事」的動詞。
 _git_flow_finish() {                # _git_flow_finish <分支> <側別> <dev>
     local n=$1 side=$2 dev=$3
-    local d="$CX_ROOT/$side" slug; slug=$(_git_repo_slug "$d")
+    local d="$CX_ROOT/src/$side" slug; slug=$(_git_repo_slug "$d")
 
     git -C "$d" show-ref --verify --quiet "refs/heads/$n" \
         || cx_die "$EX_PRECOND" "$slug 沒有分支 $n"
@@ -906,9 +906,9 @@ _git_flow_finish() {                # _git_flow_finish <分支> <側別> <dev>
     # ⚠ 主庫**本來就會**有髒的 gitlink —— 子模組剛剛提交了 feature 的工作，
     #   那正是這個動詞要記錄的東西。所以只能要求「除了兩顆 gitlink 以外都乾淨」，
     #   不能要求整個主庫乾淨（第一版寫成後者，於是 finish 永遠過不了自己的前置檢查）。
-    [[ -z $(git -C "$CX_ROOT" status --porcelain -- . ':(exclude)backend' ':(exclude)frontend') ]] \
+    [[ -z $(git -C "$CX_ROOT" status --porcelain -- . ':(exclude)src/backend' ':(exclude)src/frontend') ]] \
         || { cx_error "主庫有 gitlink 以外的未提交變更 —— 先處理掉，finish 之後要提交 gitlink"
-             git -C "$CX_ROOT" status --short -- . ':(exclude)backend' ':(exclude)frontend' \
+             git -C "$CX_ROOT" status --short -- . ':(exclude)src/backend' ':(exclude)src/frontend' \
                  | sed 's/^/      /' >&2
              return "$EX_PRECOND"; }
     git -C "$CX_ROOT" show-ref --verify --quiet "refs/heads/$dev" \
@@ -946,17 +946,17 @@ _git_flow_finish() {                # _git_flow_finish <分支> <側別> <dev>
     # 主庫只記這一顆 gitlink。用明確的 pathspec 而不是 add -A ——
     # 另一邊的 gitlink 可能是髒的（例如同事正在推進），不該被順手掃進這個 commit。
     cx_step "主庫同步 $side 的 gitlink"
-    if [[ -z $(git -C "$CX_ROOT" status --porcelain -- "$side") ]]; then
+    if [[ -z $(git -C "$CX_ROOT" status --porcelain -- "src/$side") ]]; then
         cx_ok "主庫的 $side gitlink 已經是最新的，不需要提交"
     else
-        cx_run git -C "$CX_ROOT" add -- "$side" || return "$EX_FAIL"
+        cx_run git -C "$CX_ROOT" add -- "src/$side" || return "$EX_FAIL"
         cx_run git -C "$CX_ROOT" commit -q -m "chore($side): 更新 gitlink 至 $dev（$n）" \
             || { cx_error "主庫提交 gitlink 失敗"; return "$EX_FAIL"; }
         cx_ok "主庫：$side → $(git -C "$d" rev-parse --short HEAD)"
     fi
 
     local other; other=$([[ $side == backend ]] && printf frontend || printf backend)
-    [[ -n $(git -C "$CX_ROOT" status --porcelain -- "$other") ]] \
+    [[ -n $(git -C "$CX_ROOT" status --porcelain -- "src/$other") ]] \
         && cx_warn "$other 的 gitlink 也有變化，但不屬於這次 finish —— 已排除，沒有進這個 commit"
 
     _git_assert_no_detached main || return "$EX_FAIL"
@@ -1019,10 +1019,10 @@ _git_release() {
     # 但除此之外必須乾淨 —— 理由與 _git_flow_finish 的前置檢查相同。
     local c
     for c in backend frontend; do
-        [[ -z $(git -C "$CX_ROOT/$c" status --porcelain) ]]             || cx_die "$EX_PRECOND" "$c 有未提交變更 —— 先 cx git commit --repo $c"
+        [[ -z $(git -C "$CX_ROOT/src/$c" status --porcelain) ]]             || cx_die "$EX_PRECOND" "$c 有未提交變更 —— 先 cx git commit --repo $c"
     done
-    [[ -z $(git -C "$CX_ROOT" status --porcelain -- . ':(exclude)backend' ':(exclude)frontend') ]]         || { cx_error "主庫有 gitlink 以外的未提交變更 —— 先處理掉再發布"
-             git -C "$CX_ROOT" status --short -- . ':(exclude)backend' ':(exclude)frontend'                  | sed 's/^/      /' >&2
+    [[ -z $(git -C "$CX_ROOT" status --porcelain -- . ':(exclude)src/backend' ':(exclude)src/frontend') ]]         || { cx_error "主庫有 gitlink 以外的未提交變更 —— 先處理掉再發布"
+             git -C "$CX_ROOT" status --short -- . ':(exclude)src/backend' ':(exclude)src/frontend'                  | sed 's/^/      /' >&2
              return "$EX_PRECOND"; }
 
     # ── 有什麼要發布？沒有的話就不要建空的 merge commit ────────────────
@@ -1072,7 +1072,7 @@ _git_release() {
 
     # ── 2. 子模組各自合併 ─────────────────────────────────────────────
     for c in backend frontend; do
-        local d="$CX_ROOT/$c"; slug=$(_git_repo_slug "$d")
+        local d="$CX_ROOT/src/$c"; slug=$(_git_repo_slug "$d")
         (( ${ahead[$d]:-0} )) || { cx_ok "$slug：$main_br 已是最新"; continue; }
         cx_step "$slug：$dev_br → $main_br"
         cx_run git -C "$d" switch "$main_br"             || { cx_error "$slug 切到 $main_br 失敗"; return "$EX_FAIL"; }
@@ -1094,11 +1094,11 @@ _git_release() {
     cx_step "主庫：gitlink 對齊 $main_br"
     local changed=0
     for c in backend frontend; do
-        [[ -e $CX_ROOT/$c/.git ]] || continue
-        local head; head=$(git -C "$CX_ROOT/$c" rev-parse HEAD)
-        local idx;  idx=$(git -C "$CX_ROOT" ls-files --stage -- "$c" | awk '{print $2}')
+        [[ -e $CX_ROOT/src/$c/.git ]] || continue
+        local head; head=$(git -C "$CX_ROOT/src/$c" rev-parse HEAD)
+        local idx;  idx=$(git -C "$CX_ROOT" ls-files --stage -- "src/$c" | awk '{print $2}')
         [[ $idx == "$head" ]] && { cx_ok "$c gitlink 已對齊 ${head:0:7}"; continue; }
-        cx_run git -C "$CX_ROOT" add -- "$c" || return "$EX_FAIL"
+        cx_run git -C "$CX_ROOT" add -- "src/$c" || return "$EX_FAIL"
         cx_ok "$c gitlink：${idx:0:7} → ${head:0:7}"
         changed=1
     done
@@ -1362,7 +1362,7 @@ _git_scan_secrets() {
         #   grep: .editorconfig: No such file or directory
         # 而那些錯誤又被 2>/dev/null 吞掉，結果是「掃了 0 個檔案然後回報乾淨」。
         #
-        # 2026-09-04 實測：在 backend/config/ 放一個
+        # 2026-09-04 實測：在 src/backend/config/ 放一個
         #   APP_KEY=base64:AAAA…
         # 並 git add，`cx git scan-secrets` 仍然回報「pm-backend 乾淨」。
         # 也就是說推送前的內容層級防線對兩個子模組完全沒有作用過。
@@ -1565,17 +1565,17 @@ _git_pull() {
     # 不講的話，使用者會以為自己拿到的是最新的前端／後端。
     local c cb cab ca cbh
     for c in backend frontend; do
-        [[ -d $CX_ROOT/$c ]] || continue
-        cb=$(git -C "$CX_ROOT/$c" branch --show-current 2>/dev/null || true)
+        [[ -d $CX_ROOT/src/$c ]] || continue
+        cb=$(git -C "$CX_ROOT/src/$c" branch --show-current 2>/dev/null || true)
         [[ -n $cb ]] || continue
-        git -C "$CX_ROOT/$c" rev-parse --verify --quiet "refs/remotes/origin/$cb" >/dev/null || continue
-        cab=$(git -C "$CX_ROOT/$c" rev-list --left-right --count \
+        git -C "$CX_ROOT/src/$c" rev-parse --verify --quiet "refs/remotes/origin/$cb" >/dev/null || continue
+        cab=$(git -C "$CX_ROOT/src/$c" rev-list --left-right --count \
                 "refs/heads/$cb...refs/remotes/origin/$cb")
         ca=${cab%%[[:space:]]*}; cbh=${cab##*[[:space:]]}
         if [[ $cbh != 0 ]]; then
-            cx_warn "$(_git_repo_slug "$CX_ROOT/$c") 的 origin/$cb 比主庫的 gitlink 新 $cbh 個 commit"
+            cx_warn "$(_git_repo_slug "$CX_ROOT/src/$c") 的 origin/$cb 比主庫的 gitlink 新 $cbh 個 commit"
             cx_dim "  主庫的 gitlink 才是這一版的定義 —— 要採用新的請在子模組內"
-            cx_dim "  git -C $CX_ROOT/$c merge --ff-only origin/$cb 之後 cx git commit"
+            cx_dim "  git -C $CX_ROOT/src/$c merge --ff-only origin/$cb 之後 cx git commit"
         fi
     done
 
@@ -1606,7 +1606,7 @@ _git_remote_set() {
     local main_url=${1:-} be_url=${2:-} fe_url=${3:-}
     [[ -n $main_url ]] || cx_die "$EX_USAGE" \
         "用法：cx git remote-set <主庫URL> [backend URL] [frontend URL]
-  只給主庫 URL 時，backend/frontend 會用同一個目錄推導：
+  只給主庫 URL 時，src/backend/frontend 會用同一個目錄推導：
     https://host/org/proj.git → https://host/org/proj-backend.git / -frontend.git"
     # 由主庫 URL 推導另外兩個
     if [[ -z $be_url || -z $fe_url ]]; then
@@ -1854,10 +1854,10 @@ _git_push() {
     # 這是「推送順序」這條規則的實際檢查點，不是只靠順序正確就假設沒事。
     local c gl
     for c in backend frontend; do
-        [[ -d $CX_ROOT/$c/.git || -f $CX_ROOT/$c/.git ]] || continue
-        gl=$(git -C "$CX_ROOT" ls-tree HEAD "$c" | awk '{print $3}')
+        [[ -d $CX_ROOT/src/$c/.git || -f $CX_ROOT/src/$c/.git ]] || continue
+        gl=$(git -C "$CX_ROOT" ls-tree HEAD "src/$c" | awk '{print $3}')
         [[ -n $gl ]] || continue
-        if git -C "$CX_ROOT/$c" branch -r --contains "$gl" 2>/dev/null | grep -q origin/; then
+        if git -C "$CX_ROOT/src/$c" branch -r --contains "$gl" 2>/dev/null | grep -q origin/; then
             cx_ok "gitlink $c → ${gl:0:7} 已存在於遠端"
         else
             cx_error "gitlink $c → ${gl:0:7} **不存在於遠端**"

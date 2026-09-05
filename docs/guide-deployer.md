@@ -673,7 +673,7 @@ queue worker 是長駐的，會把程式碼載在記憶體裡，換版後不重�
 * **不回滾資料庫。** `artisan migrate` 是單向的。如果被回滾掉的那一版帶了 migration，
   舊程式碼會對著新 schema 跑。多數情況（新增欄位、新增資料表）沒事，
   但**改欄位型別 / 刪欄位 / 改欄位名**就會壞。
-  回滾前先看 `backend/database/migrations` 的差異，必要時手動處理。
+  回滾前先看 `src/backend/database/migrations` 的差異，必要時手動處理。
   確認提示會再提醒一次。
 
 它在動手之前有四道 gate：`rollback_to` 的格式（會被拼成目錄名）、目標 release

@@ -98,7 +98,7 @@ preflight_waf_body_limit_max_bytes: 1073741824
 # ── (1) A20 前端設定檢查 ──────────────────────────────────────────────────────
 preflight_check_nuxt_config: true
 # 控制端的 repo（本專案 ansible/ 的上一層就是 repo 根目錄）
-preflight_frontend_config_controller_path: "{{ playbook_dir }}/../frontend/nuxt.config.ts"
+preflight_frontend_config_controller_path: "{{ playbook_dir }}/../src/frontend/nuxt.config.ts"
 # 目標端：只有已經部署過才會存在，不存在就跳過（第一次部署時 clone 還沒發生）
 preflight_frontend_config_remote_path: "{{ frontend_current_path }}/nuxt.config.ts"
 

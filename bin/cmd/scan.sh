@@ -122,9 +122,9 @@ _scan_code() {
     # 把 cmd_scan_main 累積的 worst 歸零，導致 cx scan all 回傳 0。
     local _lane_worst=0 rc=0
 
-    if [[ -x $CX_ROOT/backend/vendor/bin/phpstan ]]; then
+    if [[ -x $CX_ROOT/src/backend/vendor/bin/phpstan ]]; then
         _scan_step "$EX_SCAN_QUALITY" "Larastan" \
-            env -C "$CX_ROOT/backend" ./vendor/bin/phpstan analyse \
+            env -C "$CX_ROOT/src/backend" ./vendor/bin/phpstan analyse \
                 --memory-limit=1G --no-progress \
                 --error-format=json > "$CX_REPORT_DIR/quality/larastan.json" || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
@@ -173,7 +173,7 @@ print(n)
             cx_dim "報告：reports/quality/larastan.json（errors=$n）"
         fi
     else
-        cx_warn "Larastan 未安裝（backend/vendor/bin/phpstan 不存在）"
+        cx_warn "Larastan 未安裝（src/backend/vendor/bin/phpstan 不存在）"
     fi
 
     # SonarQube scanner 需要一台 SonarQube server，只有 docker runner 有
@@ -399,7 +399,7 @@ _scan_sca() {
     # trivy fs 掃的是**工作樹**，看不到映像層。而祕密外洩正好只發生在映像層：
     # 2026-09-05 實測 pm/app:prod-prod 的 .env 內含真實的 APP_KEY 與
     # DB_PASSWORD —— .dockerignore 的 `.env` 樣式錨定在 context 根目錄，
-    # 擋不住 `COPY backend/ ./` 帶進來的 backend/.env。
+    # 擋不住 `COPY backend/ ./` 帶進來的 src/backend/.env。
     # 那個缺陷存在期間 cx scan sca 一路全綠，因為沒有任何一道在看映像。
     #
     # 這不是新工具，是既有 Trivy 的另一個子命令。
@@ -461,10 +461,10 @@ _scan_sca() {
     fi
 
     # composer audit（原生可用）
-    if cx_have composer && [[ -f $CX_ROOT/backend/composer.lock ]]; then
+    if cx_have composer && [[ -f $CX_ROOT/src/backend/composer.lock ]]; then
         rc=0
         _scan_step "$EX_SCAN_SCA" "composer audit" \
-            env -C "$CX_ROOT/backend" composer audit --no-interaction --format=json \
+            env -C "$CX_ROOT/src/backend" composer audit --no-interaction --format=json \
             > "$CX_REPORT_DIR/sca/composer-audit.json" || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     fi
@@ -479,13 +479,13 @@ _scan_sca() {
     #   CI 拿到的是 22（SCA 有問題）而不是 3（環境問題）——
     #   一個網路抖動就會變成一份假的資安報告。
     #   成功的報告一定有 auditReportVersion / metadata；錯誤的只有 message+error。
-    if cx_have npm && [[ -f $CX_ROOT/frontend/package-lock.json ]]; then
+    if cx_have npm && [[ -f $CX_ROOT/src/frontend/package-lock.json ]]; then
         # 這裡不能用 _scan_step —— 它只看退出碼就先印結論了，
         # 於是網路失敗的時候畫面會先出現「⚠ 有 finding」再出現
         # 「✘ 沒跑成」，兩句互相矛盾。判斷必須在印出結論之前做完。
         local nrc=0 nout="$CX_REPORT_DIR/sca/npm-audit.json"
         cx_info "npm audit …"
-        env -C "$CX_ROOT/frontend" npm audit --audit-level=high --json \
+        env -C "$CX_ROOT/src/frontend" npm audit --audit-level=high --json \
             > "$nout" 2>/dev/null || nrc=$?
         if (( nrc == 0 )); then
             cx_ok "npm audit：乾淨"
@@ -671,7 +671,7 @@ _scan_secrets() {
     cx_step "祕密掃描 — gitleaks（含 git 歷史）"
     cx_have gitleaks || { cx_warn "gitleaks 未安裝"; return "$EX_PRECOND"; }
     local r _lane_worst=0 rc=0 slug
-    for r in "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT"; do
+    for r in "$CX_ROOT/src/backend" "$CX_ROOT/src/frontend" "$CX_ROOT"; do
         # 主庫的 slug 要用專案名，不能用 basename —— 目錄名不見得叫 pm
         # （worktree、別人 clone 時改的名字、範本化之後的新專案都不叫 pm），
         # 於是報告會變成 gitleaks-<隨便什麼目錄名>.json，與 usage 和

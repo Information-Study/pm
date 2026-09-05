@@ -58,7 +58,7 @@ setup() {
     run cx_bin --yes fresh --rollback
     assert_rc 0
     [ -e "$CX_TEST_ROOT/.git" ] || _fail_with "rollback 沒有把 .git 還原回來"
-    [ -f "$CX_TEST_ROOT/backend/file.txt" ] || _fail_with "backend 的內容沒有還原"
+    [ -f "$CX_TEST_ROOT/src/backend/file.txt" ] || _fail_with "backend 的內容沒有還原"
     # 還原成功之後麵包屑與救援檔要清掉，否則下一次執行會被自己擋住
     [ ! -f "$CX_TEST_ROOT/.cx/fresh.state" ] || _fail_with "麵包屑沒有清除"
 }
@@ -74,8 +74,8 @@ setup() {
     [ "${CX_TEST_NETWORK:-0}" = "1" ] || skip "需要網路（composer create-project / nuxi init）—— 設 CX_TEST_NETWORK=1 才跑"
     run cx_bin --yes fresh --mode scaffold
     assert_rc 0
-    [ -f "$CX_TEST_ROOT/backend/artisan" ]
-    [ -f "$CX_TEST_ROOT/frontend/nuxt.config.ts" ]
+    [ -f "$CX_TEST_ROOT/src/backend/artisan" ]
+    [ -f "$CX_TEST_ROOT/src/frontend/nuxt.config.ts" ]
 }
 
 # ── git-only：只抹 git 紀錄，程式碼原封不動 ────────────────────────────────
@@ -86,9 +86,9 @@ setup() {
 
 @test "git-only 不動任何非 git 基礎設施的檔案（使用者的程式碼原封不動）" {
     # 先放一些「使用者的程式碼」進去
-    mkdir -p "$CX_TEST_ROOT/backend/app" "$CX_TEST_ROOT/frontend/pages"
-    echo 'my business logic' > "$CX_TEST_ROOT/backend/app/Service.php"
-    echo 'my page'           > "$CX_TEST_ROOT/frontend/pages/index.vue"
+    mkdir -p "$CX_TEST_ROOT/src/backend/app" "$CX_TEST_ROOT/src/frontend/pages"
+    echo 'my business logic' > "$CX_TEST_ROOT/src/backend/app/Service.php"
+    echo 'my page'           > "$CX_TEST_ROOT/src/frontend/pages/index.vue"
     echo 'my infra'          > "$CX_TEST_ROOT/docker-compose.yml"
     local g=(-c user.email=b@b -c user.name=b)
     git -C "$CX_TEST_ROOT" "${g[@]}" add -A 2>/dev/null || true
@@ -117,9 +117,9 @@ setup() {
         _fail_with "git-only 動到了非 git 基礎設施的檔案：
 $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true)"
     fi
-    [ "$(cat "$CX_TEST_ROOT/backend/app/Service.php")" = 'my business logic' ] \
+    [ "$(cat "$CX_TEST_ROOT/src/backend/app/Service.php")" = 'my business logic' ] \
         || _fail_with "使用者的後端程式碼被動過"
-    [ "$(cat "$CX_TEST_ROOT/frontend/pages/index.vue")" = 'my page' ] \
+    [ "$(cat "$CX_TEST_ROOT/src/frontend/pages/index.vue")" = 'my page' ] \
         || _fail_with "使用者的前端程式碼被動過"
     [ "$(cat "$CX_TEST_ROOT/docker-compose.yml")" = 'my infra' ] \
         || _fail_with "基礎設施檔被重建了（那是 scaffold 才該做的事）"
@@ -129,7 +129,7 @@ $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true)"
     run cx_bin --yes fresh --mode git-only
     assert_rc 0
     local r n
-    for r in "" /backend /frontend; do
+    for r in "" /src/backend /src/frontend; do
         [ -e "$CX_TEST_ROOT$r/.git" ] || _fail_with "$r 沒有重新 init"
         n=$(git -C "$CX_TEST_ROOT$r" rev-list --count HEAD 2>/dev/null || echo 0)
         [ "$n" = "1" ] || _fail_with "$r 的歷史有 $n 個 commit，不是全新的"
@@ -140,7 +140,7 @@ $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true)"
     run cx_bin --yes fresh --mode git-only
     assert_rc 0
     local r
-    for r in "" /backend /frontend; do
+    for r in "" /src/backend /src/frontend; do
         git -C "$CX_TEST_ROOT$r" show-ref --verify --quiet refs/heads/main \
             || _fail_with "$r 沒有 main"
         git -C "$CX_TEST_ROOT$r" show-ref --verify --quiet refs/heads/dev \

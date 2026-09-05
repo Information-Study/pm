@@ -120,8 +120,8 @@ cx_guard_repos() {
     printf '%s\n' "$CX_ROOT"
     local c
     for c in backend frontend; do
-        if [[ -d $CX_ROOT/$c ]] && git -C "$CX_ROOT/$c" rev-parse --git-dir >/dev/null 2>&1; then
-            printf '%s\n' "$CX_ROOT/$c"
+        if [[ -d $CX_ROOT/src/$c ]] && git -C "$CX_ROOT/src/$c" rev-parse --git-dir >/dev/null 2>&1; then
+            printf '%s\n' "$CX_ROOT/src/$c"
         fi
     done
     return 0

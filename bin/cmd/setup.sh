@@ -31,7 +31,7 @@ cx setup [子指令]
 哪個工具在哪一邊
   需要 root（system）  php・nginx・git・docker（含 compose v2）・mysql-client・php-sqlite
   免 root（tools）     composer・node（含 npm）・ansible・trivy・gitleaks・semgrep
-  不必安裝             artisan —— 它是 backend/artisan，隨 Laravel 一起來
+  不必安裝             artisan —— 它是 src/backend/artisan，隨 Laravel 一起來
 
 為什麼需要 tools：Docker 可用時大部分工作可以在容器內完成，但
   * cx lint / cx deploy 需要 host 上的 ansible
@@ -482,7 +482,7 @@ _setup_hint_other_list() {
         npm|node|nodejs)     cx_dim "  npm 隨 node 一起裝 → cx setup tools node" ;;
         docker-compose|compose)
                              cx_dim "  compose v2 是 docker 的一部分 → cx setup system docker" ;;
-        artisan)             cx_dim "  artisan 不是要安裝的工具，它是 backend/artisan（隨 Laravel 一起來）" ;;
+        artisan)             cx_dim "  artisan 不是要安裝的工具，它是 src/backend/artisan（隨 Laravel 一起來）" ;;
         mysql|mysql-cli)     cx_dim "  → cx setup system mysql-client" ;;
         ansible-lint|yamllint)
                              cx_dim "  → cx setup tools ansible（同一個 venv 一起裝）" ;;
@@ -626,17 +626,17 @@ _setup_deps_missing() {
 
 _setup_deps() {
     local rc=0
-    if [[ -f $CX_ROOT/backend/composer.json ]]; then
+    if [[ -f $CX_ROOT/src/backend/composer.json ]]; then
         cx_step "backend：composer install"
         if cx_have_native composer; then
             # 不加 --no-dev：host 上的 vendor 是給 IDE 與 cx scan code（larastan）用的。
-            ( cd "$CX_ROOT/backend" && cx_run composer install --no-interaction --prefer-dist ) || rc=1
+            ( cd "$CX_ROOT/src/backend" && cx_run composer install --no-interaction --prefer-dist ) || rc=1
         else
             _setup_deps_missing composer "cx setup tools composer"
             rc=1
         fi
     fi
-    if [[ -f $CX_ROOT/backend/package.json ]]; then
+    if [[ -f $CX_ROOT/src/backend/package.json ]]; then
         cx_step "backend：npm ci + vite build（Laravel 端的 blade 資產）"
         # backend 有自己的 package.json（Vite + Tailwind）。
         # welcome.blade.php 用 @vite(...) 引用建置結果，沒有 public/build/manifest.json
@@ -644,7 +644,7 @@ _setup_deps() {
         # 舊專案的 init.sh 呼叫一個從來不存在的 npm-php service 來做這件事（缺陷 D3），
         # 所以後端資產在舊專案裡其實從來沒被建置過。
         if cx_have_native npm; then
-            ( cd "$CX_ROOT/backend" \
+            ( cd "$CX_ROOT/src/backend" \
               && cx_run npm ci --no-audit --no-fund \
               && cx_run npm run build ) || rc=1
         else
@@ -652,10 +652,10 @@ _setup_deps() {
             rc=1
         fi
     fi
-    if [[ -f $CX_ROOT/frontend/package.json ]]; then
+    if [[ -f $CX_ROOT/src/frontend/package.json ]]; then
         cx_step "frontend：npm ci"
         if cx_have_native npm; then
-            ( cd "$CX_ROOT/frontend" && cx_run npm ci --no-audit --no-fund ) || rc=1
+            ( cd "$CX_ROOT/src/frontend" && cx_run npm ci --no-audit --no-fund ) || rc=1
         else
             _setup_deps_missing npm "cx setup tools node"
             rc=1
@@ -751,7 +751,7 @@ _setup_all() {
 
     cx_step "下一步"
     cx_dim "  cx doctor              確認還缺什麼"
-    cx_dim "  cx setup deps          裝 backend/vendor 與 frontend/node_modules"
+    cx_dim "  cx setup deps          裝 src/backend/vendor 與 src/frontend/node_modules"
     cx_dim "  cx dev up -d --build   起開發環境"
 }
 

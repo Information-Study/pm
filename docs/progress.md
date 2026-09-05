@@ -48,7 +48,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
 | `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`（另有**應用層 hard guard**：任何非 sqlite 的目標都 fail-fast，退出碼 3）；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
-| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**144 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
+| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**146 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |
@@ -129,7 +129,7 @@ push 白名單: ^(https://github\.com/|git@github\.com:)Acme-Inc/(shop|shop-api|
 
 ## 刪除與重建（2026-09-04 實測）
 
-把 `backend/vendor`、`frontend/node_modules`、`backend/node_modules`、
+把 `src/backend/vendor`、`src/frontend/node_modules`、`src/backend/node_modules`、
 `reports/`、`.cx/`、`ansible/collections/` 全部 `rm -rf` 之後（共 1.9 GB）：
 
 | 步驟 | 結果 |
@@ -155,7 +155,7 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 |---|---|
 | `cx_have` 把 Windows interop 執行檔當成原生工具鏈 | 新增 `cx_have_native`／`cx_win_interop_path`：解析到 `/mnt/<磁碟>/` 或 `.exe` 一律不算。`cx pma` 開瀏覽器仍用 `cx_have`（那裡確實需要 `explorer.exe`） |
 | `cx setup deps` 拿 Windows npm 去建置，且對已裝但 PATH 看不到的工具說「請安裝」 | 改用 `cx_have_native`，並區分「沒裝」與「裝在 `~/.local/bin` 但 PATH 看不到」 |
-| `cx doctor` 只檢查 `frontend/node_modules` 目錄存在 | 改檢查 `node_modules/nuxt`；另外新增「PATH 上有 Windows 的工具」與「已裝但不在 PATH」兩項檢查 |
+| `cx doctor` 只檢查 `src/frontend/node_modules` 目錄存在 | 改檢查 `node_modules/nuxt`；另外新增「PATH 上有 Windows 的工具」與「已裝但不在 PATH」兩項檢查 |
 
 教訓：真正的原因（PATH）跟看到的症狀（`vite build` 失敗）隔了三層，
 中間每一層都「成功」。這正是 `--runner` 硬失敗原則要防的同一類問題 ——

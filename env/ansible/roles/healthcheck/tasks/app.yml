@@ -2,7 +2,7 @@
 # 第三層：真正的公開網址。這一層通過才代表使用者真的能用。
 #
 # 三個端點各有意義：
-#   /up      backend/bootstrap/app.php 的 withRouting(health: '/up')，
+#   /up      src/backend/bootstrap/app.php 的 withRouting(health: '/up')，
 #            Laravel 內建的健康檢查（會實際 boot 應用，抓得到 .env 與 DB 的問題）
 #   /        前端（ssr/spa 走 PM2，static 由 nginx 直送）
 #   /admin   Filament 面板。AdminPanelProvider 是 ->id('admin')->path('admin')->login()，

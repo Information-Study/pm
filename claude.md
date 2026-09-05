@@ -53,14 +53,14 @@
    正確診斷是 `composer why-not <pkg> <ver>`。
 
 5. **不要在容器裡裸跑 `php artisan test`，一律用 `cx test`。**
-   `backend/phpunit.xml` 的 `<env force="true">` 在容器裡**是無效的**：
+   `src/backend/phpunit.xml` 的 `<env force="true">` 在容器裡**是無效的**：
    PHPUnit 的 force 只寫 `putenv()` 與 `$_ENV`，不寫 `$_SERVER`，
    而 Laravel 的 `Env` 讀 `$_SERVER` 優先 —— compose 的 `environment:`
    永遠贏。實測裸跑會打到真正的 dev MySQL，而不是 `sqlite :memory:`。
    目前沒有測試用 `RefreshDatabase`，一旦有人加了，裸跑就會清空開發資料庫。
    真正的保護有**兩層**，而且兩層都不依賴 `phpunit.xml` 的 `<env force>`：
      * `bin/cmd/test.sh` 的 `_test_env_pairs` 用 `-e` 蓋掉 `$_SERVER`（cx 這一層）
-     * `backend/tests/bootstrap.php` → `Tests\DatabaseSafetyGuard`（應用層）。它用
+     * `src/backend/tests/bootstrap.php` → `Tests\DatabaseSafetyGuard`（應用層）。它用
        Laravel 自己的 `Env::get()` 解析 —— **不重寫 `$_SERVER` 優先的順序** ——
        確認這次真的會連上的資料庫是宣告過的測試目標，不是就以 **exit 3** 中止。
        `cx verify cli` 的 `GRD-wire` / `GRD-files` / `GRD-layer2` 盯著三個零件都還接著。
@@ -300,10 +300,10 @@ frontend   main ← dev ← feature/*
 
 ### ⚠ 最重要的一件事
 
-**`backend/.git` 與 `frontend/.git` 是指標檔，不是目錄。**
+**`src/backend/.git` 與 `src/frontend/.git` 是指標檔，不是目錄。**
 
 ```
-$ cat backend/.git
+$ cat src/backend/.git
 gitdir: ../.git/modules/backend        # 32 bytes
 ```
 
@@ -364,7 +364,7 @@ cx git push                 # 會逐一確認，並自動處理子模組先後�
 
 **永久黑名單**：`team-of-P/PSYOP_DutyManager{,-backend,-frontend}.git`。
 pre-push hook 對這三個 URL 一律拒絕，不接受任何覆寫旗標。
-- 本地無 remote 時 `git submodule add ./backend` 可行。git-submodule(1) 明文：
+- 本地無 remote 時 `git submodule add ./src/backend` 可行。git-submodule(1) 明文：
   superproject 未設定預設 remote 時，以自身為權威上游、用當前工作目錄。
 - 未來要接真 remote 時，相對 URL 要寫 `../foo.git` 而非 `./foo.git`。
 
@@ -467,7 +467,7 @@ preflight → 備份（原始碼 + git bundle + 真實 gitdir + mysqldump）
 ```
 backend  git init → commit          # submodule 不能加在未出生的 HEAD 上
 frontend git init → commit
-main     git init → git submodule add ./backend → ./frontend → commit
+main     git init → git submodule add ./src/backend → ./src/frontend → commit
          → submodule absorbgitdirs（收成標準佈局）→ 三個 repo 各建 dev
 ```
 
@@ -787,7 +787,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
   例：`@pinia/nuxt` 要 `pinia ^3`，但 `pinia` 的 latest 已是 4.x。
 - 不要手寫 `vue` / `vue-router` 到 `dependencies` —— Nuxt 自己會鎖，手寫會被 Vite dedupe 到錯的版本。
 
-**動到 `frontend/nuxt.config.ts` 的 `ssr` 時**
+**動到 `src/frontend/nuxt.config.ts` 的 `ssr` 時**
 - 它是三模式的開關，要寫成 `ssr: process.env.NUXT_SSR !== 'false'`，不要寫死。
 
 **被要求「升級到某版本」或「改用 LTS」時**
@@ -861,23 +861,42 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 │   ├── test/{helpers/,*.bats}        cx 自己的行為測試（cx test cli）
 │   └── completion/cx.bash
 ├── templates/gitignore/{main,backend,frontend}
-├── docker/
-│   ├── compose/{dev,test,prod,sonar}.yml   模式 overlay
-│   ├── env/{dev,test,prod}.env             埠段與 build target
-│   ├── php/     多階段 Dockerfile + nginx / php-fpm / supervisord / php.ini
-│   ├── nuxt/    多階段 Dockerfile（deps/dev/build/prod/static）+ static.conf
-│   ├── edge/    反向代理（nginx.conf + conf.d/）
-│   ├── entrypoint/{app,nuxt}.sh
-│   ├── waf/     ModSecurity CRS 排除規則（before / after）
-│   ├── security/{trivy,semgrep,zap}/
-│   └── legacy/  舊設定的 .orig 副本（只供對照，不參與建置）
-├── ansible/     12 role + site.yml + playbooks + .ansible-lint + .yamllint
-├── docs/        progress.md、docker-verification.md
+├── env/                     ⬅ 環境定義（v3 版面：CX_LAYOUT_VERSION=3）
+│   ├── docker/
+│   │   ├── compose/{dev,test,prod,sonar}.yml   模式 overlay
+│   │   ├── compose/{dev,test,prod}.env         埠段與 build target
+│   │   │                                       （與 overlay 同目錄同 stem：
+│   │   │                                        模式 X 的一切就是這兩個檔）
+│   │   ├── php/     多階段 Dockerfile + nginx / php-fpm / supervisord / php.ini
+│   │   ├── nuxt/    多階段 Dockerfile（deps/dev/build/prod/static）+ static.conf
+│   │   ├── edge/    反向代理（nginx.conf + conf.d/）
+│   │   ├── entrypoint/{app,nuxt}.sh
+│   │   ├── waf/     ModSecurity CRS 排除規則（before / after）
+│   │   ├── security/{trivy,semgrep,zap}/
+│   │   ├── ansible-target/  本機的 systemd 目標容器（authorized_keys 不進版控）
+│   │   └── legacy/  舊設定的 .orig 副本（只供對照，不參與建置）
+│   └── ansible/     12 role + site.yml + playbooks + .ansible-lint + .yamllint
+├── docs/        progress.md、docker-verification.md、cx/
 ├── reports/     掃描與驗收輸出（目錄進版控，內容不進）
 │   ├── quality/ sast/ sca/ dast/ waf/ db/ verify/
-├── backend/     submodule → Information-Study/pm-backend
-└── frontend/    submodule → Information-Study/pm-frontend
+└── src/                     ⬅ 應用程式（v3 版面）
+    ├── backend/   submodule → Information-Study/pm-backend
+    └── frontend/  submodule → Information-Study/pm-frontend
 ```
+
+> **版面是編譯期常數，不是設定項。** `env/` 與 `src/` 這兩個名字寫死在 shell、
+> Python、Dockerfile、`.dockerignore`、`sonar-project.properties` 與
+> `.vscode/launch.json` 裡。為什麼不做成 `CX_DIR_*` 變數：那只能覆蓋一半的系統
+> —— `bin/lib/*.py` 是子行程（只看得到 export 的變數），而 Dockerfile 與
+> `.dockerignore` **完全讀不到 shell 變數**。半套抽象比沒有抽象更糟，
+> 因為它會**通過**「定義了沒人讀」那一類檢查（shell 確實讀了）。
+> 守著它的是 `cx verify cli` 的三條 `LAY-*` 檢查。
+>
+> ⚠ **`[submodule "backend"]` 的「名字」與 `path = src/backend` 的「路徑」是兩件事。**
+> `git mv` 只改 path，名字不變 —— 所以 `.git/modules/backend`（用名字）沒有搬，
+> 而 `git.sh` 用 `basename` 去 `.gitmodules` 查追蹤分支仍然查得到。
+> 用 `deinit` + `submodule add` 重加會讓名字變成 `src/backend`，那一行就會靜默
+> 落回預設值。**一律用 `git mv`。**
 
 ---
 
@@ -1030,7 +1049,7 @@ MySQL 8.4 from Oracle repo、certbot 真憑證、多主機 `serial` 仍未驗證
 | `cx fresh --mode carryover` | ✅ exit=0 |
 | 重建的後端 | laravel/framework ^13.17 + filament/filament ^5.0 + larastan ^3.0 |
 | 重建的前端 | nuxt ^4.5.2 + vue ^3.5.42（nuxi `minimal` 範本） |
-| carryover 疊回使用者程式碼 | ✅ `backend/app/` 的自訂檔案存活 |
+| carryover 疊回使用者程式碼 | ✅ `src/backend/app/` 的自訂檔案存活 |
 | 三個 Git 初始化 | ✅ 各自 `main`、各 1 個 commit、`.gitmodules` 用相對 URL |
 | `cx fresh --rollback` | ✅ exit=0（跑兩次），HEAD 與 commit 數都與 MANIFEST 一致 |
 

@@ -64,7 +64,7 @@ pm2_max_restarts: 10
 pm2_prune_stale_apps: true
 
 # ---- 前端模式 ---------------------------------------------------------------
-# A20：預設 ssr。本專案的 frontend/nuxt.config.ts 已寫成
+# A20：預設 ssr。本專案的 src/frontend/nuxt.config.ts 已寫成
 #   const ssr = process.env.NUXT_SSR !== 'false'
 # （不是舊版那種寫死 ssr: false），三種模式都實測過：
 #   ssr    → nuxt build                    → .output/server/index.mjs → PM2 fork

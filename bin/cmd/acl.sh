@@ -59,7 +59,7 @@ cx acl <子指令> [參數...]
   cx acl apply                     套用前後端的權限模型
   cx acl apply backend             只處理 Laravel
   cx acl user add alice            讓 alice 可以改原始碼
-  cx acl status backend/storage    看單一路徑
+  cx acl status src/backend/storage    看單一路徑
 
 部署主機的權限由 Ansible 的 common role 處理（同一套模型），
 不需要在目標機上跑 cx —— 見 docs/ansible-reference.md 的 §6.6。
@@ -230,7 +230,7 @@ _acl_apply_backend() {
     local web dev
     web=$(_acl_resolve "$(_acl_web_id)") || return $?
     dev=$(_acl_resolve "$(_acl_dev_id)") || return $?
-    local b="$CX_ROOT/backend"
+    local b="$CX_ROOT/src/backend"
     [[ -d $b ]] || { cx_warn "backend/ 不存在，略過"; return 0; }
 
     cx_step "backend（Laravel）— web=$web dev=$dev"
@@ -255,7 +255,7 @@ _acl_apply_backend() {
     # ③ .env 只給 web 讀，不給寫；others 一律 0。
     #    Laravel 只在啟動時讀它，沒有任何情況需要應用程式改自己的 .env。
     if [[ -f $b/.env ]]; then
-        cx_info "唯讀且不對外 → backend/.env"
+        cx_info "唯讀且不對外 → src/backend/.env"
         cx_run setfacl -m "u:$web:r--,u:$dev:rw-,o::---" "$b/.env" || return $?
     fi
     cx_ok "backend 完成"
@@ -265,7 +265,7 @@ _acl_apply_frontend() {
     local web dev
     web=$(_acl_resolve "$(_acl_web_id)") || return $?
     dev=$(_acl_resolve "$(_acl_dev_id)") || return $?
-    local f="$CX_ROOT/frontend"
+    local f="$CX_ROOT/src/frontend"
     [[ -d $f ]] || { cx_warn "frontend/ 不存在，略過"; return 0; }
 
     cx_step "frontend（Nuxt）— web=$web dev=$dev"
@@ -347,7 +347,7 @@ _acl_user() {
 # ---------------------------------------------------------------------------
 _acl_paths() {
     local p
-    for p in backend backend/storage backend/bootstrap/cache backend/.env frontend; do
+    for p in backend src/backend/storage src/backend/bootstrap/cache src/backend/.env frontend; do
         [[ -e $CX_ROOT/$p ]] && printf '%s\n' "$CX_ROOT/$p"
     done
     return 0
@@ -377,7 +377,7 @@ _acl_check() {
     cx_step "ACL 檢查（web=$web dev=$dev）"
 
     local -a want_ro=("backend" "frontend")
-    local -a want_rw=("backend/storage" "backend/bootstrap/cache")
+    local -a want_rw=("src/backend/storage" "src/backend/bootstrap/cache")
     local p acl
 
     for p in "${want_ro[@]}"; do
@@ -447,7 +447,7 @@ _acl_check() {
 
 _acl_drop() {
     local -a paths=("$@")
-    (( ${#paths[@]} )) || paths=("$CX_ROOT/backend" "$CX_ROOT/frontend")
+    (( ${#paths[@]} )) || paths=("$CX_ROOT/src/backend" "$CX_ROOT/src/frontend")
     cx_confirm --danger "移除 ACL" \
         "將對下列路徑執行 setfacl -R -b（清空所有 ACL 條目）：\n\n$(printf '  %s\n' "${paths[@]}")\n\n之後權限回到純 chmod 的狀態。確定嗎？" \
         || return "$EX_ABORT"

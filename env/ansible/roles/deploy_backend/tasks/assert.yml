@@ -166,7 +166,7 @@
       {{ php_cli_binary }} 不可執行，或 CLI 的 disable_functions 含 proc_open
       （rc={{ backend_proc_open.rc }}，輸出
       "{{ backend_proc_open.stdout | default('') | trim }}"）。
-      本專案 backend/composer.json 的 post-autoload-dump 會跑
+      本專案 src/backend/composer.json 的 post-autoload-dump 會跑
       `@php artisan package:discover` 與 `@php artisan filament:upgrade`，
       走 Symfony Process → proc_open。少了它，composer install 必死於
       "The Process class relies on proc_open, which is not available on your PHP installation."

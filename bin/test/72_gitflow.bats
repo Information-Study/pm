@@ -21,11 +21,11 @@ setup() {
 
 @test "flow-init 會補齊三個 repo 的 dev，而且可以重複跑" {
     # fixture 已經有 dev；把 backend 的砍掉來製造「舊專案」的狀態
-    git -C "$CX_TEST_ROOT/backend" switch -q main
-    git -C "$CX_TEST_ROOT/backend" branch -D dev
+    git -C "$CX_TEST_ROOT/src/backend" switch -q main
+    git -C "$CX_TEST_ROOT/src/backend" branch -D dev
     run cx_bin --yes git flow-init
     assert_rc 0
-    git -C "$CX_TEST_ROOT/backend" show-ref --verify --quiet refs/heads/dev \
+    git -C "$CX_TEST_ROOT/src/backend" show-ref --verify --quiet refs/heads/dev \
         || _fail_with "backend 的 dev 沒有被補回來"
 
     # 第二次應該什麼都不做
@@ -47,26 +47,26 @@ setup() {
 @test "feature start 只在指定的子模組建分支，主庫與另一側完全不動" {
     run cx_bin --yes git feature start login --repo frontend
     assert_rc 0
-    git -C "$CX_TEST_ROOT/frontend" show-ref --verify --quiet refs/heads/feature/login \
+    git -C "$CX_TEST_ROOT/src/frontend" show-ref --verify --quiet refs/heads/feature/login \
         || _fail_with "frontend 沒有 feature/login"
     ! git -C "$CX_TEST_ROOT" show-ref --verify --quiet refs/heads/feature/login \
         || _fail_with "主庫竟然也有 feature/login —— 主庫不該有 feature 分支"
-    ! git -C "$CX_TEST_ROOT/backend" show-ref --verify --quiet refs/heads/feature/login \
+    ! git -C "$CX_TEST_ROOT/src/backend" show-ref --verify --quiet refs/heads/feature/login \
         || _fail_with "backend 竟然也有 feature/login —— 它不屬於這次的側別"
 }
 
 @test "feature start 的起點是該子模組的 dev，不是剛好所在的位置" {
     # 讓 backend 的 main 比 dev 前面，並停在 main 上
-    git -C "$CX_TEST_ROOT/backend" switch -q main
-    echo ahead > "$CX_TEST_ROOT/backend/ahead.txt"
-    git -C "$CX_TEST_ROOT/backend" -c user.email=b@b -c user.name=b add -A
-    git -C "$CX_TEST_ROOT/backend" -c user.email=b@b -c user.name=b commit -q -m ahead
+    git -C "$CX_TEST_ROOT/src/backend" switch -q main
+    echo ahead > "$CX_TEST_ROOT/src/backend/ahead.txt"
+    git -C "$CX_TEST_ROOT/src/backend" -c user.email=b@b -c user.name=b add -A
+    git -C "$CX_TEST_ROOT/src/backend" -c user.email=b@b -c user.name=b commit -q -m ahead
 
     run cx_bin --yes git feature start api --repo backend
     assert_rc 0
     local got want
-    got=$(git -C "$CX_TEST_ROOT/backend" rev-parse feature/api)
-    want=$(git -C "$CX_TEST_ROOT/backend" rev-parse dev)
+    got=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse feature/api)
+    want=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse dev)
     [ "$got" = "$want" ] || _fail_with "feature/api 不是從 dev 開的（got=$got want=$want）"
 }
 
@@ -96,44 +96,44 @@ setup() {
 @test "feature finish 合回子模組的 dev，並讓主庫的 dev gitlink 跟上" {
     run cx_bin --yes git feature start login --repo frontend
     assert_rc 0
-    echo work > "$CX_TEST_ROOT/frontend/work.txt"
-    git -C "$CX_TEST_ROOT/frontend" -c user.email=b@b -c user.name=b add -A
-    git -C "$CX_TEST_ROOT/frontend" -c user.email=b@b -c user.name=b commit -q -m work
+    echo work > "$CX_TEST_ROOT/src/frontend/work.txt"
+    git -C "$CX_TEST_ROOT/src/frontend" -c user.email=b@b -c user.name=b add -A
+    git -C "$CX_TEST_ROOT/src/frontend" -c user.email=b@b -c user.name=b commit -q -m work
 
     run cx_bin --yes git feature finish login --repo frontend
     assert_rc 0
 
     # 子模組：dev 上要有那個 merge
-    git -C "$CX_TEST_ROOT/frontend" merge-base --is-ancestor feature/login dev \
+    git -C "$CX_TEST_ROOT/src/frontend" merge-base --is-ancestor feature/login dev \
         || _fail_with "feature/login 沒有被合進 frontend 的 dev"
 
     # 主庫：dev 的 frontend gitlink 必須等於 frontend 的 dev tip。
     # ⚠ 這一條是關鍵：主庫如果是用 merge 帶進 gitlink，記到的會是 feature 的
     #   tip 而不是子模組新的 --no-ff merge commit（實測確認），於是永遠差一步。
     local gl fe_dev
-    gl=$(line_sha "$CX_TEST_ROOT" dev frontend)
-    fe_dev=$(git -C "$CX_TEST_ROOT/frontend" rev-parse dev)
+    gl=$(line_sha "$CX_TEST_ROOT" dev src/frontend)
+    fe_dev=$(git -C "$CX_TEST_ROOT/src/frontend" rev-parse dev)
     [ "$gl" = "$fe_dev" ] || _fail_with "主庫的 gitlink（$gl）沒有跟上 frontend 的 dev（$fe_dev）"
 }
 
 @test "feature finish 不會把另一側的髒 gitlink 掃進同一個 commit" {
     run cx_bin --yes git feature start login --repo frontend
     assert_rc 0
-    echo w > "$CX_TEST_ROOT/frontend/w.txt"
-    git -C "$CX_TEST_ROOT/frontend" -c user.email=b@b -c user.name=b add -A
-    git -C "$CX_TEST_ROOT/frontend" -c user.email=b@b -c user.name=b commit -q -m w
+    echo w > "$CX_TEST_ROOT/src/frontend/w.txt"
+    git -C "$CX_TEST_ROOT/src/frontend" -c user.email=b@b -c user.name=b add -A
+    git -C "$CX_TEST_ROOT/src/frontend" -c user.email=b@b -c user.name=b commit -q -m w
 
     # 讓 backend 的 gitlink 也變髒（模擬另一個人正在推進後端）
-    git -C "$CX_TEST_ROOT/backend" switch -q dev
-    echo b > "$CX_TEST_ROOT/backend/b.txt"
-    git -C "$CX_TEST_ROOT/backend" -c user.email=b@b -c user.name=b add -A
-    git -C "$CX_TEST_ROOT/backend" -c user.email=b@b -c user.name=b commit -q -m b
-    local be_before; be_before=$(line_sha "$CX_TEST_ROOT" dev backend)
+    git -C "$CX_TEST_ROOT/src/backend" switch -q dev
+    echo b > "$CX_TEST_ROOT/src/backend/b.txt"
+    git -C "$CX_TEST_ROOT/src/backend" -c user.email=b@b -c user.name=b add -A
+    git -C "$CX_TEST_ROOT/src/backend" -c user.email=b@b -c user.name=b commit -q -m b
+    local be_before; be_before=$(line_sha "$CX_TEST_ROOT" dev src/backend)
 
     run cx_bin --yes git feature finish login --repo frontend
     assert_rc 0
 
-    local be_after; be_after=$(line_sha "$CX_TEST_ROOT" dev backend)
+    local be_after; be_after=$(line_sha "$CX_TEST_ROOT" dev src/backend)
     [ "$be_before" = "$be_after" ] \
         || _fail_with "backend 的 gitlink 被順手改了：$be_before → $be_after"
     assert_out_has "backend"   # 應該有提醒它被排除
@@ -153,8 +153,8 @@ setup() {
 
 @test "branch new --repo main 不會因為子模組是 detached 就回報失敗" {
     # 子模組被 gitlink 釘住而 detached 是正常狀態，不該讓主庫的操作失敗
-    git -C "$CX_TEST_ROOT/backend"  checkout -q --detach HEAD
-    git -C "$CX_TEST_ROOT/frontend" checkout -q --detach HEAD
+    git -C "$CX_TEST_ROOT/src/backend"  checkout -q --detach HEAD
+    git -C "$CX_TEST_ROOT/src/frontend" checkout -q --detach HEAD
     run cx_bin --yes git branch new chore/x --repo main
     assert_rc 0
     git -C "$CX_TEST_ROOT" show-ref --verify --quiet refs/heads/chore/x \
@@ -162,23 +162,23 @@ setup() {
 }
 
 @test "branch switch --repo 只切指定的那一個" {
-    git -C "$CX_TEST_ROOT/frontend" branch tmp/x dev
+    git -C "$CX_TEST_ROOT/src/frontend" branch tmp/x dev
     run cx_bin --yes git branch switch tmp/x --repo frontend
     assert_rc 0
-    [ "$(git -C "$CX_TEST_ROOT/frontend" branch --show-current)" = tmp/x ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/frontend" branch --show-current)" = tmp/x ] \
         || _fail_with "frontend 沒有切過去"
     [ "$(git -C "$CX_TEST_ROOT" branch --show-current)" = dev ] \
         || _fail_with "主庫不該被切走"
 }
 
 @test "branch delete --repo 只刪指定的那一個" {
-    git -C "$CX_TEST_ROOT/backend"  branch tmp/y dev
-    git -C "$CX_TEST_ROOT/frontend" branch tmp/y dev
+    git -C "$CX_TEST_ROOT/src/backend"  branch tmp/y dev
+    git -C "$CX_TEST_ROOT/src/frontend" branch tmp/y dev
     run cx_bin --yes git branch delete tmp/y --repo backend
     assert_rc 0
-    ! git -C "$CX_TEST_ROOT/backend" show-ref --verify --quiet refs/heads/tmp/y \
+    ! git -C "$CX_TEST_ROOT/src/backend" show-ref --verify --quiet refs/heads/tmp/y \
         || _fail_with "backend 的 tmp/y 沒被刪掉"
-    git -C "$CX_TEST_ROOT/frontend" show-ref --verify --quiet refs/heads/tmp/y \
+    git -C "$CX_TEST_ROOT/src/frontend" show-ref --verify --quiet refs/heads/tmp/y \
         || _fail_with "frontend 的 tmp/y 不該被刪"
 }
 
@@ -202,22 +202,22 @@ setup() {
 @test "sync 不會把子模組的 dev 倒退到落後的 gitlink" {
     # 讓 frontend 的 dev 前進兩個 commit，然後把工作區停在舊的 gitlink 上
     # （這就是「站在別條線記錄的舊指標上」的樣子）
-    local old_tip; old_tip=$(git -C "$CX_TEST_ROOT/frontend" rev-parse HEAD)
+    local old_tip; old_tip=$(git -C "$CX_TEST_ROOT/src/frontend" rev-parse HEAD)
     local g=(-c user.email=b@b -c user.name=b)
-    git -C "$CX_TEST_ROOT/frontend" switch -q dev
-    echo a > "$CX_TEST_ROOT/frontend/a.txt"
-    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" commit -q -m a
-    echo b > "$CX_TEST_ROOT/frontend/b.txt"
-    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" commit -q -m b
-    local dev_tip; dev_tip=$(git -C "$CX_TEST_ROOT/frontend" rev-parse dev)
-    git -C "$CX_TEST_ROOT/frontend" checkout -q --detach "$old_tip"
+    git -C "$CX_TEST_ROOT/src/frontend" switch -q dev
+    echo a > "$CX_TEST_ROOT/src/frontend/a.txt"
+    git -C "$CX_TEST_ROOT/src/frontend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/frontend" "${g[@]}" commit -q -m a
+    echo b > "$CX_TEST_ROOT/src/frontend/b.txt"
+    git -C "$CX_TEST_ROOT/src/frontend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/frontend" "${g[@]}" commit -q -m b
+    local dev_tip; dev_tip=$(git -C "$CX_TEST_ROOT/src/frontend" rev-parse dev)
+    git -C "$CX_TEST_ROOT/src/frontend" checkout -q --detach "$old_tip"
 
     run cx_bin --yes git sync
     # 關鍵：dev 不可以被倒退。實測 checkout -B 會無聲丟掉那兩個 commit，
     # 而且輸出還說 "Your branch is ahead of ... by 2 commits"。
-    local after; after=$(git -C "$CX_TEST_ROOT/frontend" rev-parse dev)
+    local after; after=$(git -C "$CX_TEST_ROOT/src/frontend" rev-parse dev)
     [ "$after" = "$dev_tip" ] \
         || _fail_with "frontend 的 dev 被倒退了：$dev_tip → $after"
     assert_out_has "保持 detached"
@@ -225,18 +225,18 @@ setup() {
 
 @test "sync 在 detached HEAD 領先分支時會把分支快轉過來，不丟 commit" {
     local g=(-c user.email=b@b -c user.name=b)
-    git -C "$CX_TEST_ROOT/backend" switch -q dev
-    git -C "$CX_TEST_ROOT/backend" checkout -q --detach HEAD
-    echo ahead > "$CX_TEST_ROOT/backend/ahead.txt"
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m ahead
-    local head; head=$(git -C "$CX_TEST_ROOT/backend" rev-parse HEAD)
+    git -C "$CX_TEST_ROOT/src/backend" switch -q dev
+    git -C "$CX_TEST_ROOT/src/backend" checkout -q --detach HEAD
+    echo ahead > "$CX_TEST_ROOT/src/backend/ahead.txt"
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" commit -q -m ahead
+    local head; head=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse HEAD)
 
     run cx_bin --yes git sync
     assert_rc 0
-    [ "$(git -C "$CX_TEST_ROOT/backend" rev-parse dev)" = "$head" ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" rev-parse dev)" = "$head" ] \
         || _fail_with "detached 期間的 commit 沒有被帶進 dev"
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = dev ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = dev ] \
         || _fail_with "沒有接回 dev"
 }
 
@@ -250,39 +250,39 @@ setup() {
 @test "sync 依主庫當前分支決定子模組的線（主庫在 dev → 子模組到 dev）" {
     git -C "$CX_TEST_ROOT" config -f .gitmodules submodule.backend.branch main
     git -C "$CX_TEST_ROOT" switch -q dev
-    git -C "$CX_TEST_ROOT/backend" switch -q main
+    git -C "$CX_TEST_ROOT/src/backend" switch -q main
 
     run cx_bin --yes git sync
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = dev ] \
-        || _fail_with "主庫在 dev，backend 卻在 $(git -C "$CX_TEST_ROOT/backend" branch --show-current)"
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = dev ] \
+        || _fail_with "主庫在 dev，backend 卻在 $(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)"
 }
 
 @test "sync 依主庫當前分支決定子模組的線（主庫在 main → 子模組到 main）" {
     git -C "$CX_TEST_ROOT" config -f .gitmodules submodule.backend.branch dev
     git -C "$CX_TEST_ROOT" switch -q main
-    git -C "$CX_TEST_ROOT/backend" switch -q dev
+    git -C "$CX_TEST_ROOT/src/backend" switch -q dev
 
     run cx_bin --yes git sync
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = main ] \
-        || _fail_with "主庫在 main，backend 卻在 $(git -C "$CX_TEST_ROOT/backend" branch --show-current)"
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = main ] \
+        || _fail_with "主庫在 main，backend 卻在 $(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)"
 }
 
 @test "sync 不動正在被使用的工作分支（feature/* 不會被拉回 dev）" {
     git -C "$CX_TEST_ROOT" switch -q dev
-    git -C "$CX_TEST_ROOT/backend" switch -q -c feature/wip
+    git -C "$CX_TEST_ROOT/src/backend" switch -q -c feature/wip
 
     run cx_bin --yes git sync
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = feature/wip ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = feature/wip ] \
         || _fail_with "sync 把正在用的 feature/wip 拉走了"
 }
 
 @test "sync 在子模組髒的時候不切線（切過去會把改動帶走）" {
     git -C "$CX_TEST_ROOT" switch -q dev
-    git -C "$CX_TEST_ROOT/backend" switch -q main
-    echo dirty > "$CX_TEST_ROOT/backend/dirty.txt"
+    git -C "$CX_TEST_ROOT/src/backend" switch -q main
+    echo dirty > "$CX_TEST_ROOT/src/backend/dirty.txt"
 
     run cx_bin --yes git sync
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = main ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = main ] \
         || _fail_with "工作區不乾淨卻還是切線了"
     [[ $output == *"不乾淨"* ]] || _fail_with "沒有說明為什麼不切：$output"
 }
@@ -295,31 +295,31 @@ setup() {
 
 @test "hotfix start 從 dev 開，主庫與另一側完全不動" {
     local super_before; super_before=$(git -C "$CX_TEST_ROOT" rev-parse HEAD)
-    local fe_before;    fe_before=$(git -C "$CX_TEST_ROOT/frontend" rev-parse HEAD)
+    local fe_before;    fe_before=$(git -C "$CX_TEST_ROOT/src/frontend" rev-parse HEAD)
 
     run cx_bin --yes git hotfix start auth-bypass --repo backend
     assert_rc 0
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = hotfix/auth-bypass ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = hotfix/auth-bypass ] \
         || _fail_with "backend 沒切到 hotfix/auth-bypass"
     [ "$(git -C "$CX_TEST_ROOT" rev-parse HEAD)" = "$super_before" ] \
         || _fail_with "主庫被動到了"
-    [ "$(git -C "$CX_TEST_ROOT/frontend" rev-parse HEAD)" = "$fe_before" ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/frontend" rev-parse HEAD)" = "$fe_before" ] \
         || _fail_with "另一側被動到了"
 }
 
 @test "hotfix finish 合回子模組的 dev，並讓主庫的 dev gitlink 跟上" {
     cx_bin --yes git hotfix start hf1 --repo backend
     local g=(-c user.email=b@b -c user.name=b)
-    echo fix > "$CX_TEST_ROOT/backend/fix.txt"
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m 'fix'
+    echo fix > "$CX_TEST_ROOT/src/backend/fix.txt"
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" commit -q -m 'fix'
 
     run cx_bin --yes git hotfix finish --repo backend
     assert_rc 0
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = dev ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = dev ] \
         || _fail_with "backend 沒回到 dev"
-    local be_head; be_head=$(git -C "$CX_TEST_ROOT/backend" rev-parse HEAD)
-    local gl; gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- backend | awk '{print $2}')
+    local be_head; be_head=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse HEAD)
+    local gl; gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- src/backend | awk '{print $2}')
     [ "$gl" = "$be_head" ] || _fail_with "主庫的 gitlink 沒跟上：$gl vs $be_head"
 }
 
@@ -331,15 +331,15 @@ setup() {
     git -C "$CX_TEST_ROOT" switch -q main
     cx_bin --yes git hotfix start hf2 --repo backend
     local g=(-c user.email=b@b -c user.name=b)
-    echo two > "$CX_TEST_ROOT/backend/two.txt"
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m two
+    echo two > "$CX_TEST_ROOT/src/backend/two.txt"
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" commit -q -m two
 
     run cx_bin --yes git hotfix finish --repo backend
     assert_rc 0
     local be_head gl
-    be_head=$(git -C "$CX_TEST_ROOT/backend" rev-parse HEAD)
-    gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- backend | awk '{print $2}')
+    be_head=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse HEAD)
+    gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- src/backend | awk '{print $2}')
     [ "$gl" = "$be_head" ] \
         || _fail_with "主庫記錄的是舊 gitlink（$gl），不是合併後的 $be_head"
 }
@@ -347,21 +347,21 @@ setup() {
 @test "hotfix finish 不把另一側的髒 gitlink 掃進同一個 commit" {
     cx_bin --yes git hotfix start hf3 --repo backend
     local g=(-c user.email=b@b -c user.name=b)
-    echo a > "$CX_TEST_ROOT/backend/a.txt"
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m a
+    echo a > "$CX_TEST_ROOT/src/backend/a.txt"
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" commit -q -m a
     # 另一側也動一下，讓它的 gitlink 變髒
-    git -C "$CX_TEST_ROOT/frontend" switch -q dev
-    echo b > "$CX_TEST_ROOT/frontend/b.txt"
-    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/frontend" "${g[@]}" commit -q -m b
+    git -C "$CX_TEST_ROOT/src/frontend" switch -q dev
+    echo b > "$CX_TEST_ROOT/src/frontend/b.txt"
+    git -C "$CX_TEST_ROOT/src/frontend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/frontend" "${g[@]}" commit -q -m b
     local fe_gl_before
-    fe_gl_before=$(git -C "$CX_TEST_ROOT" ls-files --stage -- frontend | awk '{print $2}')
+    fe_gl_before=$(git -C "$CX_TEST_ROOT" ls-files --stage -- src/frontend | awk '{print $2}')
 
     run cx_bin --yes git hotfix finish --repo backend
     assert_rc 0
     local fe_gl_after
-    fe_gl_after=$(git -C "$CX_TEST_ROOT" ls-files --stage -- frontend | awk '{print $2}')
+    fe_gl_after=$(git -C "$CX_TEST_ROOT" ls-files --stage -- src/frontend | awk '{print $2}')
     [ "$fe_gl_before" = "$fe_gl_after" ] \
         || _fail_with "另一側的 gitlink 被順手掃進 commit 了"
 }
@@ -373,7 +373,7 @@ setup() {
 
 @test "hotfix list 只列 hotfix/*，不列 feature/*" {
     cx_bin --yes git feature start feat-a --repo backend
-    git -C "$CX_TEST_ROOT/backend" switch -q dev
+    git -C "$CX_TEST_ROOT/src/backend" switch -q dev
     cx_bin --yes git hotfix start hf-a --repo backend
 
     run cx_bin git hotfix list
@@ -392,10 +392,10 @@ setup() {
 
 @test "release 把三個 repo 的 dev 合進 main" {
     local g=(-c user.email=b@b -c user.name=b)
-    git -C "$CX_TEST_ROOT/backend" switch -q dev
-    echo r1 > "$CX_TEST_ROOT/backend/r1.txt"
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m r1
+    git -C "$CX_TEST_ROOT/src/backend" switch -q dev
+    echo r1 > "$CX_TEST_ROOT/src/backend/r1.txt"
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" commit -q -m r1
     git -C "$CX_TEST_ROOT" switch -q dev
     git -C "$CX_TEST_ROOT" "${g[@]}" add -A
     git -C "$CX_TEST_ROOT" "${g[@]}" commit -q -m 'bump gitlink'
@@ -404,18 +404,18 @@ setup() {
     assert_rc 0
     [ "$(git -C "$CX_TEST_ROOT" branch --show-current)" = main ] \
         || _fail_with "主庫沒停在 main"
-    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = main ] \
+    [ "$(git -C "$CX_TEST_ROOT/src/backend" branch --show-current)" = main ] \
         || _fail_with "backend 沒停在 main"
-    git -C "$CX_TEST_ROOT/backend" merge-base --is-ancestor dev main \
+    git -C "$CX_TEST_ROOT/src/backend" merge-base --is-ancestor dev main \
         || _fail_with "backend 的 main 沒有包含 dev"
 }
 
 @test "release 之後主庫 main 的 gitlink 指向子模組 main 的 tip（不是 dev 的）" {
     local g=(-c user.email=b@b -c user.name=b)
-    git -C "$CX_TEST_ROOT/backend" switch -q dev
-    echo r2 > "$CX_TEST_ROOT/backend/r2.txt"
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" add -A
-    git -C "$CX_TEST_ROOT/backend" "${g[@]}" commit -q -m r2
+    git -C "$CX_TEST_ROOT/src/backend" switch -q dev
+    echo r2 > "$CX_TEST_ROOT/src/backend/r2.txt"
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" add -A
+    git -C "$CX_TEST_ROOT/src/backend" "${g[@]}" commit -q -m r2
     git -C "$CX_TEST_ROOT" switch -q dev
     git -C "$CX_TEST_ROOT" "${g[@]}" add -A
     git -C "$CX_TEST_ROOT" "${g[@]}" commit -q -m 'bump'
@@ -423,9 +423,9 @@ setup() {
     cx_bin --yes git release --skip-scan
 
     local be_main be_dev gl
-    be_main=$(git -C "$CX_TEST_ROOT/backend" rev-parse main)
-    be_dev=$(git -C "$CX_TEST_ROOT/backend" rev-parse dev)
-    gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- backend | awk '{print $2}')
+    be_main=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse main)
+    be_dev=$(git -C "$CX_TEST_ROOT/src/backend" rev-parse dev)
+    gl=$(git -C "$CX_TEST_ROOT" ls-files --stage -- src/backend | awk '{print $2}')
     [ "$be_main" != "$be_dev" ] \
         || skip "--no-ff 沒有產生新的 merge commit（fast-forward），這條測不到"
     [ "$gl" = "$be_main" ] \
@@ -444,7 +444,7 @@ setup() {
 }
 
 @test "release 在子模組髒的時候中止（EX_PRECOND），不留半吊子的 main" {
-    echo dirty > "$CX_TEST_ROOT/backend/dirty.txt"
+    echo dirty > "$CX_TEST_ROOT/src/backend/dirty.txt"
     local before; before=$(git -C "$CX_TEST_ROOT" rev-parse main)
     run cx_bin --yes git release --skip-scan
     assert_rc "$EX_PRECOND"

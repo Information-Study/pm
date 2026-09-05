@@ -179,14 +179,14 @@ default ACL 讓新建的檔案自動帶上兩邊的權限，而 others 仍然是
 
 | | |
 |---|---|
-| 原始碼 | bind mount（`./backend`、`./frontend`），改了立刻生效 |
+| 原始碼 | bind mount（`./src/backend`、`./src/frontend`），改了立刻生效 |
 | 前端 | Nuxt dev server + HMR |
 | xdebug | 已載入，`start_with_request=trigger`（不是 `yes` —— 常開會讓每個請求都去連 IDE） |
 | 額外服務 | phpMyAdmin（127.0.0.1:8891） |
 | 快取 | 不做 config cache（否則改了 `.env` 完全沒反應，而且那是最難查的那種「沒反應」） |
 
 `vendor/` 與 `node_modules/` 用**具名 volume 蓋回去**。這不是多此一舉：
-`./backend:/var/www/html` 會把 image 裡烘好的 vendor 整個遮掉，容器在 entrypoint
+`./src/backend:/var/www/html` 會把 image 裡烘好的 vendor 整個遮掉，容器在 entrypoint
 就 `Failed opening required 'vendor/autoload.php'`。具名 volume 掛在
 「image 中已存在的路徑」上時 Docker 會用 image 內容種子化它，所以掛上去反而救回 vendor。
 
@@ -236,7 +236,7 @@ base 是 `restart: unless-stopped`，entrypoint 每次啟動都會跑 ——
 掃描結果全部失真而且看不出原因。
 
 **後端測試走 sqlite `:memory:`**，不需要 MySQL。這一點有個必須知道的細節：
-`backend/phpunit.xml` 的每個 `<env>` 都帶 `force="true"`。
+`src/backend/phpunit.xml` 的每個 `<env>` 都帶 `force="true"`。
 PHPUnit 的 `<env>` 預設語意是「既有的環境變數優先」，而 compose 會傳進
 `DB_CONNECTION=mysql` —— 沒有 `force="true"` 的話測試會打到**真正的開發資料庫**，
 而 `RefreshDatabase` 會把它清空。

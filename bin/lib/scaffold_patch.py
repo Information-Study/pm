@@ -71,7 +71,7 @@ def patch_backend(root, tpl):
         if os.path.exists(dst) and _same(src, dst):
             continue
         shutil.copyfile(src, dst)
-        log(f"裝回 backend/tests/{name}")
+        log(f"裝回 src/backend/tests/{name}")
         changed += 1
 
     # phpunit.xml 的 bootstrap= 必須指向 tests/bootstrap.php。
@@ -88,7 +88,7 @@ def patch_backend(root, tpl):
             log('phpunit.xml：bootstrap="tests/bootstrap.php"')
             changed += 1
     else:
-        log("⚠ 沒有 backend/phpunit.xml —— 測試防護不會被呼叫到")
+        log("⚠ 沒有 src/backend/phpunit.xml —— 測試防護不會被呼叫到")
     return changed
 
 
@@ -139,7 +139,7 @@ def patch_backend_wiring(root, tpl):
         for name in sorted(os.listdir(mig_src)):
             if "personal_access_tokens" in name and not have:
                 shutil.copyfile(os.path.join(mig_src, name), os.path.join(mig_dst, name))
-                log(f"裝回 backend/database/migrations/{name}")
+                log(f"裝回 src/backend/database/migrations/{name}")
                 changed += 1
 
     # 3) bootstrap/providers.php —— 這是一個**清單**，所以用合併不是覆蓋：
@@ -174,7 +174,7 @@ def patch_backend_wiring(root, tpl):
             cur = fh.read()
         if "trustProxies" not in cur:
             shutil.copyfile(src_app, dst_app)
-            log("裝回 backend/bootstrap/app.php（原本是框架原版，缺 trustProxies／"
+            log("裝回 src/backend/bootstrap/app.php（原本是框架原版，缺 trustProxies／"
                 "redirectGuestsTo／JSON 例外）")
             changed += 1
     return changed
@@ -193,7 +193,7 @@ def patch_frontend(root, tpl):
     dst = os.path.join(fe, "eslint.config.mjs")
     if os.path.exists(src) and not os.path.exists(dst):
         shutil.copyfile(src, dst)
-        log("裝回 frontend/eslint.config.mjs")
+        log("裝回 src/frontend/eslint.config.mjs")
         changed += 1
 
     # package.json 的 devDependencies

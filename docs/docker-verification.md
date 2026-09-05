@@ -31,11 +31,11 @@
 | # | 缺陷 | 驗收條件 |
 |---|---|---|
 | D1 | compose 寫 `nuxt/Dockerfile`，實檔是 `nuxt/dockerfile`（小寫） | 檔名大小寫與 compose 引用完全一致 |
-| D2 | `backend/.env` 不存在，初始化腳本未 `cp` 也未 `key:generate` | entrypoint 會確保 `.env` 與 `APP_KEY` |
+| D2 | `src/backend/.env` 不存在，初始化腳本未 `cp` 也未 `key:generate` | entrypoint 會確保 `.env` 與 `APP_KEY` |
 | D3 | 腳本呼叫不存在的 service `vue`、`npm-php` | 所有腳本引用的 service 都存在 |
 | D4 | 仍執行 `artisan nova:install`（專案早已改用 Filament） | 無任何 Nova 殘留 |
 | D5 | `CMD ["sh","-c","php-fpm -D && nginx …", "supervisord …"]` 第 4 元素成為 `$0` | **supervisord 真的啟動，`docker exec <app> supervisorctl status` 看得到 queue worker** |
-| D6 | image 內 vendor 被 `./backend` bind mount 蓋掉 | vendor 用具名 volume 種子化，`docker exec <app> ls vendor/autoload.php` 存在 |
+| D6 | image 內 vendor 被 `./src/backend` bind mount 蓋掉 | vendor 用具名 volume 種子化，`docker exec <app> ls vendor/autoload.php` 存在 |
 | D7 | `php` 無 `depends_on: mysql`、無 healthcheck | mysql 有 healthcheck，app `depends_on: condition: service_healthy` |
 | D8 | `nuxt` 未注入 `NUXT_PUBLIC_API_BASE_URL` | 前端能打到後端 API |
 | D9 | `.env.example` 是 sqlite，環境卻是 MySQL | `DB_CONNECTION=mysql` |
@@ -288,7 +288,7 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 | A1 | **`cx` 在 git index 裡是 `100644`** | 磁碟上是 755，`git diff` 看不出差異。但任何人 clone 下來打 `./cx` 都是 `Permission denied` —— 單一入口在第 0 步就壞了 | `git update-index --chmod=+x`；`cx doctor` 已有這項檢查（本次讓它真的通過） |
 | A2 | **`bin/cmd/compose.sh` 不存在** | dispatcher 的 `CX_CMD_FILE_OF` 把 8 個動詞指到它，於是 `cx up` 回「未知的指令」 | 寫出該檔；`cx doctor` 新增「動詞實作檔完整性」檢查 |
 | A3 | **supervisorctl 找不到 socket** | `supervisord -c` 指定的路徑不影響 `supervisorctl`，它讀自己的預設 `/etc/supervisord.conf`。而 D5 的驗收指令正是 `exec app supervisorctl status` | 設定檔改放 Alpine 的預設路徑 |
-| A4 | **具名 volume 掛在 bind mount 底下 → host 上出現 root:root 目錄** | 只在 dev 模式發生。`frontend/{node_modules,.nuxt,.output}`、`backend/vendor`、`backend/.env` 全部變成 root 所有，非 root 的操作者既寫不進去也刪不掉 | `cx up` 先以呼叫者身分建立這些掛載點；entrypoint 把 `.env` chown 回 www-data |
+| A4 | **具名 volume 掛在 bind mount 底下 → host 上出現 root:root 目錄** | 只在 dev 模式發生。`frontend/{node_modules,.nuxt,.output}`、`src/backend/vendor`、`src/backend/.env` 全部變成 root 所有，非 root 的操作者既寫不進去也刪不掉 | `cx up` 先以呼叫者身分建立這些掛載點；entrypoint 把 `.env` chown 回 www-data |
 | A5 | **`phpunit.xml` 的 `<env>` 沒有 `force="true"`** | PHPUnit 的 `<env>` 預設**既有環境變數優先**。compose 傳進 `DB_CONNECTION=mysql`，於是 sqlite 設定被靜默忽略，測試會打到真正的開發資料庫 —— 而 `RefreshDatabase` 會把它清空 | 14 個 `<env>` 全部加上 `force="true"`；`cx test back` 另外再傳一次 `-e` 覆蓋 |
 | A6 | **缺 `pdo_sqlite`** | `phpunit.xml` 指向 sqlite `:memory:`，但映像沒裝這個擴充 → `could not find driver`，看起來像資料庫設定錯 | 加進 base stage |
 | A7 | **`Route [login] not defined` → HTTP 500** | 帶 `Accept: application/json` 時是正確的 401，用瀏覽器開同一個網址卻是 500。看起來像 API 壞了，其實是找不到重導目標 | `bootstrap/app.php` 加 `redirectGuestsTo` |

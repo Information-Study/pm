@@ -80,7 +80,7 @@ frontend_build_timeout: 1800
 frontend_build_heap_mb: 2048
 
 # 空字串 = 同源。nginx 把 / 給 Nuxt、/api|/admin|/up|/storage 給 PHP，
-# 所以同源是正確預設；frontend/nuxt.config.ts 的 runtimeConfig.public.apiBaseUrl
+# 所以同源是正確預設；src/frontend/nuxt.config.ts 的 runtimeConfig.public.apiBaseUrl
 # 預設也是空字串。
 frontend_public_api_base_url: ""
 frontend_extra_build_env: {}
