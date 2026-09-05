@@ -102,7 +102,7 @@ openssl rand -base64 36 | tr -d '/+=\n'
 ansible-playbook -i inventory/hosts.yml site.yml --tags mysql
 
 # 只重寫設定並驗證
-ansible-playbook -i inventory/hosts.yml site.yml --tags mysql-config,mysql-verify
+ansible-playbook -i inventory/hosts.yml site.yml --tags mysql_config,mysql_verify
 
 # 手動跑一次備份
 sudo /usr/local/sbin/pm-mysql-backup

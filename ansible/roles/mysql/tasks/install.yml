@@ -66,7 +66,7 @@
 
 
 # 這兩個任務標成 always：後面的 config / secure / databases / verify 都以
-# mysql_installed_ok 為 gate，若只跑 --tags mysql-config 而它們被跳過，
+# mysql_installed_ok 為 gate，若只跑 --tags mysql_config 而它們被跳過，
 # 變數會是 undefined，整個角色就會靜默地什麼都不做。
 - name: 確認 mysqld 真的裝起來了
   ansible.builtin.stat:

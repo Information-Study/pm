@@ -331,7 +331,7 @@ claude.md §12.5 原本寫「連 `ansible-playbook --syntax-check` 都跑不了�
 | `yamllint` | ✅ 0 |
 
 起點是 739 個 finding。其中 673 個是 `var-naming[no-role-prefix]`，
-與本專案「用 `group_vars/all.yml` 當單一事實來源」的架構直接衝突，已在
+與本專案「用 `group_vars/all/main.yml` 當單一事實來源」的架構直接衝突，已在
 `ansible/.ansible-lint` 中附理由關閉。其餘逐一修正或以 inline `noqa` 加註理由。
 
 **仍然沒有驗證的**：任何需要真實目標主機的東西 —— MyGuard 套件解析、

@@ -53,13 +53,13 @@ cx setup [子指令]
 
 | 子指令 | 做什麼 |
 |---|---|
-| （無）/ `all` | env + dirs + guard + collections，最後盤點工具鏈 |
+| （無）/ `all` | env + dirs + collections，最後盤點工具鏈。**不含 guard** —— push guard 是選用的，2026-09-04 起 `cx setup` 只會提示它存在 |
 | `env` | 從 `.env.example` 產生 `.env`（隨機密碼、你的 UID/GID、`PROJECT_SLUG`）。**不覆蓋既有的** |
 | `dirs` | 建立 `reports/` 與 `.cx/` 的葉目錄，並補回 `reports/.gitignore` |
 | `guard` | 安裝三個 repo 的 pre-push hook（白名單從 `.cxroot` 產生）。**選用** —— `cx setup` 不含這一步 |
 | **`native`** | **一行裝完整套原生工具鏈** = `system` → `tools` → `deps`。不吃名稱過濾器 —— `system` 與 `tools` 的清單互斥，要裝單一項目請直接用那兩個子指令 |
-| `system [名稱...]` | **需要 root** 的系統套件：`php nginx git docker mysql-client php-sqlite` |
-| `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep` |
+| `system [名稱...]` | **需要 root** 的系統套件：`php nginx git docker mysql-client php-sqlite acl jq` |
+| `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep shellcheck` |
 | `deps` | backend 的 `composer install` + `npm ci` + `vite build`、frontend 的 `npm ci` |
 
 ### 哪個工具在哪一邊
@@ -512,16 +512,57 @@ cx sonar <up|down|status|token|url|logs|wait>
 cx verify [範圍...] [--report <檔案>] [--quiet]
 ```
 
-| 範圍 | 內容 | 需要容器 |
+| 範圍 | 內容 | 需要什麼 |
 |---|---|---|
-| `static` | compose 合併結果、Dockerfile、版本鎖定 | 否 |
-| `runtime` | supervisord、vendor、端點、資料庫 | **是**（先 `cx dev up -d`） |
-| `ansible` | syntax-check + ansible-lint + yamllint | 否 |
-| `app` | `/up`、`/admin`、`/sanctum`、前端 | 是 |
+| `cli` | cx 自己：動詞／旗標／補全／help 四方同步 | 什麼都不用 |
+| `docs` | 文件與實作是否一致（教的變數真的被讀嗎、路徑對嗎） | 什麼都不用 |
+| `tui` | 選單每一項都指得到真的存在的指令，且每個動詞都到得了 | 什麼都不用 |
+| `static` | compose 合併結果、Dockerfile、版本鎖定 | 要有 `.env` |
+| `ansible` | syntax-check + ansible-lint + yamllint | 要有 ansible |
+| `runtime` | supervisord、vendor、APP_KEY、xdebug | 容器在跑 |
+| `app` | `/up`、`/admin`、`/sanctum`、前端 | 容器在跑 |
+| `waf` | 引擎狀態、攻擊被擋、**Livewire 正常請求不被誤擋** | test 模式在跑 |
+| `acl` | setfacl 可用、檔案系統支援、`cx acl check` | setfacl |
 | `all` | 全部，會依序把三個模式都起起來 | 很慢 |
 
-省略範圍 = `static app ansible`。
+省略範圍 = `cli docs tui static app ansible`。
 報告預設寫到 `reports/verify/<時間戳>.md`。
+
+三個結果嚴格分開：**PASS**（真的驗過）、**FAIL**（真的壞了）、
+**SKIP**（這次沒辦法驗，**不算通過**）。
+
+### `cli` / `docs` / `tui` 為什麼值得獨立出來
+
+這個專案已知的缺陷有一半以上不是「程式寫錯」，而是**兩個地方對同一件事的
+說法不一致**，而且沒有任何東西在盯著：
+
+| 曾經發生的 | 現在由哪一項擋住 |
+|---|---|
+| `help` 說 doctor 會檢查埠與子模組，doctor 兩個都沒實作 | `CLI-help` |
+| `_scan_usage` 寫著 `--fail-on-findings`，parser 直接拒絕 | `CLI-flags` |
+| 補全的 `$verbs` 有 `acl`，`case` 沒有 `acl` 分支 | `CLI-verbs` |
+| `CX_SETUP_SYSTEM_TOOLS` 有 `acl`，`_setup_system_have` 沒有 | `CLI-setup` |
+| TUI 的 `galaxy` 指到不存在的 `cx setup galaxy` | `TUI-resolve` |
+| `ansible/README` 說「從未在真機跑過」，另兩份文件記著兩次完整部署 | `DOC-ansible-run` |
+| README 教人設 `waf_mode`，沒有任何 role 讀它 | `DOC-ansible-vars` |
+
+這一類的共通點是：單看任何一個檔案都完全正確。所以檢查一定要跨檔比對，
+而且兩邊都從**實際的東西**推導 —— 再開一份手打的清單只會變成下一個會漂移的地方。
+
+這三個範圍完全不碰 Docker 也不需要 `.env`，在剛 clone 下來、什麼都還沒裝的
+樹上就跑得完，秒級。
+
+### `waf` 為什麼要有自己的範圍
+
+`app` 範圍只打 edge，完全不經過 WAF；而 `cx scan dast` 的閘門是
+「無 High risk alert」，它不會告訴你**正常請求被擋掉了**。
+2026-09-05 之前的狀態正是：攻擊 100% 全擋、Filament 後台完全不能用，
+兩件事同時成立而且沒有任何檢查會發現。
+
+`waf-livewire` 這一項會現場從 `/admin/login` 的 HTML 撈出 Livewire 的端點前綴
+（由 `APP_KEY` 推導，寫死就會在下一次 `key:generate` 之後失效），
+送一個含 HTML 與 SQL 關鍵字的元件快照，比對「經 WAF」與「直連 edge」的狀態碼。
+兩者相同才算通過。
 
 ---
 
@@ -540,6 +581,9 @@ cx deploy <子指令> [限制] [額外參數轉給 ansible…]
 | `check [限制]` | `--check --diff` 乾跑 | |
 | `apply [限制]` | ⚠ **真的部署** | 列出目標主機並要求確認 |
 | `app [限制]` | 只跑應用層（`playbooks/deploy-only.yml`） | 同上 |
+| `rollback [限制]` | 互動式回滾到前一個 release | 同上 |
+| `facts <主機>` | 抓一台主機的 ansible facts | |
+| `vars [限制]` | 印出該群組合併後的變數（查「我設的值到底有沒有生效」） | |
 
 `check` / `apply` / `app` / `ping` 的**第二個之後**的參數會原樣轉給 ansible：
 
@@ -552,7 +596,8 @@ cx deploy check staging --tags php
 （2026-09-04 之前這些參數會被安靜丟掉 —— 指令跑完、用的卻是預設值。）
 
 第一個位置放旗標仍然會被擋（那通常是想寫 `--limit` 的筆誤）。
-| `rollback` | 互動式回滾 | 同上 |
+`cx deploy apply --yes` 也會被擋：ansible 對「比對不到任何主機」的 pattern
+只給 warning 然後 exit 0 —— 於是 apply 會安靜地什麼都沒做卻回報成功。
 
 `[限制]` 會變成 `--limit`。
 
@@ -571,6 +616,7 @@ cx git <子指令> [參數...]
 | `pull [--allow-merge]` | 三個 repo 一起更新（主庫先、子模組後，預設只允許快轉） |
 | `sync` | 子模組 checkout 到追蹤分支 |
 | `commit [-m 訊息]` | 子模組先、主庫 gitlink 後 |
+| `save [-m 訊息]` | `commit` 的別名 |
 | `branch list\|new\|switch\|delete <名稱>` | 三個 repo 同步操作 |
 | `remote-init` | 用 `gh` 建立 Information-Study 的三個 public repo |
 | `push [--force]` | 推送 |
@@ -741,7 +787,46 @@ cx fresh [--phase preflight|backup|migrate|delete|all] [--mode backup-only|carry
 （`git init --bare` + `fetch`）—— `git bundle verify` 只讀 header，
 一個被截斷的 bundle 它照樣說 OK。
 
-尚未實作：`--rollback`、`--mode carryover|scaffold` 的重建階段（見 `claude.md` §12）。
+### 重建（`--mode`）
+
+| 模式 | 做什麼 |
+|---|---|
+| `backup-only` | 只封存，不刪也不建 |
+| `scaffold` | 全新骨架：`composer create-project laravel/laravel` + `filament/filament:^5.0` + `larastan:^3.0`，以及 `nuxi init --template minimal` |
+| `carryover` | 全新骨架，再從封存的 src tar 把**應用層**目錄疊回去（預設） |
+
+carryover 疊回的是 `backend` 的 `app/database/routes/resources/tests`
+與 `frontend` 的 `app/components/pages/…`。骨架檔（`config/`、`bootstrap/`、
+`package.json`、`nuxt.config.ts`）**刻意用新版的** —— 框架升級真正會變的就是那些，
+而反過來做需要一份「這一版新增了哪些骨架檔」的清單，那份清單不存在。
+
+重建的工具鏈不沿用 `cx_runner()`：重建當下本專案的 app 映像還沒建
+（原始碼剛被刪掉），所以容器路徑用的是一次性的官方 `composer` / `node` 映像。
+
+> `nuxi init` 在非互動終端下 `--template` 與 `--gitInit` **兩個都是必填的**，
+> 「布林旗標不給等於 false」在這裡不成立。
+
+### `--rollback` — 從封存還原
+
+```
+cx fresh --rollback [--from <封存目錄>]
+```
+
+省略 `--from` 就用 `<封存根>/LATEST`。
+
+順序與封存相反：**驗證封存 → 列出會被覆蓋的路徑 → 確認閘門 → 主庫 `.git`
+→ 前後端原始碼 → 前後端的真實 gitdir（放回 MANIFEST 記錄的位置）→ 對帳**。
+
+- 先驗證再還原：不用一份壞掉的封存去覆蓋一棵好的樹。
+- 被覆蓋的內容先移到 `.cx-restore-backup/<時間戳>/` 而不是直接刪 ——
+  還原到一半失敗時至少還拿得回原本的狀態。
+- 對帳會比對 HEAD 與 commit 數，跟 MANIFEST 不一致就回非零。
+- **資料庫不在還原範圍**：把檔案還原與資料庫還原綁在一起，任一邊失敗都會讓
+  另一邊處於不確定狀態，而資料庫還原不可逆。要還原資料庫用 `cx db restore`。
+
+> 子模組的 gitdir 是這一步的坑：`backend/.git` 是一個 32 bytes 的**指標檔**
+> （`gitdir: ../.git/modules/backend`），真正的 gitdir 在別的地方。
+> 只還原 src tar 的話，`backend/` 會是一棵沒有 git 的普通目錄。
 
 ---
 
@@ -763,15 +848,59 @@ cx uninstall [--rc]
 
 ---
 
-## `cx lint`
+## `cx style` — 程式碼風格（**會改檔案**）
 
 ```
-cx lint [目錄]
+cx style [php|js|all] [--check] [-- 工具參數...]
 ```
 
-沒裝 `ansible-lint` 時的替代品，用 `bin/lib/ansible_lint.py`。
-會排除 `collections/`、`.cache/`、`.ansible/`、`.git/`、`__pycache__/`
-—— 不排除的話它會去檢查上游 collection 的原始碼，回報 803 個跟本專案無關的 finding。
+| 範圍 | 工具 | 位置 |
+|---|---|---|
+| `php` | Laravel Pint | `backend/vendor/bin/pint` |
+| `js` | Prettier | `frontend/node_modules/.bin/prettier` |
+| `all` | 兩者（預設） | |
+
+兩個工具都**已經隨既有相依裝好**（`composer.json` 的 require-dev 與
+`package.json` 的 devDependencies），不需要另外安裝。
+在 2026-09-05 之前它們沒有任何動詞叫得到 —— 買了沒用。
+
+雙 runner。容器路徑帶 `-u $(id -u)`：`backend/` 在 dev 是 bind mount，
+以 root 跑會把改過的檔案變成 `root:root`。
+
+`--check` 只檢查不改，有差異就回非零 —— CI 與提交前用這個。
+
+---
+
+## `cx lint` — 靜態檢查（**不改檔案**）
+
+```
+cx lint [ansible|php|js|sh|all] [目錄]
+```
+
+| 範圍 | 做什麼 |
+|---|---|
+| `ansible` | `bin/lib/ansible_lint.py`（YAML 剖析、FQCN、紅線、變數引用、changed_when） |
+| `php` | `pint --test`（= `cx style php --check`） |
+| `js` | `prettier --check`（= `cx style js --check`） |
+| `sh` | `shellcheck` 掃 `cx` 與 `bin/**/*.sh` |
+| `all` | 以上全部（預設） |
+
+全部跑完才回傳最嚴重的退出碼，不是遇到第一個問題就停。
+舊用法 `cx lint <目錄>` 仍然等於 `cx lint ansible <目錄>`。
+
+**`lint` 與 `style` 的分工是硬的**：`lint` 絕不改檔案，`style` 才會。
+混在同一個動詞底下，遲早有人在 CI 裡跑 lint 然後意外改了一整棵樹。
+
+`ansible` 那一支是 `--syntax-check` 的**替代品，不是等價物**。
+ansible 裝好之後請改用 `cx deploy lint`。它會排除 `collections/`、`.cache/`、
+`.ansible/`、`.git/`、`__pycache__/` —— 不排除的話它會去檢查上游 collection
+的原始碼，回報 803 個跟本專案無關的 finding。
+
+`sh` 的閘門只看 **error**，warning 完整顯示但不擋 —— 與 ② SAST 那條 lane 一致。
+理由見本文件的 SAST 嚴重度閘門一節：用「有任何 finding 就失敗」當閘門的結果是
+這條 lane 永遠紅燈，於是沒有人會再看它。
+第一次跑就抓到三個 error（`sonar.sh` 的單元素迴圈、`scan.sh` 的前綴賦值作用域、
+兩處以 `# shellcheck` 開頭的中文註解被當成指令解析），都已修。
 
 ---
 
@@ -824,6 +953,14 @@ $ ./cx < /dev/null
 | 需要 root 的系統套件 | `cx setup system` |
 | 免 root 的工具鏈 | `cx setup tools` |
 | 專案相依 | `cx setup deps` |
+| 只產生 .env | `cx setup env` |
+| 只建立目錄 | `cx setup dirs` |
+| 安裝 push guard | `cx setup guard` |
+| 安裝 ansible collections | `cx deploy galaxy` |
+
+> 最後那一項在 2026-09-05 之前是壞的：選單把它接成 `cx setup galaxy`，
+> 而 `setup` 沒有這個子指令，點下去只會得到 exit 2。
+> 現在 `cx verify tui` 的 `TUI-resolve` 會擋住這一類。
 
 搭配上面的 runner 切換，這就是「安裝執行環境，並區分 docker 與原生」的入口。
 

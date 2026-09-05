@@ -108,7 +108,7 @@ cx prod config | grep -A5 'edge:' | grep -A3 ports
 | opcache | 關（`validate_timestamps=1`） | 開 | 開 + `preload` |
 | xdebug | 開 | 關 | 關 |
 | WAF | 無 | ModSecurity + CRS | 無（正式環境前面是別的） |
-| phpMyAdmin | 有（8891） | 無 | 無 |
+| phpMyAdmin | 有（8891） | **有（18891）** | 無 |
 | MySQL 發布埠 | 127.0.0.1:3306 | 127.0.0.1:13306 | **不發布** |
 | `APP_DEBUG` | true | false | false |
 

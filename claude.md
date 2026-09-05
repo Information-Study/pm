@@ -69,7 +69,7 @@
 | 2 | `docker/` 三模式 + 多階段 Dockerfile + 新 `docker-compose.yml` | ✅ **完成並實測**（2026-09-04） |
 | 3 | 重建前後端 + 三 Git 初始化 + 推送 | ✅ 完成；migration / 測試 / 端點皆已實跑 |
 | 4 | DevSecOps 工具鏈 + `cx scan` | ✅ 四道防線全部跑得動 |
-| 5 | Ansible roles + playbook | ⚠ 靜態全綠（syntax-check + lint），**尚未上真機** |
+| 5 | Ansible roles + playbook | ✅ **對 systemd 目標完整實跑**（24.04 ok=498、26.04 ok=491，failed=0） |
 | 6 | `README.md`、`ansible/README.md`、`docs/progress.md` | ✅ 完成 |
 
 ### 2026-09-04 的環境變更（重要）
@@ -911,15 +911,21 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 | ④ WAF 攔截率對照 | ✅ **已實測** | blocking 模式擋下三類攻擊，正常流量不受影響 |
 | gitleaks | ✅ | 三個 repo 全歷史皆乾淨 |
 
-### 12.5 Phase 5 — Ansible（靜態全綠，尚未上真機）
+### 12.5 Phase 5 — Ansible（對容器化的 systemd 目標完整實跑）
 
 `cx setup tools ansible` 解除了「連 `--syntax-check` 都跑不了」這個阻擋之後：
 
 | 項目 | 結果 |
 |---|---|
 | 三個 playbook 的 `--syntax-check` | ✅ 全過 |
-| `ansible-lint`（**production profile**） | ✅ 0 failures / 0 warnings（181 檔） |
+| `ansible-lint`（**production profile**） | ✅ 0 failures / 0 warnings（182 檔） |
 | `yamllint` | ✅ 0 |
+| Ubuntu 24.04 目標**完整實跑**（不是 `--check`） | ✅ ok=498 changed=119 failed=0 |
+| Ubuntu 26.04 目標**完整實跑** | ✅ ok=491 changed=116 failed=0 |
+
+驗證目標是 `docker/ansible-target/` 的容器：真的 systemd、真的 sshd、
+真的服務啟動順序、真的 PM2。**不是**雲端主機 —— 所以 MyGuard 套件名解析、
+MySQL 8.4 from Oracle repo、certbot 真憑證、多主機 `serial` 仍未驗證。
 
 起點是 **739 個 finding**。修正過程找到兩類真問題：
 
@@ -938,8 +944,22 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 
 ### 12.6 `cx fresh` 的重建階段
 
-備份、驗證封存、確認閘門、刪除都可用且測過。
-**重建階段與 `--rollback` 仍未實作**，打了會得到 `EX_USAGE`。
+**2026-09-05 起全部可用並實測過。** 在 scratchpad 的拋棄式副本上跑完整流程：
+
+| 項目 | 結果 |
+|---|---|
+| `cx fresh --mode carryover` | ✅ exit=0 |
+| 重建的後端 | laravel/framework ^13.17 + filament/filament ^5.0 + larastan ^3.0 |
+| 重建的前端 | nuxt ^4.5.2 + vue ^3.5.42（nuxi `minimal` 範本） |
+| carryover 疊回使用者程式碼 | ✅ `backend/app/` 的自訂檔案存活 |
+| 三個 Git 初始化 | ✅ 各自 `main`、各 1 個 commit、`.gitmodules` 用相對 URL |
+| `cx fresh --rollback` | ✅ exit=0（跑兩次），HEAD 與 commit 數都與 MANIFEST 一致 |
+
+實跑抓到三個只有真的跑一次才會現形的缺陷（重建的前置條件寫反、
+nuxi 在非互動下 `--template` 與 `--gitInit` 都是必填、還原摘要少一格），已修。
+
+這也是這個專案的封存**第一次真的被還原過** —— 在此之前
+`cx_backup` 與 `cx_verify_archive` 都寫得很仔細，但還原那一半並不存在。
 
 ### 12.7 補正流程
 

@@ -13,7 +13,7 @@
     that:
       - mysql_defaults_stat.stat.exists
     fail_msg: >-
-      {{ mysql_defaults_file }} 不存在。請先執行 --tags mysql-install
+      {{ mysql_defaults_file }} 不存在。請先執行 --tags mysql_install
       （它的第一個任務就是寫這個檔）。
     quiet: true
 

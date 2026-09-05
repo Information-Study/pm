@@ -8,35 +8,35 @@
 
 - name: 前置檢查
   ansible.builtin.import_tasks: assert.yml
-  tags: [mysql, mysql-assert]
+  tags: [mysql, mysql_assert]
 
 - name: 設定 Oracle MySQL APT 來源
   ansible.builtin.import_tasks: repo.yml
   when: mysql_repo_source == 'oracle'
-  tags: [mysql, mysql-repo]
+  tags: [mysql, mysql_repo]
 
 - name: 安裝 MySQL
   ansible.builtin.import_tasks: install.yml
-  tags: [mysql, mysql-install]
+  tags: [mysql, mysql_install]
 
 - name: 寫入伺服器設定
   ansible.builtin.import_tasks: config.yml
   when: mysql_installed_ok | default(false) | bool
-  tags: [mysql, mysql-config]
+  tags: [mysql, mysql_config]
 
 - name: root 帳號與安全強化
   ansible.builtin.import_tasks: secure.yml
   when: mysql_installed_ok | default(false) | bool
-  tags: [mysql, mysql-secure]
+  tags: [mysql, mysql_secure]
 
 - name: 應用程式資料庫與帳號
   ansible.builtin.import_tasks: databases.yml
   when: mysql_installed_ok | default(false) | bool
-  tags: [mysql, mysql-db]
+  tags: [mysql, mysql_db]
 
 - name: 備份腳本與排程
   ansible.builtin.import_tasks: backup.yml
-  tags: [mysql, mysql-backup]
+  tags: [mysql, mysql_backup]
 
 # ⚠ verify.yml 讀的是 MySQL 的「執行期」設定（SHOW VARIABLES），
 # 所以必須在 restart handler 真的跑完之後才有意義。
@@ -51,9 +51,9 @@
 # certbot role 早就用了同樣的手法（它的 verify 也要讀 nginx 實際載入的設定）。
 - name: 套用設定變更（verify 之前必須先讓 restart handler 跑完）
   ansible.builtin.meta: flush_handlers
-  tags: [mysql, mysql-verify]
+  tags: [mysql, mysql_verify]
 
 - name: 驗證
   ansible.builtin.import_tasks: verify.yml
   when: mysql_installed_ok | default(false) | bool
-  tags: [mysql, mysql-verify]
+  tags: [mysql, mysql_verify]

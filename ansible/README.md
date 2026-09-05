@@ -3,12 +3,25 @@
 把 `pm` 部署到一台**全新的 Ubuntu/Debian 機器**上，不使用 Docker。
 一次 `ansible-playbook site.yml` 從空機器到可服務。
 
-> ⚠ **本目錄的所有內容從未在真實主機上執行過。**
-> 本機裝不了 ansible（無 pip、sudo 需密碼），連 `--syntax-check` 都跑不了。
-> 目前只做過替代性靜態檢查（`cx lint`：114 個 YAML 全部剖析成功、無語法錯誤、
-> 無 `git push`、無未 gate 的破壞性操作）。
-> 未驗證項目的完整清單見專案根目錄 `claude.md` §12.5。
-> **第一次部署請務必先對 staging 跑 `--check --diff`。**
+> **執行狀態（2026-09-05）**
+>
+> | 項目 | 結果 |
+> |---|---|
+> | `ansible-playbook --syntax-check`（3 個 playbook） | ✅ |
+> | `ansible-lint`（production profile）+ `yamllint` | ✅ 0 finding／182 個檔案 |
+> | 對 Ubuntu 24.04 目標**完整實跑**（不是 `--check`） | ✅ ok=498 changed=119 failed=0 |
+> | 對 Ubuntu 26.04 目標**完整實跑** | ✅ ok=491 changed=116 failed=0 |
+>
+> 驗證目標是 `docker/ansible-target/` 的容器：真的 systemd、真的 sshd、
+> 真的服務啟動順序。**不是**雲端主機，所以下列仍未驗證：MyGuard 套件名解析、
+> MySQL 8.4 from Oracle repo、certbot 的真憑證流程、多主機 `serial`。
+> 完整清單見 [`docs/progress.md`](../docs/progress.md)。
+>
+> **第一次對真實機器部署仍請先跑 `cx deploy check <限制>`（`--check --diff`）。**
+>
+> 入口一律是 `cx deploy`（見 [`docs/ansible-reference.md`](../docs/ansible-reference.md)）。
+> 本文件底下的 `ansible-playbook` 原生指令是為了說明背後在做什麼，
+> 兩者等價；日常操作用 `cx deploy` 會多一層目標主機確認與 collection 檢查。
 
 ---
 
@@ -297,7 +310,7 @@ php_upload_max_filesize (32M)
       < waf_request_body_limit (64MiB)
 ```
 
-**唯一來源是 `inventory/group_vars/all.yml` 的 `app_max_upload_mb`**，
+**唯一來源是 `inventory/group_vars/all/main.yml` 的 `app_max_upload_mb`**，
 其餘三個由它推導。preflight 會驗證遞增關係。
 
 > 這裡曾經出過事：`app_max_upload_mb` 在 5 個 role defaults 各有一份，
@@ -325,8 +338,9 @@ php_upload_max_filesize (32M)
 切換模式時 `nodejs_pm2` 會清掉前一個模式留下的 PM2 程序
 （`static` 模式不該有任何 PM2 程序在跑）。
 
-三種模式都已在本機**實測建置通過**（見 `claude.md` §0.5）。
-但「PM2 實際跑起來」從未驗證過。
+三種模式都已在本機**實測建置通過**。
+PM2 也已在 24.04 與 26.04 的目標容器上實際跑起來過（`pm2-deploy.service` active、
+`pm2 jlist` 顯示 online），見 [`docs/ansible-reference.md`](../docs/ansible-reference.md) §9。
 
 ---
 
@@ -372,7 +386,10 @@ ansible-playbook -i inventory/hosts.yml site.yml --check --diff
 
 ## 8. 變數參考
 
-完整清單在 `inventory/group_vars/all.yml`（193 個變數，含註解）。
+完整清單在 `inventory/group_vars/all/main.yml`（202 個 key，含註解）。
+> ⚠ 是**目錄** `group_vars/all/`，不是檔案 `group_vars/all.yml`。
+> 兩者不能並存，而且寫成後者的話，同目錄下的 `vault.yml` 會被 ansible
+> 當成「群組 vault 的變數」而永遠不載入 —— 見 `ansible/.gitignore` 的說明。
 下面是**你最可能需要改的**：
 
 ### 必填
@@ -431,17 +448,22 @@ ansible-playbook -i inventory/hosts.yml site.yml --check --diff
 
 ## 10. 給接手者
 
-**這套東西沒有在真機上跑過。** 第一次部署請按這個順序：
+這套東西已經對**容器化的 systemd 目標**完整跑過（24.04 與 26.04 各一次，
+failed=0），但**還沒有對雲端／實體機器跑過**。第一次對真機部署請按這個順序：
 
-1. `cd ansible && ansible-playbook site.yml --syntax-check`
-2. `ansible-lint ansible/`，與 `cx lint` 的結果對帳
-3. 對 staging `--check --diff`，逐一看 diff
+1. `cx deploy syntax`（三個 playbook 的 `--syntax-check`）
+2. `cx deploy lint`（ansible-lint production profile + yamllint）
+3. `cx deploy check <限制>`（`--check --diff`），逐一看 diff
 4. 設 `certbot_staging=true` 先把 TLS 流程跑通
 5. 設 `waf_rule_engine=DetectionOnly` 先觀察 CRS 會擋掉什麼，
    把誤擋的規則加進 `exclusions-before`，確認乾淨了再改 `On`
    （注意 role 的預設是 `On`；`inventory/group_vars/all/main.yml` 才把它壓成
    `DetectionOnly`。照抄 group_vars 範例時不要把這一行刪掉）
-6. 真的部署
+6. `cx deploy apply <限制>` —— 真的部署（會列出目標主機並要求確認）
 
-驗證完的項目請回填到根目錄 `claude.md` §12.5，
+> `--check` 不是萬能：`command` / `shell` 在 check 模式會被 skip，
+> 所以「乾跑通過」不等於「實際跑一定會過」。24.04／26.04 那兩次實跑抓到的
+> 8 個缺陷，沒有一個是 syntax-check 或 ansible-lint 看得出來的。
+
+驗證完的項目請回填到 [`docs/progress.md`](../docs/progress.md) 的「仍未驗證的項目」，
 並註明驗證日期與方式。**不要只因為程式碼看起來對就標成已驗證。**

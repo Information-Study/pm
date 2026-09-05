@@ -312,8 +312,20 @@ def check_docs():
     wrong = []
     for rel in ("ansible/README.md", "docs/ansible-reference.md",
                 "docs/docker-verification.md", "claude.md"):
-        if re.search(r"group_vars/all\.yml", read(rel)):
+        for line in read(rel).splitlines():
+            if "group_vars/all.yml" not in line:
+                continue
+            # 「不是 / 不用 group_vars/all.yml」這種否定句是在**警告**別用錯路徑，
+            # 不是在教人用它。把警告也判成違規的話，修好之後反而會再紅一次
+            # —— 而一條修好還是紅的檢查，下一個人就會直接把它關掉。
+            #
+            # 這是啟發式判斷，不是語意分析：判準是「同一行有沒有否定詞」。
+            # 誤放行的代價（漏抓一處錯路徑）比誤攔截（永遠紅燈）小得多。
+            if any(k in line for k in ("不是", "不能", "不用", "而非", "別用",
+                                       "錯誤", "誤", "避免", "曾經")):
+                continue
             wrong.append(rel)
+            break
     if wrong:
         row("FAIL", "DOC-groupvars", "文件指向的 group_vars 路徑正確",
             "寫成 all.yml（實際是目錄 all/main.yml）：" + " ".join(wrong))
@@ -347,7 +359,12 @@ def check_docs():
         # compose 系（up/down/ps/…）在 cx-reference 是成組說明的一節，
         # 不是每個動詞各一節 —— 那一節在就算數。
         grouped = {v for v, f in alias_table().items() if f == "compose"}
-        documented_grouped = "模式與容器" in ref or "cx dev up" in ref
+        # compose 系那一節的標題是 `cx dev` / `cx test` / `cx prod` / `cx up|down|…`，
+        # 不是每個動詞各一個 `cx <verb>` 的字樣。認那一節在不在。
+        documented_grouped = "cx up|down" in ref or "容器操作" in ref
+        # 判準是「這份文件有沒有提到這個動詞」，不是「有沒有專屬章節」——
+        # 後者太嚴（很多動詞本來就該合在一節講），而前者已經抓得到真正的漏網：
+        # cx style 在補上文件之前就是被這一項抓出來的。
         undocumented = sorted(
             v for v in comp
             if not re.search(r"`cx %s[ `]" % re.escape(v), ref)

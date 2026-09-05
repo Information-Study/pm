@@ -329,7 +329,7 @@ docker ps        # 14 個容器，零埠衝突
 | WAF | — | 18081 | — |
 | Nuxt 直連 | 3000 | 13000 | 不發布 |
 | MySQL | 127.0.0.1:3306 | 127.0.0.1:13306 | 不發布 |
-| phpMyAdmin | 8891 | — | — |
+| phpMyAdmin | 8891 | 18891 | — |
 | compose project | `pm_dev` | `pm_test` | `pm_prod` |
 | 網路名 | `pm_dev_net` | `pm_test_net` | `pm_prod_net` |
 

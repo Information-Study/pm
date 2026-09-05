@@ -30,7 +30,9 @@ cd pm
 
 ```bash
 ./cx code            # 用 VS Code 開整個專案（從任何子目錄都是開專案根）
-./cx pma             # 開 phpMyAdmin（只有 dev 有）
+./cx pma             # 開 phpMyAdmin（dev 與 test 有；prod 刻意沒有）
+./cx style           # 程式碼風格：Pint + Prettier（會改檔案）
+./cx lint            # 靜態檢查：ansible / php / js / sh（不改檔案）
 ./cx php -v          # 直接跑 php
 ```
 
@@ -125,7 +127,7 @@ setgid 只繼承群組、不繼承權限位元，所以純靠 `chown` 兩邊會�
 ### 第二階段：測試與掃描
 
 ```bash
-./cx test up -d --build       # 起測試環境（不可變映像 + ModSecurity WAF）
+./cx test up -d --build       # 起測試環境（不可變映像 + ModSecurity WAF + phpMyAdmin）
 ./cx test back                # 後端 PHPUnit（sqlite :memory:，不需要 MySQL）
 ./cx test front               # 前端型別檢查
 ./cx test coverage            # 後端覆蓋率（臨時打開 xdebug）
@@ -229,7 +231,7 @@ docker ps        # 14 個容器，零埠衝突
 | WAF | — | 18081 | — |
 | Nuxt 直連 | 3000 | 13000 | 不發布 |
 | MySQL | 127.0.0.1:3306 | 127.0.0.1:13306 | 不發布 |
-| phpMyAdmin | 8891 | — | — |
+| phpMyAdmin | 8891 | 18891 | — |
 
 ---
 

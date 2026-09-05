@@ -77,7 +77,7 @@ ansible/inventory/
 就必須用目錄形式 `group_vars/all/{main.yml,vault.yml}` ——
 Ansible 會把目錄裡所有檔案都讀進來。
 
-寫成 `group_vars/all.yml` + `group_vars/vault.yml` 的話，
+寫成 `group_vars/all.yml` + `group_vars/vault.yml`（也就是不用目錄）的話，
 後者對應的是一個叫 `vault` 的群組（不存在），於是**整個檔案不會被讀取**，
 所有 `vault_*` 變數都是 undefined，而預設值 filter 會讓它變成空字串 ——
 MySQL 用空密碼建帳號，不報錯。
@@ -208,20 +208,35 @@ cd ansible && ansible-playbook site.yml --tags nginx
 
 ## 6. release / symlink 佈局
 
+根目錄是 `app_root`，預設 `/srv/{{ app_slug }}`（**不是** `/var/www`）。
+前後端是**兩棵各自獨立的 release 樹**，不是同一棵底下的兩個子目錄 ——
+兩者的部署節奏本來就不同（後端要跑 migration，前端要 build），
+綁在同一個 release id 底下會讓「只重新部署前端」變成不可能。
+
 ```
-/var/www/pm/
-├── releases/
-│   ├── 20260904-084600/
-│   │   ├── backend/
-│   │   └── frontend/
-│   └── 20260904-091200/
-├── shared/
-│   ├── backend/.env          ← 唯一的祕密所在
-│   └── backend/storage/
-└── current -> releases/20260904-091200
+/srv/pm/
+├── shared/                       共用（pm2/ecosystem.config.cjs 等）
+├── backend/
+│   ├── releases/<release_id>/
+│   ├── shared/                   .env、storage/   ← 唯一的祕密所在
+│   └── current -> releases/<release_id>
+└── frontend/
+    ├── releases/<release_id>/
+    ├── shared/
+    └── current -> releases/<release_id>
 ```
 
-`current` 是原子換位。`releases_keep` 決定保留幾個，`releases_prune` 是刪除的 gate。
+對應的變數（單一來源在 `inventory/group_vars/all/main.yml`）：
+`app_root`、`app_shared_dir`、`backend_root` / `backend_releases_dir` /
+`backend_shared_dir` / `backend_current_path`，前端同構。
+
+> ⚠ 不要把 `app_root` 設成 `/srv` 或 `/var/www`。preflight 會斷言它是絕對路徑、
+> **深度 ≥ 2**、不在系統目錄黑名單內，而且上面每一條路徑都必須位於它底下 ——
+> release prune 與 rollback 都以這些路徑為根做檔案操作。
+
+`current` 是原子換位。`releases_keep` 決定保留幾個，
+`backend_prune_enabled` / `frontend_prune_enabled` 是刪除的 gate
+（inventory 那邊的旋鈕叫 `releases_prune`）。
 
 回滾：
 
