@@ -17,7 +17,7 @@ CX_CACHE_DIR="${CX_CACHE_DIR:-$CX_ROOT/.cx/cache}"
 
 _scan_usage() {
     cat >&2 <<'TXT'
-用法：cx scan <防線> [--runner docker|native|auto] [--fail-on-findings]
+用法：cx scan <防線> [--runner docker|native|auto]
 
   code    ① Quality  Larastan（level 5）+ SonarQube scanner
   sast    ② SAST     Semgrep
@@ -304,13 +304,21 @@ _scan_sca() {
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     elif cx_have trivy; then
         rc=0
+        # 原生路徑一定要載入同一份 trivy.yaml。手抄一組旗標的後果是兩條 runner
+        # 的閘門悄悄變成兩套：原生這邊漏掉 ignorefile（於是有到期日的例外不生效，
+        # 掃出來的 HIGH/CRITICAL 比 docker 多）、漏掉 secret.config、
+        # 也漏掉 ansible/collections 與 .git 的 skip-dirs（於是回報一堆上游
+        # collection 測試夾具裡的問題）。--runner 的用意是「兩條路都能獨立跑完
+        # 同一件事」，不是「兩條路做不同的事」。
+        #
+        # trivy.yaml 裡的路徑是容器內絕對路徑（/workspace/...），原生跑不到，
+        # 所以用 CLI 旗標覆寫那兩個 —— Trivy 的 CLI 優先於設定檔。
         _scan_step "$EX_SCAN_SCA" "Trivy fs（原生）" \
             env -C "$CX_ROOT" TRIVY_CACHE_DIR="$CX_CACHE_DIR/trivy" \
-                trivy fs --scanners vuln,secret,misconfig --exit-code 1 \
-                    --severity HIGH,CRITICAL \
-                    --skip-dirs '**/vendor' --skip-dirs '**/node_modules' \
-                    --skip-dirs '**/.nuxt' --skip-dirs '**/.output' \
-                    --skip-dirs '**/storage/framework' --skip-dirs '**/bootstrap/cache' \
+                trivy fs --config "$CX_ROOT/docker/security/trivy/trivy.yaml" \
+                    --secret-config "$CX_ROOT/docker/security/trivy/secret.yaml" \
+                    --ignorefile "$CX_ROOT/docker/security/trivy/.trivyignore.yaml" \
+                    --scanners vuln,secret,misconfig --exit-code 1 \
                     --format json --output "$CX_REPORT_DIR/sca/trivy-fs.json" . || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
     else
@@ -378,7 +386,19 @@ _scan_dast() {
         || cx_die "$EX_PRECOND" "network $net 不存在 —— 先跑 cx test up -d"
 
     for mode in detect blocking; do
-        cx_info "ZAP baseline（$mode）…"
+        # C10：這個迴圈以前只是換輸出目錄，從來沒有真的動過引擎 ——
+        # 兩份報告是同一個 WAF 狀態下跑出來的，而 docker/security/zap/README.md
+        # 卻描述成「DetectionOnly 與 On 各跑一次」。名字說了一件事，行為做的是另一件。
+        local engine
+        case $mode in
+            detect)   engine=DetectionOnly ;;
+            blocking) engine=On ;;
+        esac
+        _scan_waf_engine "$engine" || {
+            cx_warn "無法把 WAF 切到 $engine，略過 $mode 這一輪"
+            continue
+        }
+        cx_info "ZAP baseline（$mode・MODSEC_RULE_ENGINE=$engine）…"
         rc=0
         cx_run docker run --rm -u "$(id -u):$(id -g)" \
             --network "$net" \
@@ -413,7 +433,32 @@ _scan_dast() {
     # 被動 baseline 的 alert 差異放後面，而且不能叫「攔截率」。
     _scan_dast_probe "$net"
     _scan_dast_compare
+    # 探測那支自己也會還原，這裡再做一次是為了「ZAP 跑完但探測被略過」那條路徑。
+    _scan_waf_engine "$(_scan_waf_engine_declared)" \
+        || cx_warn "無法還原 WAF 引擎 —— 請手動 cx test up -d waf"
     return "$_lane_worst"
+}
+
+# ── WAF 引擎切換 ───────────────────────────────────────────────────────────
+# 切換一定要成對出現：切過去、用完切回宣告值。少了還原這一半，
+# cx scan dast 跑完就把 test 堆疊留在 On，而 docker/env/test.env 宣告的是
+# DetectionOnly —— 環境與版控說的不一樣，而且不會有任何地方提醒你。
+# 這個漂移在 2026-09-05 的實機檢查中確認過真的發生了。
+_scan_waf_engine_declared() {
+    local v
+    v=$(grep -E '^MODSEC_RULE_ENGINE=' "$CX_ROOT/docker/env/test.env" 2>/dev/null \
+        | tail -1 | cut -d= -f2-)
+    printf '%s' "${v:-DetectionOnly}"
+}
+
+_scan_waf_engine() {
+    local engine=$1 rc=0
+    # 用 test 模式的合併設定重建 waf 這一個 service。--wait 確保 healthy 之後才回來，
+    # 否則下一步的 ZAP 會打在還沒載入新規則的 nginx 上。
+    ( export MODSEC_RULE_ENGINE="$engine"
+      CX_MODE=test cx_compose_init test
+      cx_dc up -d --wait waf ) >/dev/null 2>&1 || rc=$?
+    return "$rc"
 }
 
 # ── 主動攻擊探測 ───────────────────────────────────────────────────────────
@@ -480,7 +525,12 @@ _scan_secrets() {
     cx_have gitleaks || { cx_warn "gitleaks 未安裝"; return "$EX_PRECOND"; }
     local r _lane_worst=0 rc=0 slug
     for r in "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT"; do
-        slug=$(basename "$r")
+        # 主庫的 slug 要用專案名，不能用 basename —— 目錄名不見得叫 pm
+        # （worktree、別人 clone 時改的名字、範本化之後的新專案都不叫 pm），
+        # 於是報告會變成 gitleaks-<隨便什麼目錄名>.json，與 usage 和
+        # docs/reports.md 講的 gitleaks-{pm,backend,frontend}.json 對不上，
+        # 下游想撿檔案的人只會拿到「找不到」。
+        if [[ $r == "$CX_ROOT" ]]; then slug=$(cx_project); else slug=$(basename "$r"); fi
         rc=0
         # gitleaks 8.30 起 `detect` 已被 `git` / `dir` 取代。
         # 用 `git` 掃「整個歷史」——祕密一旦進過 commit，改掉當前檔案是不夠的。
