@@ -26,15 +26,20 @@ cd pm
 
 建立後台管理員：`./cx db admin`
 
-常用的三個捷徑：
+常用的捷徑：
 
 ```bash
+./cx status          # 現況一覽：身分／模式／容器／分支／gitlink／網址／上次驗收
+./cx open            # 印出這個模式的所有服務網址（open front 直接開瀏覽器）
 ./cx code            # 用 VS Code 開整個專案（從任何子目錄都是開專案根）
 ./cx pma             # 開 phpMyAdmin（dev 與 test 有；prod 刻意沒有）
 ./cx style           # 程式碼風格：Pint + Prettier（會改檔案）
 ./cx lint            # 靜態檢查：ansible / php / js / sh（不改檔案）
 ./cx php -v          # 直接跑 php
 ```
+
+`cx status` 回答「這棵樹現在是什麼狀態」，`cx doctor` 回答「環境能不能用」——
+前者永遠 rc=0，後者有問題就非 0。
 
 ### 不想用 Docker？
 

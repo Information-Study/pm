@@ -776,6 +776,11 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 - `f() { …; } || true` 會讓**整個函式本體**的 errexit 失效（實測 bash 5.3.9，包 subshell 也救不回來）。
   要隔離失敗就開真正的子行程。
 - `flock` 是 per open-file-description：同一行程對同一路徑第二次 `exec {fd}>` 會**自己鎖死自己**。
+- **`local a=$1 b="$x/$a"` 在 `set -u` 之下會炸。** `local` 先把**所有**名字宣告成
+  local（此刻 unset），才依序賦值 —— 於是 `b` 的右邊讀到的是剛被遮蔽掉、還沒賦值的 `a`，
+  直接 `unbound variable`。實測 bash 5.3.9（2026-09-06 在 `bin/cmd/status.sh` 踩到）。
+  「同一行的後面引用前面」只在**沒有** `local` 的時候才成立。要引用就拆兩行：
+  `local a b; a=$1; b="$x/$a"`。
 
 **新增相依套件時**
 - 先確認 peer 版本並在 `package.json` 明寫，不要靠 npm 自動裝 peer。
@@ -851,7 +856,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 │   ├── lib/{ansible_lint,compose_mounts,verify_checks,verify_meta,
 │   │        inventory,scaffold_patch,waf_probe,sarif_gate}.py
 │   ├── cmd/{setup,doctor,compose,test,db,sonar,scan,verify,deploy,git,
-│   │        fresh,init,rename,install,lint,style,tui,acl,code,pma,php,
+│   │        fresh,init,rename,install,lint,style,tui,acl,code,pma,open,status,php,
 │   │        art,composer,npm,help}.sh
 │   ├── test/{helpers/,*.bats}        cx 自己的行為測試（cx test cli）
 │   └── completion/cx.bash

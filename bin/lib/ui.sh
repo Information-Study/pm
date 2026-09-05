@@ -225,3 +225,24 @@ cx_ask_typed() {
     fi
     [[ $got == "$expect" ]] || { cx_error "確認字串不符（收到：${got:-<空>}）"; return 1; }
 }
+
+# ── 用系統的瀏覽器開一個網址 ───────────────────────────────────────────────
+#
+# 依序試：WSL 用 wslview（Windows 的預設瀏覽器）、Linux 用 xdg-open、
+# macOS 用 open、最後才是直接叫 explorer.exe。
+#
+# 這段原本只長在 bin/cmd/pma.sh 裡。cx open 出現之後有兩個地方要開瀏覽器，
+# 而「WSL 上怎麼開瀏覽器」不應該有兩份 —— 那種東西會各自演化然後只有一邊
+# 支援新的啟動器。
+#
+# 回傳 0 = 開了（或至少叫到了啟動器）；非 0 = 找不到任何啟動器。
+cx_browse() {                       # cx_browse <url>
+    local url=${1:?cx_browse 需要網址} opener
+    for opener in wslview xdg-open open explorer.exe; do
+        if cx_have "$opener"; then
+            cx_run "$opener" "$url" >/dev/null 2>&1 || true
+            return 0
+        fi
+    done
+    return 1
+}

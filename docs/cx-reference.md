@@ -132,6 +132,47 @@ cx pma --no-open  # 印資訊但不開瀏覽器
 
 ---
 
+## `cx open` — 開啟服務網址
+
+```
+cx open              # 等同 cx open list：全部印出來，不開瀏覽器
+cx open front        # 前端入口（edge）
+cx open back         # Filament 後台（/admin）
+cx open api          # Laravel 健康檢查（/up）
+cx open pma          # phpMyAdmin
+cx open sonar        # SonarQube
+cx open front --url  # 只印網址（給腳本用）
+cx open front --no-open
+```
+
+**為什麼需要這個動詞**：埠段是每個模式一組（`docker/env/<模式>.env`），而且
+可以被覆寫。「前端在哪」因此不是背得起來的東西 —— dev 是 8080、test 是 18080、
+prod 是 80，而且都可以改。原本每次都得去 `docker ps` 找。
+
+網址跟著目前的模式走：
+
+| 目標 | dev | test | prod |
+|---|---|---|---|
+| `front` | http://localhost:8080 | http://localhost:18080 | http://localhost:80 |
+| `back` | 同上 `/admin` | 同上 `/admin` | 同上 `/admin` |
+| `api` | 同上 `/up` | 同上 `/up` | 同上 `/up` |
+| `pma` | http://127.0.0.1:8891 | http://127.0.0.1:18891 | **沒有**（D13） |
+| `sonar` | http://localhost:9000（獨立服務，見 `cx sonar`） | | |
+
+要看別的模式：`cx --mode test open front`（模式是全域旗標，不是這個動詞的參數）。
+
+> **`pma` 與 `sonar` 是委派，不是複製。**
+> `cx open pma` 內部呼叫的就是 `cmd_pma_main`，`cx open sonar` 呼叫的是
+> `cmd_sonar_main url`。所以 prod 的刻意拒絕（D13）、「容器沒跑時怎麼起」的
+> 指路、以及「從合併後的 compose 讀實際發布埠」那些邏輯都只有一份。
+> 複製它們的代價是兩邊會各自演化，然後 `cx pma` 與 `cx open pma` 給出不同的
+> 網址而沒有人發現 —— `bin/test/78_open.bats` 有一條案例專門盯這件事
+>（兩者的輸出必須**完全相同**）。
+
+`list` 對「這個模式沒有的東西」不會失敗，只會說明為什麼沒有。
+
+---
+
 ## `cx php` — 直接跑 php
 
 ```
@@ -169,6 +210,44 @@ runner: native（指定） — php 8.5.4
 已經有的工具會被略過，所以重跑是安靜的（冪等）。
 判斷「有沒有」看的是實際的執行檔／擴充，不是套件資料庫 ——
 使用者可能是用 PPA、手動、或 Docker Desktop 的 WSL integration 裝的。
+
+---
+
+## `cx status` — 這棵樹現在是什麼狀態
+
+```
+cx status            # 完整的現況一覽
+cx status --short    # 一行摘要（給提示字元或 CI）
+cx status --json     # 機器可讀
+```
+
+**與 `cx doctor` 的分工**（兩個動詞很容易長成同一個，所以講清楚）：
+
+| | 回答什麼 | 退出碼 |
+|---|---|---|
+| `cx doctor` | 環境**能不能用**：工具鏈、Docker daemon、埠、執行位元 | 有問題就非 0 —— 那是要修的東西 |
+| `cx status` | 這棵樹**現在是什麼狀態**：身分、模式、容器、分支、gitlink、網址、上次驗收 | **永遠 0** |
+
+`cx status` **從不失敗**。沒有 Docker、沒有 `.env`、連 `.git` 都沒有，它一樣印出
+它知道的部分。理由：這是接手專案的人打的第一個指令，而一個在半成品的樹上會失敗的
+「現況一覽」等於沒有 —— 那正是最需要看現況的時刻。要靠退出碼判斷請用 `cx doctor`。
+
+印出來的東西與它們的來源：
+
+| 區塊 | 來源 |
+|---|---|
+| 專案身分、版面版號、分支模型 | `.cxroot` |
+| 模式、runner（自動還是指定）、Docker 可用性 | `CX_MODE`、`cx_runner()` |
+| 三個模式的容器數（跑著/總數） | `docker ps` 的 compose project label |
+| 三個 repo 的分支／dirty／origin／領先落後 | **重用 `cx git status` 的 `_git_status`** |
+| gitlink 是否同步 | 主庫索引 vs 子模組 HEAD |
+| 服務網址 | **重用 `cx open`** |
+| push guard 幾支裝了 | `bin/lib/guard.sh` |
+| 上次驗收的時間戳與 PASS/FAIL/SKIP | `reports/verify/` 最新的一份 |
+
+> **gitlink 那一行值得注意。** 不同步不代表壞掉（feature 做到一半就是這樣），
+> 但它是「我現在該 commit 什麼」的答案 —— 而 `git status` 只會說「有未提交的變更」，
+> 看不出是哪一種。
 
 ---
 

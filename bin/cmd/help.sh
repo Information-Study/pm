@@ -31,6 +31,9 @@ cmd_help_main() {
     setup env|dirs|guard    只做其中一項
                             （artisan 不必安裝 —— 它是 backend/artisan）
   doctor            檢查工具鏈、Docker daemon、埠、子模組、執行位元
+  status [--short|--json]
+                    這棵樹現在是什麼狀態：身分／模式／runner／容器／分支／
+                    gitlink／網址／上次驗收。**從不失敗**（要靠退出碼判斷用 doctor）
   acl               用 POSIX ACL 設定檔案權限。setgid 只繼承群組、不繼承權限
                     位元，所以 php-fpm 與 deploy 建的檔會互相不能寫 ——
                     default ACL 才治本（而且 others 仍然是 0）
@@ -54,6 +57,8 @@ cmd_help_main() {
     npm --backend <參數>  在 backend/ 執行（Laravel 端的 Vite 資產）
   db status|shell|migrate|fresh|seed|dump|restore|admin|wait
   pma [--url]       開啟 phpMyAdmin（dev 與 test 有；prod 刻意沒有）
+  open [目標]       開啟服務網址：front / back / api / pma / sonar / list
+                    埠段跟著 --mode 走（docker/env/<模式>.env）。--url 只印不開
   style [範圍]      程式碼風格，**會改檔案**：PHP 用 Pint、前端用 Prettier
                     範圍：php / js / all（預設 all）；--check 只檢查不改
                     兩個工具都已隨既有相依裝好，不需要另外安裝

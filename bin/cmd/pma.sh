@@ -86,13 +86,6 @@ cmd_pma_main() {
     cx_dim "  root： root / .env 的 MYSQL_ROOT_PASSWORD"
 
     (( open )) || return 0
-    # 依序試：WSL 用 Windows 的 explorer，Linux 用 xdg-open，macOS 用 open。
-    local opener
-    for opener in wslview xdg-open open explorer.exe; do
-        if cx_have "$opener"; then
-            cx_run "$opener" "$url" >/dev/null 2>&1 || true
-            return 0
-        fi
-    done
-    cx_dim "  找不到瀏覽器啟動器（wslview / xdg-open / open），請自行開啟上面的網址"
+    cx_browse "$url" \
+        || cx_dim "  找不到瀏覽器啟動器（wslview / xdg-open / open），請自行開啟上面的網址"
 }

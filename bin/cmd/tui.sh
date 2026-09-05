@@ -677,12 +677,32 @@ _tui_docker() {
         test "測試：不可變映像 / ModSecurity WAF" \
         prod "正式：只發布 80、無管理工具" \
         db   "資料庫：狀態 / migrate / dump / fresh / 還原" \
-        pma  "開啟 phpMyAdmin（dev 與 test 模式）"); do
+        pma  "開啟 phpMyAdmin（dev 與 test 模式）" \
+        open "開啟服務網址：前端 / 後台 / API / phpMyAdmin / SonarQube"); do
+        case $c in
+            '<')  return 0 ;;
+            db)   _tui_db ;;
+            pma)  _tui_run pma ;;
+            open) _tui_open ;;
+            *)    _tui_stack "$c" ;;
+        esac
+    done
+}
+
+# 埠段是每個模式一組而且可以被覆寫，所以「前端在哪」不是背得起來的東西。
+# 這個子選單存在的理由就是不必離開 cx 去 docker ps 找埠。
+_tui_open() {
+    local c
+    while c=$(_tui_menu "開啟網址（模式：$_TUI_MODE）" "返回" \
+        list  "全部印出來，不開瀏覽器" \
+        front "前端入口（edge）" \
+        back  "Filament 後台（/admin）" \
+        api   "Laravel 健康檢查（/up）" \
+        pma   "phpMyAdmin（prod 刻意沒有）" \
+        sonar "SonarQube（要先 cx sonar up）"); do
         case $c in
             '<') return 0 ;;
-            db)  _tui_db ;;
-            pma) _tui_run pma ;;
-            *)   _tui_stack "$c" ;;
+            *)   _tui_run open "$c" ;;
         esac
     done
 }
@@ -920,6 +940,7 @@ cmd_tui_main() {
     local c
     # 標題把兩個狀態都帶出來。原本只印模式，而且那個模式還改不了。
     while c=$(_tui_menu "cx — $(cx_project) 專案管理  [模式：$_TUI_MODE・runner：$_TUI_RUNNER]" "離開" \
+        status "▸ 現況一覽：身分／容器／分支／gitlink／網址／上次驗收" \
         mode   "▸ 切換模式（目前：$_TUI_MODE）" \
         env    "環境：doctor / 整備 / verify / lint / acl / fresh" \
         docker "容器：dev / test / prod / 資料庫 / phpMyAdmin" \
@@ -932,6 +953,7 @@ cmd_tui_main() {
         help   "指令說明"); do
         case $c in
             '<')    break ;;
+            status) _tui_run status ;;
             mode)   _tui_switch_mode ;;
             env)    _tui_env ;;
             docker) _tui_docker ;;
