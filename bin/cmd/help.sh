@@ -107,13 +107,14 @@ cx — pm 專案統一入口
                     範圍：ansible / php / js / sh / all（預設 all）
                     ansible 那一支是 --syntax-check 的替代品，不是等價物 ——
                     ansible 裝好之後請改用 cx deploy lint
-  fresh             清理與重建（備份 → 驗證 → 確認閘門 → 刪除 → 重建）
+  fresh             清理與重建（備份 → 驗證 → 確認閘門 → 刪除 → 重建 → 三 Git 初始化）
+    fresh --phase preflight   只做前置檢查，完全不動任何東西
+    fresh --mode backup-only  只封存
+    fresh --mode scaffold     全新骨架
+    fresh --mode carryover    全新骨架 + 把你的程式碼疊回去（預設）
+    fresh --rollback          從封存還原（預設用 LATEST）
   install [--rc]    建立 ~/.local/bin/cx symlink + 註冊 bash 補全
   uninstall         移除（需確認）
-
-尚未實作
-  fresh --rollback                          見 claude.md §12
-  fresh --mode carryover|scaffold 的重建階段  見 claude.md §12
 
 三個模式可以同時運行：不同的 compose project（-p <專案>_dev|_test|_prod）隔離
 容器／網路／volume，不同的 host 埠段（docker/env/<mode>.env）隔離埠。

@@ -93,7 +93,7 @@ cx_backup() {
         [[ -s $A/src-$c.tar.gz ]]             || cx_die "$EX_FAIL" "src-$c.tar.gz 不存在或是空檔 —— 封存不完整，已中止"
         cx_ok "src-$c.tar.gz"
 
-        if git -C "$CX_ROOT/$c" rev-parse --git-dir >/dev/null 2>&1; then
+        if cx_is_repo_root "$CX_ROOT/$c"; then
             # bundle 的 refs 必須「每個子專案各自計算」——
             # 不能算一次就重複用，否則 backend 在分支、frontend 是 detached 時會漏掉 frontend 的 HEAD。
             local refs=(--all)
@@ -317,4 +317,154 @@ cx_verify_archive() {
 
     (( fail )) && cx_error "封存驗證失敗 —— 不會進入確認閘門，也不會刪除任何東西"
     return $fail
+}
+
+# ---------------------------------------------------------------------------
+# cx_restore <archive_dir>
+#
+# 封存的另一半。在 2026-09-05 之前這個函式不存在 —— cx_backup 與
+# cx_verify_archive 都寫得很仔細，但「有備份，卻從來沒有還原過」本身就是
+# 一個已知的失敗模式，而且是最貴的那一種：你會在最需要它的那一刻才發現。
+#
+# 還原順序與 cx_backup 的封存順序相反，而且每一步都要能單獨失敗而不留半套：
+#   1. 驗證封存（沿用 cx_verify_archive —— 壞掉的封存不可以拿來覆蓋好的樹）
+#   2. 列出將被覆蓋的路徑，過確認閘門
+#   3. 主庫 .git ← gitdir-main.tar.gz
+#   4. 前後端原始碼 ← src-<name>.tar.gz
+#   5. 前後端的真實 gitdir ← gitdir-<name>.tar.gz，放回 MANIFEST 記錄的位置
+#   6. 對帳：commit 數與 HEAD 要跟 MANIFEST 一致
+#
+# ⚠ 不碰資料庫。db-*.sql.gz 要另外用 cx db restore 匯入 —— 把「檔案還原」與
+#   「資料庫還原」綁在一起的話，任何一邊失敗都會讓另一邊處於不確定狀態，
+#   而且資料庫還原是不可逆的。
+cx_restore() {
+    local A=$1 fail=0
+    [[ -d $A ]] || { cx_error "封存目錄不存在：$A"; return "$EX_PRECOND"; }
+
+    cx_step "還原封存"
+    cx_info "來源：$A"
+
+    # ── 1. 先驗證 ────────────────────────────────────────────────────────
+    cx_verify_archive "$A" || {
+        cx_error "封存驗證失敗 —— 拒絕用一份壞掉的封存覆蓋現有的樹"
+        return "$EX_PRECOND"
+    }
+
+    local m="$A/MANIFEST.txt"
+
+    # ── 2. 列出會被覆蓋的東西，過閘門 ────────────────────────────────────
+    local -a targets=() existing=()
+    [[ -f $A/gitdir-main.tar.gz ]] && targets+=(".git")
+    local c
+    for c in backend frontend; do
+        [[ -f $A/src-$c.tar.gz ]] && targets+=("$c")
+    done
+    local t
+    for t in "${targets[@]}"; do
+        [[ -e $CX_ROOT/$t ]] && existing+=("$t")
+    done
+
+    cx_step "將要還原的內容"
+    local head_main commits_main
+    head_main=$(sed -n 's/^main_head=//p' "$m" | head -1)
+    commits_main=$(sed -n 's/^main_commits=//p' "$m" | head -1)
+    [[ -n $head_main ]] && cx_info "主庫  HEAD ${head_main:0:12}・${commits_main:-?} 個 commit"
+    for c in backend frontend; do
+        local h n
+        h=$(sed -n "s/^${c}_head=//p" "$m" | head -1)
+        n=$(sed -n "s/^${c}_commits=//p" "$m" | head -1)
+        [[ -n $h ]] && cx_info "$(printf '%-6s' "$c")HEAD ${h:0:12}・${n:-?} 個 commit"
+    done
+
+    if (( ${#existing[@]} )); then
+        cx_warn "下列路徑已經存在，還原會**覆蓋**它們：${existing[*]}"
+    fi
+    cx_confirm "還原封存" \
+        "會把 ${targets[*]} 還原到 $CX_ROOT。\n\n已存在的會被覆蓋（先移到 .cx-restore-backup/）。\n\n資料庫不在還原範圍內。" \
+        || { cx_warn "已取消，什麼都沒有動"; return "$EX_ABORT"; }
+
+    # 被覆蓋的東西先搬走而不是直接刪 —— 還原到一半失敗的時候，
+    # 使用者至少還拿得回原本的狀態。
+    local bak="$CX_ROOT/.cx-restore-backup/$(cx_stamp)"
+    if (( ${#existing[@]} )); then
+        cx_run mkdir -p "$bak" || return "$EX_FAIL"
+        for t in "${existing[@]}"; do
+            cx_run mv "$CX_ROOT/$t" "$bak/" || return "$EX_FAIL"
+        done
+        cx_ok "既有內容已移到 ${bak#"$CX_ROOT"/}"
+    fi
+
+    # ── 3. 主庫 gitdir ───────────────────────────────────────────────────
+    if [[ -f $A/gitdir-main.tar.gz ]]; then
+        cx_run tar -xzf "$A/gitdir-main.tar.gz" -C "$CX_ROOT" \
+            || { cx_error "還原 .git 失敗"; fail=1; }
+        [[ -d $CX_ROOT/.git ]] && cx_ok ".git（含 .git/modules/）"
+    fi
+
+    # ── 4. 原始碼 ────────────────────────────────────────────────────────
+    for c in backend frontend; do
+        [[ -f $A/src-$c.tar.gz ]] || continue
+        cx_run tar -xzf "$A/src-$c.tar.gz" -C "$CX_ROOT" \
+            || { cx_error "還原 $c 原始碼失敗"; fail=1; continue; }
+        cx_ok "$c/（原始碼；node_modules 與 vendor 不在封存內）"
+    done
+
+    # ── 5. 子模組的真實 gitdir ───────────────────────────────────────────
+    # 這一步是子模組專屬的坑：backend/.git 是一個 32 bytes 的指標檔
+    #（gitdir: ../.git/modules/backend），真正的 gitdir 在別的地方。
+    # 只還原 src tar 的話，backend/ 會是一棵沒有 git 的普通目錄。
+    for c in backend frontend; do
+        [[ -f $A/gitdir-$c.tar.gz ]] || continue
+        local rel dest
+        rel=$(sed -n "s/^${c}_gitdir=//p" "$m" | head -1)
+        [[ -n $rel && $rel != '<none>' ]] || continue
+        dest="$CX_ROOT/$(dirname "$rel")"
+        cx_run mkdir -p "$dest" || { fail=1; continue; }
+        # gitdir 已經由主庫的 .git tar 帶回來時就不用再解一次
+        if [[ -e $CX_ROOT/$rel ]]; then
+            cx_ok "$c 的 gitdir 已隨主庫 .git 還原（$rel）"
+        else
+            cx_run tar -xzf "$A/gitdir-$c.tar.gz" -C "$dest" \
+                || { cx_error "還原 $c 的 gitdir 失敗"; fail=1; continue; }
+            cx_ok "$c 的 gitdir → $rel"
+        fi
+    done
+
+    (( fail )) && { cx_error "還原過程有錯誤 —— 原本的內容在 ${bak#"$CX_ROOT"/}"; return "$EX_FAIL"; }
+
+    # ── 6. 對帳 ──────────────────────────────────────────────────────────
+    cx_step "對帳（還原結果 vs MANIFEST）"
+    local rc=0
+    _cx_restore_check() {          # <label> <repo path> <manifest prefix>
+        local label=$1 repo=$2 pfx=$3 want_head want_n got_head got_n
+        want_head=$(sed -n "s/^${pfx}_head=//p" "$m" | head -1)
+        [[ -n $want_head && $want_head != '<unborn>' ]] || return 0
+        if ! cx_is_repo_root "$repo"; then
+            cx_error "$label 還原後不是 git repo 的根"; return 1
+        fi
+        got_head=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+        want_n=$(sed -n "s/^${pfx}_commits=//p" "$m" | head -1)
+        got_n=$(git -C "$repo" rev-list --count HEAD 2>/dev/null)
+        if [[ $got_head == "$want_head" && $got_n == "$want_n" ]]; then
+            cx_ok "$label HEAD ${got_head:0:12}・$got_n 個 commit（與 MANIFEST 一致）"
+            return 0
+        fi
+        cx_error "$label 對不上：MANIFEST ${want_head:0:12}/$want_n，實際 ${got_head:0:12}/$got_n"
+        return 1
+    }
+    _cx_restore_check "主庫" "$CX_ROOT" main || rc=1
+    for c in backend frontend; do
+        [[ -d $CX_ROOT/$c ]] || continue
+        _cx_restore_check "$c" "$CX_ROOT/$c" "$c" || rc=1
+    done
+    unset -f _cx_restore_check
+
+    if (( rc )); then
+        cx_error "還原完成但對帳不一致 —— 請檢查上面的差異"
+        return "$EX_FAIL"
+    fi
+    cx_ok "還原完成並對帳通過"
+    (( ${#existing[@]} )) && cx_dim "  被覆蓋的舊內容留在 ${bak#"$CX_ROOT"/}，確認沒問題後可以自行刪除"
+    cx_dim "  資料庫不在還原範圍：要的話用 cx db restore $A/db-*.sql.gz"
+    return 0
 }

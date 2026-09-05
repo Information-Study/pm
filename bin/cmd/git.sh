@@ -128,11 +128,9 @@ _git_last_fetch() {
 # 這個路徑本身是不是一個 git repo 的根？
 # 不能只用 `git -C "$r" rev-parse --git-dir` —— 那會沿著父目錄往上找，
 # 所以「$CX_ROOT/backend 是空目錄、但 $CX_ROOT 是 repo」時它會回傳成功。
-_git_is_repo_root() {
-    local r=$1 top
-    top=$(git -C "$r" rev-parse --show-toplevel 2>/dev/null) || return 1
-    [[ $(cd "$r" && pwd -P) == "$(cd "$top" && pwd -P)" ]]
-}
+# 移到 common.sh 成為 cx_is_repo_root —— archive.sh 與 fresh.sh 也需要同一個判準，
+# 而它們載入不到 git.sh。這裡保留別名，避免動到既有的十幾個呼叫點。
+_git_is_repo_root() { cx_is_repo_root "$@"; }
 
 # 三 repo 操作的共同前置檢查：子模組沒初始化時，
 # 後面每一個 git 指令都會失敗，但因為 dispatcher 關掉了 errexit，

@@ -248,6 +248,20 @@ cx_docker_need() {
 #
 # .cxroot 在 cx:99 被 source，時間點在 lib 載入之後、動詞執行之前，
 # 所以這個函式只能在**執行期**呼叫，不能拿去做頂層變數賦值。
+# 「這個目錄自己是不是一個 repo 的根」——不是「git 在這裡能不能運作」。
+#
+# 這個差別在子模組沒初始化的時候會咬人：backend/ 是一個空目錄，
+# `git -C backend rev-parse --git-dir` 仍然成功，因為 git 會**往上找**，
+# 找到主庫的 .git。於是 cx_backup 會把主庫的 HEAD 當成 backend 的 HEAD
+# 寫進 MANIFEST，封存出三個一模一樣的 bundle，而驗證還會全綠 ——
+# 一份看起來完整、實際上沒有備份到任何子模組內容的封存。
+# 2026-09-05 在拋棄式副本上實跑 cx fresh 時發現。
+cx_is_repo_root() {
+    local r=$1 top
+    top=$(git -C "$r" rev-parse --show-toplevel 2>/dev/null) || return 1
+    [[ $(cd "$r" && pwd -P) == "$(cd "$top" && pwd -P)" ]]
+}
+
 cx_project() { printf '%s' "${CX_PROJECT_NAME:-pm}"; }
 
 # compose project 名（-p 的值）。
