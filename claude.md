@@ -49,7 +49,16 @@
    而 Laravel 的 `Env` 讀 `$_SERVER` 優先 —— compose 的 `environment:`
    永遠贏。實測裸跑會打到真正的 dev MySQL，而不是 `sqlite :memory:`。
    目前沒有測試用 `RefreshDatabase`，一旦有人加了，裸跑就會清空開發資料庫。
-   真正的保護在 `bin/cmd/test.sh` 的 `_test_env_pairs`（用 `-e` 蓋掉 `$_SERVER`）。
+   真正的保護有**兩層**，而且兩層都不依賴 `phpunit.xml` 的 `<env force>`：
+     * `bin/cmd/test.sh` 的 `_test_env_pairs` 用 `-e` 蓋掉 `$_SERVER`（cx 這一層）
+     * `backend/tests/bootstrap.php` → `Tests\DatabaseSafetyGuard`（應用層）。它用
+       Laravel 自己的 `Env::get()` 解析 —— **不重寫 `$_SERVER` 優先的順序** ——
+       確認這次真的會連上的資料庫是宣告過的測試目標，不是就以 **exit 3** 中止。
+       `cx verify cli` 的 `GRD-wire` / `GRD-files` / `GRD-layer2` 盯著三個零件都還接著。
+
+   所以上一段的「裸跑就會清空開發資料庫」**已經不成立** —— 它會在連上之前就停住。
+   但還是用 `cx test`：guard 擋得住 `phpunit`，擋不住 `-c 別的.xml` 或
+   `--no-configuration`，而且 cx 那一層還處理了 runner 與覆蓋率。
 
 6. **Agent 併發上限：同時最多 5 個，同類型最多 3 個。**
    使用 Workflow 時要把 `parallel()` / `pipeline()` 的項目分批送出，每批不超過 5；
@@ -240,7 +249,24 @@ Docker daemon 不可用，因此改以原生工具鏈建立。**遠端已上線*
 └── frontend/             ← submodule       → Information-Study/pm-frontend
 ```
 
-三個 repo 都是 **public**，都在 `Information-Study` 組織下。
+三個 repo 都是 **public**，組織名來自 `.cxroot` 的 `CX_GH_ORG`。
+
+### 分支模型（2026-09-05 定案，**不對稱**）
+
+```
+主庫       main ← dev                （**沒有 feature/***）
+backend    main ← dev ← feature/*
+frontend   main ← dev ← feature/*
+```
+
+功能分支只開在子模組（`cx git feature start <名稱> --repo backend|frontend`），
+做完合回該子模組的 `dev`，主庫的 `dev` 只負責把那一顆 gitlink 推進。
+`cx git branch new` 會拒絕在主庫開 `feature/*`。拓撲用 `cx git flow-init` 建立。
+
+> 為什麼不拆成 `dev-frontend` / `dev-backend`：實測過前後端各自推進自己那一顆
+> gitlink 再合回同一條 `dev` —— 兩次合併都 rc=0，零衝突，因為那是不同路徑。
+> 真正會衝突的是共用基礎設施（`bin/` `docker/` `ansible/` `docs/`），而兩條長期線
+> 會讓那件事更難（同一個改動要落地兩次，還會漂移）。
 舊的 `team-of-P/*` 三個遠端在重建時一併移除，且列入 push hook 的黑名單。
 
 ### ⚠ 最重要的一件事
@@ -330,7 +356,9 @@ pre-push hook 對這三個 URL 一律拒絕，不接受任何覆寫旗標。
 preflight → 備份（原始碼 + git bundle + 真實 gitdir + mysqldump）
           → 驗證封存（sha256sum / git bundle verify / tar -t）
           → 確認閘門（whiptail Y/n + 輸入確認字串）   ← 在此之前不刪任何東西
-          → 刪除 → 重建前後端 → 三 Git 初始化 → 裝 push guard
+          → 遷移 docker 設定 → 刪除 → 重建前後端 → **驗證重建結果**
+          → 三 Git 初始化（含 submodule absorbgitdirs 與 gitflow 的 dev）
+  （不裝 push guard —— 那是選用的，要的話自己跑 cx git guard install）
 ```
 
 ### 守則
@@ -411,7 +439,7 @@ preflight → 備份（原始碼 + git bundle + 真實 gitdir + mysqldump）
 backend  git init → commit          # submodule 不能加在未出生的 HEAD 上
 frontend git init → commit
 main     git init → git submodule add ./backend → ./frontend → commit
-         → 三個 repo 都裝 push guard
+         → submodule absorbgitdirs（收成標準佈局）→ 三個 repo 各建 dev
 ```
 
 ---
@@ -663,26 +691,34 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 | SonarQube | `cx sonar up\|token\|status` | 獨立 project `pm_devsecops` |
 | 驗收 | `cx verify [static\|runtime\|app\|ansible\|all]` | 產出 `reports/verify/<時間戳>.md` |
 | Git 同步 | `cx git sync\|save\|status` | |
+| gitflow | `cx git flow-init` 建立拓撲；`cx git feature start\|finish --repo backend\|frontend` | 功能分支**只開在子模組**；主庫只有 `main ← dev`，它的 `dev` 在 finish 時同步 gitlink |
 | 建立遠端 | `cx git remote-init`（gh 建 3 個 public repo） | |
 | 推送 | `cx git push`（白名單 + 祕密掃描 + 子模組順序） | |
 | Ansible 靜態檢查 | `cx deploy syntax` / `cx deploy lint` | `ansible-playbook --syntax-check` / `ansible-lint` |
 | 部署 | `cx deploy check\|apply\|app\|rollback [限制]` | `ansible-playbook -i inventory/hosts.yml site.yml` |
 | 診斷 | `cx doctor` | — |
 
-**尚未實作**（打了會得到 exit 2 並指向 §12）：
-`cx fresh --rollback`、`cx fresh --mode carryover|scaffold` 的重建階段。
+> ⚠ 這裡曾經寫著「`cx fresh --rollback` 與重建階段尚未實作」，而同一份檔案的
+> §12.6 又說它們全部可用並實測過 —— **一份文件自己跟自己矛盾**，而讀者沒有辦法
+> 判斷該信哪一邊。2026-09-05 移除那段：兩者都早就實作並實跑驗證過了
+>（見 §12.6 的表格，以及 `bin/test/60_fresh.bats` 與 `bin/test/80_init.bats`）。
 
 `cx` 可從專案任何子目錄執行（向上找 `.cxroot` 標記 —— **不用 `git rev-parse`**，
 因為 `cx fresh` 會刪掉 `.git`，用 git 當解析器會在流程中途壞掉）。
 `cx install` 之後可在任何地方直接打 `cx`。
 
-### 新增一個動詞時，四個地方要一起改
+### 新增一個動詞時，六個地方要一起改
 
 1. `bin/cmd/<verb>.sh`，定義 `cmd_<verb>_main()`
 2. `cx` 的 `CX_CMD_FILE_OF`（只有「動詞名 ≠ 檔名」時才需要，例如 `up` → `compose.sh`）
 3. `bin/completion/cx.bash` 的 `verbs=`
 4. `bin/cmd/help.sh`
+5. `bin/cmd/tui.sh` 的選單 —— `cx verify tui` 的 `TUI-coverage` 要求每個動詞都到得了，
+   真的不該進選單的話要加進 `bin/lib/verify_meta.py` 的豁免清單並寫明理由
+6. `docs/cx-reference.md` —— `cx verify docs` 的 `DOC-cx-verbs` 會檢查每個動詞
+   都在那份參考裡出現過
 
+漏掉 5 或 6 不是靜默漂移，`cx verify` 會直接 FAIL —— 那是刻意的。
 漏掉第 1 項的後果實際發生過：dispatcher 把 8 個動詞指到一個從未被寫出來的
 `bin/cmd/compose.sh`，於是 `cx up` 回「未知的指令」。
 `cx doctor` 現在會檢查每個對外動詞都找得到實作檔。
@@ -752,6 +788,11 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症狀 → 原因 → 解法，全部是實際踩過的坑 |
 | [`docs/progress.md`](docs/progress.md) | 逐項進度追蹤與「仍未驗證什麼」 |
 | [`docs/docker-verification.md`](docs/docker-verification.md) | Phase 2 的驗收需求 **與實測結果**（2026-09-04 已回填） |
+| [`docs/guide-developer.md`](docs/guide-developer.md) | **開發者指南**：開新專案 → setup → 三模式 → 日常動詞 → gitflow → 除錯 |
+| [`docs/guide-tester.md`](docs/guide-tester.md) | **測試者指南**：test / verify / scan、報告判讀、放行條件 |
+| [`docs/guide-deployer.md`](docs/guide-deployer.md) | **部署者指南**：主機規劃 → 祕密 → check → apply → 回滾 |
+| [`docs/nginx-reference.md`](docs/nginx-reference.md) | Docker 與原生的 nginx 逐項對照（路由／大小／標頭／WAF） |
+| [`docs/acceptance.md`](docs/acceptance.md) | 需求追溯矩陣與人工驗收項目的實測證據 |
 
 `docs/docker-verification.md` 現在包含：15 項舊缺陷的驗收條件與結果、
 5 項阻斷級與 12 項重大項目的逐項結論、WAF 攔截率實測、
@@ -778,9 +819,12 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 ├── claude.md                本文件（原理與坑）
 ├── bin/
 │   ├── lib/{common,ui,archive,guard}.sh
-│   ├── lib/{ansible_lint,compose_mounts,verify_checks,sarif_gate}.py
+│   ├── lib/{ansible_lint,compose_mounts,verify_checks,verify_meta,
+│   │        inventory,scaffold_patch,waf_probe,sarif_gate}.py
 │   ├── cmd/{setup,doctor,compose,test,db,sonar,scan,verify,deploy,git,
-│   │        fresh,install,lint,tui,art,composer,npm,help}.sh
+│   │        fresh,init,rename,install,lint,style,tui,acl,code,pma,php,
+│   │        art,composer,npm,help}.sh
+│   ├── test/{helpers/,*.bats}        cx 自己的行為測試（cx test cli）
 │   └── completion/cx.bash
 ├── templates/gitignore/{main,backend,frontend}
 ├── docker/
@@ -869,13 +913,14 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 
 ### 12.2 Phase 2 — Docker（✅ 已驗證）
 
-`cx verify all` 共 52 項，**0 失敗、0 未驗**。
+`cx verify all` **0 失敗**。項數與未驗數請以實際輸出為準 —— 每加一條檢查就會變，而且未驗（SKIP）**不等於通過**，那是本專案的教條。
 逐項結果與 20 條「原始清單裡沒有、驗證過程才發現」的缺陷，
 全部回填在 [`docs/docker-verification.md`](docs/docker-verification.md) §6–§7。
 
 重點結論：
 
-* 三個模式**同時運行** 14 個容器，零埠衝突
+* 三個模式**同時運行** 15 個容器（dev 5 ・ test 6 ・ prod 4），零埠衝突
+  （`docker ps` 看到的可能更多：常駐的 SonarQube stack 另外兩個，Ansible 目標容器再一個）
 * D5 修正確認：`supervisorctl status` 看得到 5 個 RUNNING —— 舊版的 `CMD` 陣列缺陷
   讓 supervisord 從未啟動，**queue worker 從來沒跑過**
 * WAF 在 blocking 模式擋下 SQLi / XSS / 路徑穿越（403），而 `/admin/login` 不誤擋
@@ -965,7 +1010,7 @@ nuxi 在非互動下 `--template` 與 `--gitInit` 都是必填、還原摘要少
 
 ```bash
 cx doctor              # 先確認哪些阻擋已解除
-cx verify all          # 52 項驗收，產出帶時間戳的報告
+cx verify all          # 全部驗收，產出帶時間戳的報告
 cx scan all            # 四道防線
 cx deploy syntax       # Ansible 語法
 cx deploy lint         # ansible-lint + yamllint

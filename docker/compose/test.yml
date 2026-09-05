@@ -62,8 +62,17 @@ services:
     environment:
       PMA_HOST: mysql
       PMA_PORT: "3306"
-      PMA_USER: root
-      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:?根目錄 .env 缺少 MYSQL_ROOT_PASSWORD（跑 cx setup）}
+      # ⚠ 不要設 PMA_USER / PMA_PASSWORD。官方 phpmyadmin 映像一看到 PMA_USER
+      # 就把 $cfg['Servers'][$i]['auth_type'] 從 cookie 換成 config ——
+      # 登入表單整個消失，任何連得到這個埠的人都以那組帳密自動登入。
+      # 這裡填的是 root，所以等於對外開一個免認證的 MySQL root SQL 主控台。
+      # 實測：curl http://127.0.0.1:8891/ 不帶任何 cookie，回的是 140KB 的
+      # 已登入頁（root@172.18.0.4、有 logout 連結），不是登入表單。
+      # ${MYSQL_BIND:-127.0.0.1} 擋得住 LAN，但擋不住 app_net 上的其他容器
+      # —— nuxt / app 裡跑的 npm、composer 相依套件連得到 http://phpmyadmin/，
+      # 而它們手上只有低權限的 DB_PASSWORD，拿不到 MYSQL_ROOT_PASSWORD。
+      # 留白 = cookie 認證，用 .env 的 DB_USERNAME / DB_PASSWORD 登入，
+      # 這正是 bin/cmd/pma.sh:83-86 一直告訴使用者的流程。
       UPLOAD_LIMIT: 64M
     ports:
       - "${MYSQL_BIND:-127.0.0.1}:${PHPMYADMIN_PORT:-18891}:80"
@@ -85,7 +94,6 @@ services:
 
   # ── ModSecurity + OWASP CRS 反向代理 ──────────────────────────────────────
   waf:
-    # ModSecurity 的請求 body 緩衝是 MODSEC_REQ_BODY_LIMIT（約 12.5MB）/請求
     pids_limit: 256
     mem_limit: 512m
     image: ${WAF_IMAGE:-owasp/modsecurity-crs:4.28.0-nginx-alpine-202608131208}
@@ -112,8 +120,28 @@ services:
       MODSEC_AUDIT_LOG_FORMAT: JSON
       MODSEC_AUDIT_LOG_TYPE: Serial
       MODSEC_REQ_BODY_ACCESS: "On"
-      MODSEC_RESP_BODY_ACCESS: "On"
-      MODSEC_REQ_BODY_LIMIT: "13107200"
+      # ⚠ A16：這條鏈的大小順序不可以反過來。
+      #
+      #   PHP upload_max_filesize ≤ nginx client_max_body_size ≤ WAF body limit
+      #
+      #   原本 MODSEC_REQ_BODY_LIMIT 是 13107200（12.5MB），而 edge 的
+      #   client_max_body_size 是 **64m**（docker/edge/nginx.conf:29）——
+      #   順序整個反過來。後果：12.5MB 到 64MB 之間的上傳會先通過 edge，
+      #   再被 WAF 以 SecRequestBodyLimitAction Reject 擋成 413，
+      #   而錯誤訊息只會指向 ModSecurity，完全看不出是兩個限制設反了。
+      #
+      #   原生側（ansible/roles/nginx_myguard/defaults/main.yml:42-53、296）
+      #   一直是從 app_max_upload_mb 推導出這條鏈並在 A16 明文要求
+      #   「waf_request_body_limit 必須 > nginx_client_max_body_size」——
+      #   也就是說兩條路徑對同一件事的規則不一致，而 Docker 這邊是錯的那一邊。
+      #   67108864 = 64MB，與 edge 相等；NOFILES 給 4MB（Livewire 的元件快照
+      #   很容易破 1MB，ModSecurity 預設的 131072 對 Filament 太小）。
+      MODSEC_REQ_BODY_LIMIT: "67108864"
+      MODSEC_REQ_BODY_NOFILES_LIMIT: "4194304"
+      # 與原生側對齊（waf_response_body_access 預設 Off）。
+      # 開著會讓 ModSecurity 緩衝回應內容 —— 成本高，而且超過
+      # SecResponseBodyLimit 的回應會被截斷；兩條路徑不該有不同的行為。
+      MODSEC_RESP_BODY_ACCESS: "Off"
       PARANOIA: ${MODSEC_PARANOIA:-1}
       ANOMALY_INBOUND: ${MODSEC_ANOMALY_INBOUND:-5}
       ANOMALY_OUTBOUND: ${MODSEC_ANOMALY_OUTBOUND:-4}

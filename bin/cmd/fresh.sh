@@ -7,13 +7,27 @@
 #   在確認閘門通過之前，不刪除任何東西。
 
 # ── 保留：不動 ────────────────────────────────────────────────
+#
+# ⚠ docker-compose.yml 與 .dockerignore 在 2026-09-05 之前是列在 FRESH_MIGRATE
+#   裡的，而 _fresh_delete 會把 FRESH_DELETE **加上** FRESH_MIGRATE 一起刪掉。
+#   當時的註解寫「Phase 2 會重寫根目錄那兩份」—— 那句話在遷移進行中是對的，
+#   遷移完成之後就過期了：**根目錄的 docker-compose.yml 現在就是 Phase 2 的那一份**。
+#   後果是 cx fresh 跑完之後 docker/legacy/ 有一份 .orig 副本，而根目錄什麼都沒有，
+#   於是每一個 compose 動詞都死在「缺少 base compose」——
+#   一個「重建成可以直接跑的新專案」的動詞，交出來的樹是不能跑的。
+#   2026-09-05 實測確認（cx fresh --phase delete 之後 cx dev config → EX_PRECOND）。
 FRESH_PRESERVE=(
     bin cx .cxroot templates docs claude.md
     .vscode reports ansible .env .env.example .gitignore
     docker sonar-project.properties .semgrepignore
+    docker-compose.yml .dockerignore
 )
 # ── 遷移：搬到 docker/ 之後才刪除原處（使用者要求保留 docker 自定義設定）──
-FRESH_MIGRATE=( php nuxt docker-compose.yml .dockerignore )
+#
+# 只剩下真正屬於**舊版面**的那兩個目錄。它們在現在的樹上早就不存在了
+# （遷移在 Phase 2 就做完），保留這一段是為了讓還停在舊版面的 checkout
+# 也能一次升上來 —— 不存在時整段是 no-op。
+FRESH_MIGRATE=( php nuxt )
 # ── carryover 要疊回去的「應用層」目錄 ────────────────────────
 # 一行一個，不用空白分隔的字串 —— 後者只能靠字詞分割展開，目錄名含空白就裂開。
 # 骨架檔（config/、bootstrap/、package.json、nuxt.config）刻意**不在**這裡：
@@ -73,8 +87,15 @@ TXT
 _fresh_nuke() {
     local t=$1 real
     [[ -e $t || -L $t ]] || return 0
-    # 拒絕 symlink（避免被指到樹外）
-    [[ -L $t ]] && { cx_warn "跳過 symlink：$t"; return 0; }
+    # 拒絕 symlink（避免被指到樹外）—— 而且要**中止整個刪除**，不是略過後繼續。
+    # 原本是 warn + return 0：於是 $CX_ROOT/.git 若是 symlink，它被跳過，
+    # 迴圈照樣把 backend/ frontend/ README.md .gitmodules 全部刪掉，
+    # 最後才由下面的斷言 cx_die —— 而 cx_die 會 exit，
+    # _fresh_recovery_note 與 _fresh_state_write 都來不及寫。
+    # 樹被毀了一半，麵包屑卻停在 migrate。
+    [[ -L $t ]] && { cx_error "$t 是 symlink —— 拒絕刪除，且中止整個刪除階段"
+                     cx_dim "  symlink 可能指到樹外。請先自己確認它指向哪裡再處理。"
+                     return 1; }
     real=$(cd "$(dirname "$t")" && pwd -P)/$(basename "$t")
     # 必須嚴格位於 CX_ROOT 之下
     case $real in
@@ -100,6 +121,22 @@ _fresh_preflight() {
 
     [[ -f $CX_ROOT/.cxroot ]] || { cx_error "PF-02 找不到 .cxroot"; fail=1; }
     cx_ok "PF-02 CX_ROOT=$CX_ROOT"
+
+    # PF-10 這棵樹必須是一般的 clone，不能是 git worktree。
+    # worktree 的 .git 是指標檔，真正的物件庫在 CX_ROOT 之外 —— 封存抓不到、
+    # 刪除刪不掉、rollback 還原不了，而整條流程會「成功」。
+    # archive.sh 也有一道同樣的防線，但那時封存目錄已經建出來了；
+    # 這裡擋掉才符合「preflight 完全不動任何東西」。
+    if [[ -f $CX_ROOT/.git ]]; then
+        cx_error "PF-10 這是 git worktree（.git 是檔案）—— cx fresh 不支援"
+        cx_dim "  真正的物件庫：$(git -C "$CX_ROOT" rev-parse --absolute-git-dir 2>/dev/null || echo '<未知>')"
+        cx_dim "  請在主 checkout 上執行： git worktree list"
+        fail=1
+    elif [[ -d $CX_ROOT/.git ]]; then
+        cx_ok "PF-10 一般 clone（.git 是目錄）"
+    else
+        cx_warn "PF-10 沒有 .git —— 只有在已經 fresh 過的樹上才正常"
+    fi
 
     if cx_docker_ok; then
         cx_ok "PF-03 Docker daemon 可用（$(docker version --format '{{.Server.Version}}')）"
@@ -241,14 +278,9 @@ _fresh_migrate() {
         done
     done
 
-    # 舊 compose 與 dockerignore 留一份參考（Phase 2 會重寫根目錄那兩份）
-    local src dst
-    for src in docker-compose.yml:docker-compose.yml.orig .dockerignore:dockerignore.orig; do
-        dst=${src#*:}; src=${src%%:*}
-        [[ -f $CX_ROOT/$src ]] || continue
-        _fresh_step "$src → docker/legacy/" -- \
-            cp -a "$CX_ROOT/$src" "$CX_ROOT/docker/legacy/$dst" || return $?
-    done
+    # 這裡曾經把 docker-compose.yml 與 .dockerignore 複製到 docker/legacy/ ——
+    # 那是為了在「刪掉原處」之前留一份參考。現在那兩個檔改成保留（見
+    # FRESH_PRESERVE 的說明），所以複製一份 .orig 只會讓人以為根目錄那份會被換掉。
 
     # 舊腳本也留一份，方便對照
     for f in init.sh refresh.sh README.md; do
@@ -263,8 +295,18 @@ _fresh_migrate() {
 # ---------------------------------------------------------------------------
 # 確認閘門
 # ---------------------------------------------------------------------------
+# ⚠ 閘門必須知道 mode。
+#
+#   scaffold 與 carryover 的差別是**你自己寫的程式碼會不會回來**，
+#   而那是這兩個模式之間唯一真正重要的差異。原本的閘門完全沒提到模式 ——
+#   於是 `cx fresh --mode scaffold` 會用一段跟 carryover 一模一樣的文字，
+#   問你要不要刪掉 backend/ 與 frontend/，然後**不告訴你它不會疊回來**。
+#
+#   claude.md 早就寫著 scaffold「需額外輸入 NO CARRYOVER」，但那個閘門
+#   從來沒有存在過（2026-09-05 稽核發現）。與其把文件改成符合現況，
+#   不如把現況改成符合文件 —— 因為文件描述的才是對的行為。
 _fresh_gate() {
-    local A=$1
+    local A=$1 mode=${2:-carryover}
     local body msg_db
 
     msg_db=$(sed -n 's/^db_dump=//p' "$A/MANIFEST.txt" | head -1)
@@ -292,6 +334,14 @@ _fresh_gate() {
   $A
 
 保留不動：bin/ cx .cxroot templates/ docs/ claude.md docker/ .vscode/
+          docker-compose.yml .dockerignore ansible/ .env
+
+重建模式：$mode
+$( [[ $mode == scaffold ]] \
+     && printf '%s' "  ⚠ scaffold —— 只產生全新骨架。你自己寫的程式碼（app/ routes/
+     tests/ pages/ components/ …）**不會**被疊回去，只會留在上面那份封存裡。" \
+     || printf '%s' "  carryover —— 產生全新骨架之後，會把 app/ routes/ tests/ 等
+     從封存疊回去。" )
 
 此操作不可逆。確定要繼續嗎？
 TXT
@@ -300,6 +350,12 @@ TXT
     cx_ask_typed "最終確認" \
         "請輸入下列字串以確認刪除：\n\n    DESTROY $(cx_project)\n" \
         "DESTROY $(cx_project)" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+    # scaffold 是唯一會**默默丟掉使用者程式碼**的模式，所以多要一個 token。
+    if [[ $mode == scaffold ]]; then
+        cx_ask_typed "scaffold 確認" \
+            "scaffold 不會把你的程式碼疊回去。\n\n請輸入：\n\n    NO CARRYOVER\n" \
+            "NO CARRYOVER" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+    fi
     return 0
 }
 
@@ -311,7 +367,7 @@ _fresh_delete() {
     local t
     for t in "${FRESH_DELETE[@]}" "${FRESH_MIGRATE[@]}"; do
         # docker-compose.yml 與 .dockerignore 已複製到 docker/legacy/，原處刪除
-        _fresh_nuke "$CX_ROOT/$t"
+        _fresh_nuke "$CX_ROOT/$t" || return 1
     done
 
     # 斷言：.gitmodules 與 .git 必須真的消失，否則後續 git init 會出問題。
@@ -322,10 +378,14 @@ _fresh_delete() {
     if (( CX_DRY_RUN )); then
         cx_dim "  [dry-run] 略過刪除後的斷言（實際上什麼都沒刪）"
     else
-    [[ ! -e $CX_ROOT/.gitmodules ]] || cx_die "$EX_FAIL" ".gitmodules 仍存在"
-    [[ ! -e $CX_ROOT/.git ]]        || cx_die "$EX_FAIL" ".git 仍存在"
-    [[ ! -e $CX_ROOT/backend ]]     || cx_die "$EX_FAIL" "backend/ 仍存在"
-    [[ ! -e $CX_ROOT/frontend ]]    || cx_die "$EX_FAIL" "frontend/ 仍存在"
+    # ⚠ 這裡一律 return，不可以 cx_die。cx_die 會 exit 整個行程，
+    #   於是 cmd_fresh_main 的 _fresh_recovery_note 與 _fresh_state_write
+    #   都不會執行 —— 樹已經被動過，卻沒有留下任何救援線索。
+    #   閘門**之後**的失敗一律交還控制權，這是本檔的通則。
+    [[ ! -e $CX_ROOT/.gitmodules ]] || { cx_error ".gitmodules 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/.git ]]        || { cx_error ".git 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/backend ]]     || { cx_error "backend/ 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/frontend ]]    || { cx_error "frontend/ 仍存在"; return 1; }
     fi
     cx_ok "斷言通過：.git / .gitmodules / backend / frontend 皆已移除"
 
@@ -334,7 +394,7 @@ _fresh_delete() {
     # 容器內 uid 1000 寫不進去，非 root 的操作者也刪不掉。
     cx_run mkdir -p "$CX_ROOT/backend" "$CX_ROOT/frontend"
     [[ -O $CX_ROOT/backend && -O $CX_ROOT/frontend ]] \
-        || cx_die "$EX_FAIL" "backend/ frontend/ 擁有者不是目前使用者"
+        || { cx_error "backend/ frontend/ 擁有者不是目前使用者"; return 1; }
     cx_ok "已建立空的 backend/ frontend/（擁有者 $(id -un)）"
 }
 
@@ -520,23 +580,11 @@ _fresh_carryover() {
         cx_dim "  舊版留在封存裡：$A/src-$c.tar.gz"
     done
 
-    # ── 重新接上測試資料庫防護 ──────────────────────────────────────────
-    #
-    # tests/ 在疊回清單裡，phpunit.xml **不在**（它是骨架檔，重建時由
-    # composer create-project 重新產生）。於是 tests/bootstrap.php 與
-    # DatabaseSafetyGuard.php 會回來，但 phpunit.xml 的 bootstrap= 變回
-    # vendor/autoload.php —— 防護的檔案都在，卻沒有人呼叫它了。
-    # 2026-09-05 的實跑確認了這個路徑：verify 階段當場擋下來。
-    #
-    # 這一行不是「把舊的 phpunit.xml 搬回來」（那會抵銷重建的意義），
-    # 而是把一個**跟著疊回來的檔案**重新接上。所以在這裡自動做，
-    # 而 _fresh_verify_rebuild 的斷言留著當後盾。
-    if [[ -f $CX_ROOT/backend/tests/bootstrap.php && -f $CX_ROOT/backend/phpunit.xml ]] \
-       && ! grep -q 'bootstrap="tests/bootstrap.php"' "$CX_ROOT/backend/phpunit.xml"; then
-        _fresh_step "重新接上測試資料庫防護（phpunit.xml 的 bootstrap=）" -- \
-            sed -i 's|bootstrap="vendor/autoload.php"|bootstrap="tests/bootstrap.php"|' \
-                "$CX_ROOT/backend/phpunit.xml" || return $?
-    fi
+    # 這裡曾經另外用 sed 把 phpunit.xml 的 bootstrap= 接回去。
+    # 現在 _fresh_rebuild 會在 carryover **之後**跑 scaffold_patch.py，
+    # 那支程式已經負責同一件事（而且是整組零件一起，不只 phpunit.xml）。
+    # 留兩份實作的話，兩邊的比對條件會各自演化：這裡只換字面上的
+    # vendor/autoload.php，scaffold_patch 換的是任何 bootstrap="…"。
 }
 
 _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
@@ -554,7 +602,29 @@ _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
     fi
     _fresh_rebuild_backend  || return 1
     _fresh_rebuild_frontend || return 1
+
     [[ $mode == carryover ]] && { _fresh_carryover "$A" || return 1; }
+
+    # ── 把「範本自己擁有的東西」裝回去 ──────────────────────────────────────
+    #
+    # composer create-project 與 nuxi init 產生的是**框架的**骨架，
+    # 裡面當然沒有本專案加上去的保護。少了這一步，cx init 交出來的新專案會：
+    #   * 沒有測試資料庫的 hard guard（phpunit.xml 的 bootstrap= 也會被寫回
+    #     vendor/autoload.php —— 檔案在不在都無所謂了，因為沒有人呼叫它）
+    #   * 沒有 ESLint 基線
+    # 2026-09-05 實測：修這一段之前，cx init shop 產出的專案 cx verify cli
+    # 有 9 個 FAIL，其中 6 個就是這兩組。
+    #
+    # ⚠ 必須排在 _fresh_carryover **之後**。
+    #   carryover 用 `cp -a -T` 把封存的 tests/ 疊上來，會覆蓋同名檔案 ——
+    #   排在前面的話，從「還沒有防護的舊專案」carryover 過來時，
+    #   剛裝好的 TestCase.php 會被舊版蓋掉（實測 assertResolvedConfig 由 1 變 0），
+    #   而 bootstrap.php 因為封存裡沒有反而留著 —— 一個半接上的防護，
+    #   Layer A 在跑、Layer B 不見了，而 _fresh_verify_rebuild 也不會發現。
+    #   範本擁有的檔案必須是**最後**寫入的那一個。
+    cx_step "裝回範本自有的設定（測試防護 / ESLint）"
+    cx_run python3 "$CX_ROOT/bin/lib/scaffold_patch.py" --root "$CX_ROOT" \
+        || { cx_error "範本設定裝回失敗"; return 1; }
     return 0
 }
 
@@ -595,6 +665,22 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
         grep -q "\"$pkg\"" "$CX_ROOT/backend/composer.json" 2>/dev/null \
             && cx_ok "composer.json 含 $pkg" || { cx_error "composer.json 缺少 $pkg"; fail=1; }
     done
+
+    # ── 根目錄的基礎設施 ────────────────────────────────────────────────
+    # 少了這一段，「重建完成」可以在**沒有 docker-compose.yml** 的情況下宣告成功，
+    # 而使用者要到下一次 cx dev up 才發現整個 compose 都不能用。
+    # 這正是 2026-09-05 抓到的那個缺陷會走的路徑。
+    for f in docker-compose.yml .dockerignore docker/compose/dev.yml \
+             docker/compose/test.yml docker/compose/prod.yml; do
+        [[ -f $CX_ROOT/$f ]] && cx_ok "存在：$f" || { cx_error "缺少：$f"; fail=1; }
+    done
+    # 而且要是**現行**那一份（引用 docker/compose/），不是舊版面留下來的
+    if grep -q 'docker/compose/' "$CX_ROOT/docker-compose.yml" 2>/dev/null; then
+        cx_ok "docker-compose.yml 是現行版面（引用 docker/compose/）"
+    else
+        cx_error "docker-compose.yml 不是現行版面 —— 沒有引用 docker/compose/"
+        fail=1
+    fi
 
     # ── 不該有的殘留 ────────────────────────────────────────────────────
     # 前一次半途失敗留下的 .git 會讓 git submodule add 報
@@ -682,11 +768,18 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
 _fresh_git_init() {
     if (( CX_DRY_RUN )); then
         cx_step "初始化三個 Git repo（dry-run：略過）"
-        cx_dim "  [dry-run] backend 與 frontend 各 git init -b main + 首次 commit"
-        cx_dim "  [dry-run] 主庫 git init -b main + submodule add（相對 URL）+ commit"
+        cx_dim "  [dry-run] backend 與 frontend 各 git init -b <CX_GIT_MAIN_BRANCH> + 首次 commit"
+        cx_dim "  [dry-run] 主庫 git init + submodule add（相對 URL，追蹤 <CX_GIT_DEV_BRANCH>）+ commit"
+        cx_dim "  [dry-run] 三個 repo 各建立 <CX_GIT_DEV_BRANCH>，主庫設 submodule.recurse"
         return 0
     fi
     cx_step "初始化三個 Git repo"
+    # 分支名一律從 .cxroot 推導。原本三處寫死 -b main，於是 .cxroot 的
+    # CX_GIT_MAIN_BRANCH 只是裝飾 —— 改了它，cx init 產出的專案還是 main。
+    # git.sh 的存取器是唯一來源；fresh 只是它的另一個使用者。
+    declare -F _git_main_branch >/dev/null || . "$CX_ROOT/bin/cmd/git.sh"
+    local main_br dev_br
+    main_br=$(_git_main_branch); dev_br=$(_git_dev_branch)
     local c
     for c in backend frontend; do
         [[ -d $CX_ROOT/$c ]] || { cx_error "$c 不存在，無法初始化"; return 1; }
@@ -694,7 +787,7 @@ _fresh_git_init() {
             cx_ok "$c 已經是 git repo，略過"
             continue
         fi
-        cx_run git -C "$CX_ROOT/$c" init -b main || return 1
+        cx_run git -C "$CX_ROOT/$c" init -b "$main_br" || return 1
         # .gitignore 從 templates/ 拿 —— 那是本專案維護的版本，
         # 比框架自帶的更貼近這裡的目錄佈局（vendor 的 volume、reports/ 等）。
         [[ -f $CX_ROOT/templates/gitignore/$c ]] \
@@ -705,7 +798,7 @@ _fresh_git_init() {
     done
 
     if [[ ! -e $CX_ROOT/.git ]]; then
-        cx_run git -C "$CX_ROOT" init -b main || return 1
+        cx_run git -C "$CX_ROOT" init -b "$main_br" || return 1
         [[ -f $CX_ROOT/templates/gitignore/main ]] \
             && cx_run cp "$CX_ROOT/templates/gitignore/main" "$CX_ROOT/.gitignore"
     fi
@@ -724,10 +817,21 @@ _fresh_git_init() {
         esac
         # 先用本地路徑 add（此刻遠端還不存在），再把 URL 改寫成相對形式。
         cx_run git -C "$CX_ROOT" -c protocol.file.allow=always \
-            submodule add --force -b main "./$c" "$c" || return 1
+            submodule add --force -b "$dev_br" "./$c" "$c" || return 1
         cx_run git -C "$CX_ROOT" config --file .gitmodules "submodule.$c.url" "$url" || return 1
         cx_ok "$c → $url"
     done
+
+    # ⚠ submodule add 對「已經是有效 repo」的目錄**不會 absorb gitdir** ——
+    # 它只印 "Adding existing repo at 'backend' to the index"，於是 backend/.git
+    # 留成真目錄、.git/modules/ 是空的。那跟任何人 clone 下來看到的佈局**不一樣**：
+    #   * 別人 clone 得到指標檔 + .git/modules/backend
+    #   * cx init 產出的卻是各自獨立的 .git 目錄
+    # 兩種佈局在 archive.sh 走的是不同分支（rev-parse --absolute-git-dir 的結果
+    # 一個在樹內、一個在樹外），也就是新專案第一次 cx fresh 的封存形狀會跟
+    # 範本自己的不一樣。收斂成標準佈局，讓後續每一條路徑只需要面對一種現實。
+    cx_run git -C "$CX_ROOT" submodule absorbgitdirs \
+        || cx_warn "submodule absorbgitdirs 失敗 —— 子模組的 .git 仍是獨立目錄（不影響功能）"
 
     cx_run git -C "$CX_ROOT" add -A || return 1
     if git -C "$CX_ROOT" diff --cached --quiet; then
@@ -737,6 +841,11 @@ _fresh_git_init() {
             || return 1
         cx_ok "主庫：$(git -C "$CX_ROOT" rev-parse --short HEAD 2>/dev/null)"
     fi
+    # gitflow 的分支拓撲。原本完全沒有這一步 —— 新專案三個 repo 只有 main，
+    # 於是 cx git feature start 第一次就 EX_PRECOND。與 cx git flow-init 共用
+    # 同一個函式，免得「新專案長什麼樣」與「舊專案補成什麼樣」變成兩份定義。
+    _git_flow_ensure_branches || cx_warn "分支拓撲沒有補完 —— 之後可以跑 cx git flow-init"
+
     cx_dim "  遠端還沒建。要建： cx git remote-init（需要 gh 已登入）"
 }
 
@@ -775,7 +884,9 @@ _fresh_phase_index() {              # _fresh_phase_index <名稱> → 索引
 # （不帶 --from）什麼都還原不了。唯一的安全網就這樣被自己蓋掉了。
 _FRESH_STATE=".cx/fresh.state"
 
-_fresh_state_write() {              # _fresh_state_write <已完成的階段> <封存路徑>
+# 語意：除了 delete 之外都是「已完成的階段」；delete 是「**已進入**」——
+# 理由見 cmd_fresh_main 裡那段呼叫的註解（唯一不可逆的階段要撐過中途被砍）。
+_fresh_state_write() {              # _fresh_state_write <階段> <封存路徑>
     (( CX_DRY_RUN )) && return 0
     cx_ensure_host_dirs "$CX_ROOT/.cx" >/dev/null 2>&1
     printf 'phase=%s\narchive=%s\nstamp=%s\n' "$1" "$2" "$(cx_stamp)" \
@@ -947,7 +1058,7 @@ cmd_fresh_main() {
         # .dockerignore / README.md 複製成 docker/legacy/*.orig —— 那是三個
         # 進版控的檔案。於是使用者在確認畫面按取消，畫面印「未變更任何檔案」，
         # git status 卻多出三個 M。訊息說謊比動到檔案更糟。
-        _fresh_gate "$A" || { _fresh_state_clear; return "$EX_ABORT"; }
+        _fresh_gate "$A" "$mode" || { _fresh_state_clear; return "$EX_ABORT"; }
     else
         # resume：沿用上一次的封存
         A=${from:-$prev_arc}
@@ -969,8 +1080,15 @@ cmd_fresh_main() {
 
     # ── 3 delete（不可逆點）──────────────────────────────────────────────
     if (( floor <= 3 )); then
-        _fresh_delete || { _fresh_recovery_note "$A" "刪除失敗"; return "$EX_FAIL"; }
+        # ⚠ 麵包屑必須寫在 _fresh_delete **之前**。
+        # 原本寫在之後：刪除途中被 SIGKILL 的話，狀態仍停在 migrate（index 2），
+        # 於是下一次執行的守門 `pidx >= 3` 不成立 —— cx fresh 會對著已經被毀掉
+        # 的樹重新封存一次，並**覆寫 LATEST**，把唯一救得回來的封存蓋掉。
+        # 那正是 _fresh_state_write 上方註解宣稱要防的事，而它防不到。
+        # delete 這一格因此讀作「已進入」而非「已完成」—— 它是唯一不可逆的階段，
+        # 而麵包屑存在的意義就是撐過「死在階段中間」。
         _fresh_state_write delete "$A"
+        _fresh_delete || { _fresh_recovery_note "$A" "刪除失敗"; return "$EX_FAIL"; }
     fi
     (( ceiling >= 4 )) || { cx_ok "delete 階段完成"; cx_info "封存：$A"; return 0; }
 

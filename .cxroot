@@ -6,3 +6,8 @@ CX_GH_ORG=Information-Study
 CX_REPO_MAIN=pm
 CX_REPO_BACKEND=pm-backend
 CX_REPO_FRONTEND=pm-frontend
+# gitflow：main 是發布線，dev 是開發主線。
+# feature/* 從 dev 開、合回 dev；release/* 與 hotfix/* 才碰 main。
+# 這兩個值是**唯一**的分支模型來源 —— git.sh 原本有六處寫死 main。
+CX_GIT_MAIN_BRANCH=main
+CX_GIT_DEV_BRANCH=dev

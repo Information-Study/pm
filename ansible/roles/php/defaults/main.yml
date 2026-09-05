@@ -56,11 +56,21 @@ php_cli_conf_d: "{{ php_conf_root }}/cli/conf.d"
 php_fpm_pool_d: "{{ php_conf_root }}/fpm/pool.d"
 # 日誌目錄。common role 也會建這個目錄（common_log_directories），
 # 屬性必須跟它一致，否則兩個 role 會每次互相翻對方的 owner/mode。
-# common 用 owner=deploy_user、group=web_group、mode=common_log_dir_mode(0770)。
+# common 那一邊的 common_log_dir_mode 也是 0750，兩邊對齊。
+#
+# ⚠ 0750 而不是 0770 —— 群組（www-data）**不可以**有寫入權。
+# pool.conf.j2:50 的 slowlog 是由 **root 的 FPM master** 依「路徑名」
+# 以 open(O_CREAT|O_APPEND) 建立的，而且沒有 O_NOFOLLOW。目錄一旦對 www-data
+# 可寫，被打穿的 worker 就能 unlink 掉 slowlog、換上一個指向 /etc/cron.d/x
+# 或 /etc/ld.so.preload 的 symlink，讓 root 幫它建檔並寫進去 —— www-data → root。
+# fs.protected_symlinks 擋不住這個：它只作用在「sticky 且 world-writable」的
+# 目錄，而這裡是 0770 且沒有 sticky。這與 CVE-2016-1247（Debian nginx）是同一個
+# 原語，當年的修法也正是把日誌目錄的寫入權從 web 使用者手上拿掉。
+# 群組保留 r-x：worker 仍穿得過目錄，去 append configure.yml 預先建好的 error_log。
 php_log_dir: /var/log/php
 php_log_dir_owner: "{{ deploy_user }}"
 php_log_dir_group: "{{ web_group }}"
-php_log_dir_mode: "0770"
+php_log_dir_mode: "0750"
 php_fpm_socket: "/run/php/php{{ php_version }}-fpm-{{ app_slug }}.sock"
 
 # ---- 套件清單 ---------------------------------------------------------------

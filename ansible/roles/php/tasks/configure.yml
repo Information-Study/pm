@@ -14,6 +14,23 @@
     group: "{{ php_log_dir_group }}"
     mode: "{{ php_log_dir_mode }}"
 
+# 目錄改成 0750 之後 www-data 不能在裡面建檔，而 pool.conf.j2:61 的
+# php_admin_value[error_log] 是 **worker（www-data）** 在 setuid 之後才
+# lazy open 的 —— 檔案不存在的話 PHP 的錯誤記錄會靜默失效（不會噴錯，
+# 只是從此什麼都不寫）。所以這裡先把檔案建出來並交給 php_fpm_user，
+# 之後 worker 只需要 append，不需要目錄的寫入權。
+# slowlog 不必預建：那個是 root 的 master 開的，root 不受目錄權限限制。
+# logrotate-php.j2 用 copytruncate，inode 與 owner 都不會變。
+- name: 預先建立 FPM error_log（目錄已不開放 www-data 建檔）
+  ansible.builtin.file:
+    path: "{{ php_log_dir }}/{{ app_slug }}-fpm-error.log"
+    state: touch
+    owner: "{{ php_fpm_user }}"
+    group: "{{ php_log_dir_group }}"
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve
+
 - name: 建立 FPM pool 目錄與 conf.d（套件通常已建，這裡確保萬無一失）
   ansible.builtin.file:
     path: "{{ item }}"

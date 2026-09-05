@@ -24,13 +24,17 @@
       owner: "{{ deploy_user }}"
       group: "{{ deploy_group }}"
       mode: "0750"
-    # PM2 的 out/err 由 deploy 身分的行程直接寫入。
-    # 屬性刻意跟 common 的 common_log_directories 一致（deploy:web_group 0770），
+    # PM2 的 out/err 由 deploy 身分的行程直接寫入 —— deploy 是目錄擁有者，
+    # 0750 的 owner 位元就夠，不需要群組寫入權。
+    # 屬性刻意跟 common 的 common_log_directories 一致（deploy:web_group 0750），
     # 否則兩個 role 每次執行都會互相翻對方的 owner / mode。
+    # ⚠ 0750 而不是 0770：root 的 mysql 備份 cron 與 systemd 的
+    # StandardOutput=append: 都會依路徑名在這裡開檔，群組（www-data）可寫
+    # 等於把 symlink 換檔的原語交給被打穿的 web 層。詳見 common/vars/main.yml。
     - path: "{{ app_log_dir }}"
       owner: "{{ deploy_user }}"
       group: "{{ web_group }}"
-      mode: "0770"
+      mode: "0750"
     # ecosystem 放在 shared/ 底下，換版不會被覆蓋。
     # common 已經建好父層 {{ app_shared_dir }}（02750 deploy:web_group），
     # 這裡只補 pm2/ 子目錄，沿用同樣的 setgid 模式。

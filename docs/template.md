@@ -44,7 +44,7 @@ cx setup deps                         重建 backend/vendor（204 MB）、
                                       frontend/node_modules（278 MB）
 cx deploy galaxy                      重建 ansible/collections（38 MB）
 cx dev restart nuxt                   容器當時在跑，一定要重啟
-之後 cx doctor 32/0/0、cx verify 39 通過 0 失敗、17 個容器仍在、端點全 200
+之後 cx doctor 32/0/0、cx verify 39 通過 0 失敗、容器仍在、端點全 200
 ```
 
 > ### ⚠ 這次實測第一輪是**失敗**的，原因值得單獨記一筆
@@ -151,7 +151,7 @@ cx dev restart nuxt                   容器當時在跑，一定要重啟
 > `bin/lib/*.py` 是子行程，看不到只被 source 的變數 ——
 > 所以 `cx` 現在把 `CX_PROJECT_NAME` 一起 `export`。
 
-> ⚠ `.cxroot` 改完之後要重跑 **`cx setup guard`**（hook 是產生出來的檔案，
+> ⚠ `cx setup` **不會**安裝 push guard，它只印一行提示。要裝得自己跑 `cx git guard install`。
 > 白名單在安裝當下就被烤進去，不會自己更新）。
 >
 > ⚠ 2026-09-04 起 push guard 預設**不安裝**，`cx setup` 也不再包含它。
@@ -186,6 +186,18 @@ bash -c '. bin/lib/common.sh; . bin/lib/guard.sh;
 ---
 
 ## 2. 從這個範本開一個新專案
+
+**建議用 `cx init`** —— 完整流程、兩個模式的差別、每一個閘門的原文、以及實測紀錄，
+都在 [`guide-developer.md`](guide-developer.md) 的 **§0**：
+
+```bash
+cx init shop [--org <組織>] [--gh | --remote <URL>] [--mode carryover|scaffold]
+```
+
+它會先完整封存並驗證封存可用才進閘門，出事可以 `cx fresh --rollback`。
+
+底下是**手動等價做法**，給不想用 `cx init` 的情況。它不封存、不驗證、沒有 rollback，
+而且 `.cxroot` 要自己改：
 
 ```bash
 # 1. 複製，但不要帶產出物與祕密
@@ -230,7 +242,7 @@ $EDITOR .cxroot          # 改專案名、GitHub 組織、repo 名
 | 多階段映像（php 7 個 stage、nuxt 5 個） | `docker/php`、`docker/nuxt` |
 | 反向代理 + Livewire/Filament 路由 | `docker/edge` |
 | ModSecurity + OWASP CRS | `docker/waf` |
-| Ansible 原生部署（12 role，實測 476 task 全綠） | `cx deploy` |
+| Ansible 原生部署（12 role，實測全綠（task 數各次執行不同，見 docs/progress.md 的實跑紀錄）） | `cx deploy` |
 | DevSecOps 四道防線 + 專屬退出碼 | `cx scan` |
 | 三 repo 同進同出的 git 操作 | `cx git` |
 | 兩條 runner（容器／原生）各自獨立 | `--runner` |

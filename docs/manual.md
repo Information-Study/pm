@@ -312,7 +312,7 @@ ssh-keyscan -H <你的主機> >> ~/.ssh/known_hosts
 
 ```bash
 ./cx dev up -d && ./cx test up -d && ./cx prod up -d
-docker ps        # 14 個容器，零埠衝突
+docker ps        # 三個模式共 15 個容器（dev 5 / test 6 / prod 4），零埠衝突
 ```
 
 靠的是**兩件事同時成立**：

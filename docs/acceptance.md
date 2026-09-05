@@ -48,7 +48,7 @@ cx test all            # 後端 PHPUnit + 前端型別檢查
 | MySQL | 127.0.0.1:3306 | 127.0.0.1:13306 | **不發布** | `D13`、`D7` |
 | phpMyAdmin | 8891 | **18891** | **無** | `check_prod_closed` |
 | ModSecurity WAF | — | 18081 | — | `waf-*` |
-| xdebug | 有（`debug`） | 有（`develop`） | **無**（build 斷言） | `D12`、`rt-*` |
+| xdebug | 有（`debug`） | 裝了但預設 `off`（`docker/env/test.env` 的 `XDEBUG_MODE=off`；`cx test coverage` 會臨時打開） | **無**（build 斷言） | `D12`、`rt-*` |
 | `display_errors` | On | **Off** | **Off** | `zz-mode-*.ini` |
 | `APP_DEBUG` | true | false | false | `docker/env/*.env` |
 | 原始碼掛載 | bind mount | 烘進映像 | 烘進映像 | `D14` |
@@ -86,7 +86,12 @@ cx test all            # 後端 PHPUnit + 前端型別檢查
 | `git` / `acl` / `deploy` / `verify` / `doctor` | — | ✔ | 與 runner 無關 |
 
 `✘` 的那幾格不是缺陷，是誠實的宣告：打了會得到帶理由的 `EX_PRECOND`，
-不會靜默降級。`cx verify` 的 `LC-declared-gaps` 盯著這一點。
+不會靜默降級。
+
+> ⚠ 這一格原本寫著「`cx verify` 的 `LC-declared-gaps` 盯著這一點」——
+> **那個檢查不存在**（`grep -rn LC-declared-gaps bin/` 沒有任何結果，也從未出現在任何
+> 報告裡）。這張矩陣目前是**手動維護**的。發明一個不存在的守門 ID，比誠實承認缺口更糟：
+> 它讓讀者以為這件事已經被自動守住了。
 
 ### Docker 不可用時
 
@@ -157,21 +162,38 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 | # | 項目 | 指令 | 實測結果 | 日期 |
 |---|---|---|---|---|
 | M1 | TUI 主選單與子選單畫得出來、進得去、離得開 | `script -q <log> -c 'cx tui'` 配鍵盤序列 | ✅ 主選單 9 項全部渲染；環境／容器／工具三個子選單都進得去並正確顯示內容（環境子選單在 2026-09-05 加入 `rename` 後為 9 項） | 2026-09-05 |
-| M2 | phpMyAdmin 真的能登入並看到資料表 | 瀏覽器開 8891 / 18891 | ⬜ 只驗到 HTTP 200，沒有真的登入 | |
+| M2 | phpMyAdmin 真的能登入並看到資料表 | `curl -s http://127.0.0.1:8891/ \| grep -c 'name="pma_password"'` → 1，然後瀏覽器實際登入 | ⚠ 部分：**登入表單現在確實會出現**（2026-09-05 修掉自動登入後實測，見下方）；「登入後看得到資料表」仍未走完 | 2026-09-05 |
 | M3 | Filament 後台實際登入並操作 | `cx db admin` → 瀏覽器 | ⬜ 未驗（沒有建立過管理員） | |
 | M4 | Sanctum SPA 完整登入流程 | 需要前端有登入頁 | ⬜ 未驗（前端目前沒有登入頁） | |
 | M5 | 真實跨源 CORS 行為 | 三個模式目前都是同源 | ⬜ 未驗 |  |
 
-> M2–M5 維持「未驗」。`/admin/login` 回 200、`/sanctum/csrf-cookie` 回 204、
+> M3–M5 維持「未驗」。`/admin/login` 回 200、`/sanctum/csrf-cookie` 回 204、
 > `/api/user` 未認證回 401 都是自動驗過的，但那不等於「走完一次登入」。
 > 沒跑過的就寫沒跑過。
+>
+> ⚠ **M2 的「只驗到 HTTP 200」本身就是這一輪抓到的安全缺陷的藏身處。**
+> 2026-09-05 的安全審查實測：`curl http://127.0.0.1:8891/` 不帶任何 cookie，
+> 回的是 140,814 bytes 的**已登入**頁面（`<title>127.0.0.1:8891 / mysql |
+> phpMyAdmin 5.2.3</title>`、內文有 `root@172.18.0.4` 與 logout 連結），
+> 不是登入表單。原因是 `docker/compose/{dev,test}.yml` 設了 `PMA_USER: root`，
+> 而官方映像一看到 PMA_USER 就把 `auth_type` 從 cookie 換成 config ——
+> 登入畫面整個消失，任何連得到那個埠的人都自動以 **MySQL root** 登入。
+>
+> 自動登入的頁面回的**也是 200**，所以「只驗 HTTP 200」這個判準對它完全無感。
+> 這正是本專案一再遇到的那一類：檢查存在、但它量的不是它宣稱在量的東西。
+> 修法是移除那兩個環境變數（回到 cookie 認證，也就是 `bin/cmd/pma.sh` 一直以來
+> 告訴使用者的流程），並新增 `SEC-pma-auth` 靜態檢查盯住它不會再被加回去。
+> 修後實測：同一個請求變成 18,531 bytes 的登入表單（`name="pma_username"` /
+> `name="pma_password"` 都在）；從 app_net 上的 `app` 容器內取也是 18,578 bytes
+> 的登入表單，也就是容器網路那條升權路徑一併關閉。
 
 ---
 
-## 6.5 本輪實測結果（2026-09-05）
+### 7.2 本輪實測結果（2026-09-05）
 
 環境：WSL2 Ubuntu 26.04.1・Docker 29.7.2・Compose v5.5.0・PHP 8.5.4・Node 24.20.0
-三個模式全部從這個工作樹重新 build 並啟動（17 個容器同時運行）。
+三個模式全部從這個工作樹重新 build 並啟動（15 個容器：dev 5 ・ test 6 ・ prod 4；
+當時 SonarQube stack 也開著，所以 `docker ps` 是 17）。
 
 ### `cx verify all`
 
@@ -275,7 +297,7 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 | 三個 Git 初始化 | ✅ 各自 main、各 1 commit、`.gitmodules` 用相對 URL |
 | `fresh --rollback` | ✅ exit=0（兩次），HEAD 與 commit 數都與 MANIFEST 一致 |
 
-### 7.1 TUI
+#### TUI
 
 TUI 需要 TTY，非互動環境會回 `EX_PRECOND` 並印出可行動訊息（這一點是自動驗的）。
 選單結構的正確性由 `cx verify tui` 自動驗：

@@ -203,7 +203,7 @@ xdebug 有裝但預設關閉（常開會讓 ZAP 的時間量測失真）。
 ```bash
 cp ansible/inventory/hosts.yml.example              ansible/inventory/hosts.yml
 cp ansible/inventory/group_vars/staging.yml.example ansible/inventory/group_vars/staging.yml
-ansible-vault create ansible/inventory/group_vars/vault.yml
+ansible-vault create ansible/inventory/group_vars/all/vault.yml
 ```
 
 完整步驟與變數表見 [`ansible/README.md`](ansible/README.md)。
@@ -214,7 +214,7 @@ ansible-vault create ansible/inventory/group_vars/vault.yml
 
 ```bash
 ./cx dev up -d && ./cx test up -d && ./cx prod up -d
-docker ps        # 14 個容器，零埠衝突
+docker ps        # 三個模式共 15 個容器（dev 5 / test 6 / prod 4），零埠衝突
 ```
 
 靠的是**兩件事同時成立**：
@@ -316,9 +316,29 @@ pm/
 
 ## 拿這個 repo 當新專案的範本
 
-整套工具鏈與「pm」這個名字是**解耦**的：改 `.cxroot` 一個檔，compose 的
+整套工具鏈與「pm」這個名字是**解耦**的：`.cxroot` 是專案身分的來源，compose 的
 project 前綴、SonarQube 的 project 與網路、push guard 的白名單、
 `cx fresh` 的確認字串就全部跟著換。
+
+### 建議做法：`cx init`
+
+```bash
+cx init shop                                     # 改名 + 抹掉範本的 git 歷史 + 重建
+cx init shop --gh                                # 順便用 gh 建三個 GitHub public repo
+cx init shop --remote git@github.com:me/shop.git # 或接到現成的遠端
+```
+
+它會先做完整封存並**驗證封存可用**才進確認閘門；出事可以 `cx fresh --rollback`。
+抹掉的是三個 repo 的全部歷史（主庫的 `.git` 一併帶走 `.git/modules/` 裡的兩個
+子模組物件庫），保留的是 `bin/` `docker/` `ansible/` `docs/` `.env` 等基礎設施。
+
+完整流程、兩個模式的差別、閘門文字、以及實測紀錄，見
+[`docs/guide-developer.md`](docs/guide-developer.md) 的 **§0**。
+
+### 手動等價做法（不想用 `cx init` 時）
+
+底下這段做的是同一件事的手工版本。它**不會**幫你封存、不會驗證、也沒有 rollback，
+而且要自己記得改 `.cxroot`：
 
 ```bash
 rsync -a --exclude .git --exclude node_modules --exclude vendor \
@@ -383,7 +403,8 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 5. **不要在容器裡裸跑 `php artisan test`，一律用 `cx test`。**
    `backend/phpunit.xml` 的 `<env force="true">` 在容器裡**擋不住** compose 注入的
    環境變數（PHPUnit 的 force 不寫 `$_SERVER`，而 Laravel 讀 `$_SERVER` 優先），
-   裸跑會打到真正的開發資料庫。
+     現在應用層還有 `DatabaseSafetyGuard`：連上非測試資料庫時以 **exit 3** 中止，
+     所以裸跑不會真的打進開發資料庫。但它擋不住 `-c 別的.xml`，還是用 `cx test`。
 
 完整原理、每個坑的來由、以及未驗證項目清單見 [`claude.md`](claude.md)。
 驗收狀態見 [`docs/docker-verification.md`](docs/docker-verification.md) 與 `reports/verify/`。
@@ -395,7 +416,11 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 | 文件 | 內容 |
 |---|---|
 | [`docs/manual.md`](docs/manual.md) | **完整操作說明書**，從零開始到三個階段全流程 |
+| [`docs/guide-developer.md`](docs/guide-developer.md) | **開發者指南**：clone → setup → 三模式 → 日常動詞 → gitflow → 除錯 |
+| [`docs/guide-tester.md`](docs/guide-tester.md) | **測試者指南**：test / verify / scan、報告判讀、放行條件 |
+| [`docs/guide-deployer.md`](docs/guide-deployer.md) | **部署者指南**：主機規劃 → 祕密 → check → apply → 回滾 |
 | [`docs/cx-reference.md`](docs/cx-reference.md) | `cx` 每一個動詞的完整參考 |
+| [`docs/nginx-reference.md`](docs/nginx-reference.md) | Docker 與原生的 nginx 逐項對照（路由／大小／標頭／WAF） |
 | [`docs/docker-reference.md`](docs/docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF |
 | [`docs/ansible-reference.md`](docs/ansible-reference.md) | play 結構、12 個 role、vault、實測踩過的坑 |
 | [`docs/runners.md`](docs/runners.md) | 兩條 runner：容器與原生各自獨立運作 |

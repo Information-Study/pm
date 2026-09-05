@@ -75,11 +75,21 @@ cmd_help_main() {
   sonar up|down|status|token|url|logs|wait
                     常駐 SonarQube（獨立 project pm_devsecops）
 
-  verify [範圍...]  跑 docs/docker-verification.md 的驗收清單並產出報告
-                    範圍：static / runtime / app / ansible / all
+  verify [範圍...] [--quiet] [--report <檔>]
+                    驗收並產出報告。範圍：
+                      cli docs tui        純靜態，什麼都不用裝（含跨檔一致性）
+                      static              需要 Docker（合併後的 compose）
+                      runtime app         需要容器跑起來
+                      waf acl ansible     需要對應的環境
+                      all                 以上全部
+                    不給範圍時跑： cli docs tui static app ansible
+                    （刻意不含 runtime / waf / acl —— 那三個需要額外環境，
+                      放進預設會讓「什麼都沒裝的樹」永遠有紅字）
 
 ── 第三階段：部署 ───────────────────────────────────────────────────────────
   prod up -d --build   起正式環境的容器（只發布 80）
+  deploy hosts init|add|rm|show|check|edit
+                    產生與驗證 ansible/inventory/hosts.yml（唯一沒有工具幫忙的必要檔案）
   deploy syntax     ansible-playbook --syntax-check（三個 playbook）
   deploy lint       ansible-lint（production profile）+ yamllint
   deploy check [限制]  --check --diff 乾跑
@@ -99,8 +109,13 @@ cmd_help_main() {
   git commit [-m <訊息>]      提交（子模組先、主庫 gitlink 後）
   git save [-m <訊息>]        commit 的別名
   git scan-secrets            推送前的祕密掃描（gitleaks，push 會自動先跑）
-  git branch list|new|switch|delete <名稱>
-  git remote-init             用 gh 建立 Information-Study 的三個 public repo
+  git branch list|new|switch|delete <名稱> [--repo main|backend|frontend]
+  git flow-init               補齊 gitflow 拓撲（三個 repo 的 dev、submodule.recurse）
+  git feature start|finish|list --repo backend|frontend
+                              功能分支只開在子模組；主庫的 dev 在 finish 時跟上 gitlink
+  git config identity|editor|show   git 身分與編輯器（三個 repo 一起設，或 --global）
+  git remote-set <URL...>     指到現成的 remote（不經過 gh）
+  git remote-init             用 gh 在 .cxroot 的 CX_GH_ORG 底下建三個 public repo
   git push                    推送（白名單 + 祕密掃描 + 子模組順序）
   git guard install|status|remove   pre-push 白名單 hook（**選用**，預設未安裝）
 
@@ -110,6 +125,9 @@ cmd_help_main() {
                     範圍：ansible / php / js / sh / all（預設 all）
                     ansible 那一支是 --syntax-check 的替代品，不是等價物 ——
                     ansible 裝好之後請改用 cx deploy lint
+  init <新專案名>   把範本設定成新專案：改名 → 重建 → 接遠端（不可逆，有閘門）
+                    --org <組織> --gh | --remote <URL> --mode scaffold|carryover
+  re-init           同樣的重建流程但不改名（重來一次）
   rename <新名稱>   把整個範本改成新的專案名（.cxroot / .env / sonar /
                     group_vars / site.yml + deploy.sh 的群組名）。不碰 .git。
                     先跑 cx --dry-run rename <新名稱> 看變更點

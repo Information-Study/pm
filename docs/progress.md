@@ -1,10 +1,13 @@
 # 進度追蹤
 
-> 最後更新：**2026-09-04**
+> 最後更新：**2026-09-05**
 >
-> 最後一次完整回歸：`cx doctor` 25 通過 / 1 警告 / **0 失敗**；
-> `cx verify all` **52 項全過**；12 個 cx 動詞（doctor / verify / scan ×4 /
-> test ×2 / deploy ×2 / db / git）全數 exit 0；三個模式的 14 個容器同時運行。
+> 最後一次完整回歸：`cx doctor` 35 通過 / 0 警告 / 0 失敗；`cx verify all` 0 失敗；
+> `cx test cli`、`cx lint all`、`cx deploy lint` 皆 rc=0；三個模式的 15 個容器同時運行（dev 5 ・ test 6 ・ prod 4）。
+>
+> ⚠ **通過項數刻意不寫在這裡。** 它每加一條檢查就過期一次，而過期得毫無徵兆 ——
+> 本檔曾經長期停在「52 項」而實際早已不同。要看數字請跑 `cx verify all`，
+> 或看 `reports/verify/` 最新的那一份。
 > 這份文件的維護原則：**沒跑過的就寫沒跑過。** 不要因為程式碼看起來對就標成已驗證。
 > 可機器驗證的部分請以 `cx verify` 的輸出為準，不要手抄。
 
@@ -28,7 +31,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 |---|---|---|---|
 | 0 | `claude.md` 專案指南 | ✅ 完成 | — |
 | 1 | 更名、`cx` 骨架、備份、刪除舊紀錄 | ✅ 完成 | — |
-| 2 | Docker 三模式 + 多階段映像 + edge + WAF | ✅ **完成並實測** | `cx verify all`（52 項全過） |
+| 2 | Docker 三模式 + 多階段映像 + edge + WAF | ✅ **完成並實測** | `cx verify all` 0 失敗（項數見報告） |
 | 3 | 前後端重建 + 三 Git 初始化 | ✅ 完成 | migration / 測試 / 端點皆已實跑 |
 | 4 | DevSecOps 四道防線 + `cx scan` | ✅ **四道全部跑得動** | 見下表 |
 | 5 | Ansible 12 role + playbook | ✅ **對真實 systemd 目標完整跑通**（475 task、failed=0） | `cx deploy apply`（見下方「Ansible 真機進度」） |
@@ -45,13 +48,13 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
 | `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`（另有**應用層 hard guard**：任何非 sqlite 的目標都 fail-fast，退出碼 3）；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
-| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**66 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
+| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**97 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |
 | `verify` | ✅ | **cli / docs / tui / static / runtime / app / waf / acl / ansible / all**。前三個不需要 Docker 也不需要 `.env`，剛 clone 下來的樹就跑得完 |
-| `deploy` | ✅ | syntax / lint / check / ping / facts / vars / apply / app / rollback / galaxy |
-| `git` | ✅ | status / **fetch** / **pull** / sync / commit / branch / guard / remote-init / scan-secrets / push |
+| `deploy` | ✅ | syntax / lint / check / ping / facts / vars / apply / app / rollback / galaxy / **hosts**（init/add/rm/show/check/edit） |
+| `git` | ✅ | status / fetch / pull / sync / commit（`save`）/ branch / **feature** / **flow-init** / **config** / guard / remote-init / **remote-set** / scan-secrets / push。gitflow：feature 只開在子模組，主庫的 dev 在 finish 時同步 gitlink |
 | `art` `composer` `npm` | ✅ | 容器與原生兩條路都可用，`--runner` 可強制；`npm --backend` 是新增的（舊 `npm-php` service 從來不存在） |
 | `lint` | ✅ | ansible / php / **js（ESLint + Prettier）** / sh。`sh` 有一小撮「其實是正確性缺陷」的 warning 視同 error（`fatal_warn`） |
 | `style` | ✅ | php（Pint）/ js（Prettier）—— **會改檔案**，與 `lint` 的分工是硬的 |
@@ -59,7 +62,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `rename` | ✅ | 把整個範本改成新的專案名；`--dry-run` 先列變更點，**不碰 `.git`**。由 `cx verify cli` 的 `TPL-*` 四項守著一致性 |
 | `tui` `install` `uninstall` `help` | ✅ | |
 | `code` | ✅ | 用 VS Code 開專案根（不是所在的子目錄） |
-| `pma` | ✅ | 開 phpMyAdmin；只有 dev 有，埠從合併後的 compose 設定讀 |
+| `pma` | ✅ | 開 phpMyAdmin；**dev 與 test 兩個模式都有**（prod 刻意沒有），埠從合併後的 compose 設定讀 |
 | `php` | ✅ | 直接跑 php（`cx art` 只涵蓋 artisan），兩條 runner 都支援 |
 | `setup system` | ✅ | 需要 root 的系統套件；有確認閘門，sudo 不可用時只印指令 |
 | `setup native` | ✅ | system → tools → deps 一次做完（2026-09-04 新增） |
@@ -137,7 +140,7 @@ push 白名單: ^(https://github\.com/|git@github\.com:)Acme-Inc/(shop|shop-api|
 | `cx setup deps` | 重建三棵相依樹（204 + 89 + 278 MB） |
 | `cx deploy galaxy` | 重建 `ansible/collections`（38 MB） |
 | `cx dev restart nuxt` | 容器當時在跑，node_modules 被抽掉會讓 dev server 壞掉，要重啟 |
-| 之後 | `cx doctor` 32/0/0、`cx verify` 39 通過 0 失敗、17 個容器仍在跑、端點全 200 |
+| 之後 | `cx doctor` 32/0/0、`cx verify` 39 通過 0 失敗、容器仍在跑、端點全 200 |
 | `reports/` | `.gitignore` 與 `README.md` 都由 `cx setup dirs` 自動補回，之後 `git status reports/` 是空的 |
 
 ### 第一輪失敗，暴露三個缺陷（都已修）
@@ -292,6 +295,71 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 
 ---
 
+## 2026-09-05（第二輪）新增功能與抓到的缺陷
+
+這一輪的起點是四份 TUI 的使用回報。**其中三份的根因是同一個缺陷**，
+而那個缺陷本身不在被回報的功能裡。
+
+### 一個缺陷解釋了三份回報
+
+回報說「執行錯誤時沒有錯誤訊息」「沒有 acl 選單」「git 缺少 pull」。
+前兩者其實一直都在（`tui.sh` 有 `_tui_acl`，也有 pull）。所以先查為什麼看不到：
+
+```
+cx --ui dialog tui   （機器上沒裝 dialog）→ 零輸出、exit 0
+```
+
+`_cx_dlg` 執行 `dialog` 得到 127 → `_tui_menu` 的 `if` 為假 → 回傳 1 →
+`cmd_tui_main` 的 while 當成「使用者選了離開」→ 正常結束。
+**使用者面對一個不抱怨也不做事的指令，於是合理推論「選單裡沒有那些功能」。**
+
+修法是把「使用者取消」與「後端壞了」分開（0/1/255 vs 其餘），
+並讓 `cx_ui_init` 在明確指定的後端不存在時當場報錯。
+
+### 這一輪抓到的其他缺陷
+
+| # | 缺陷 | 為什麼之前沒被發現 |
+|---|---|---|
+| R-1 | **`cx fresh` 會刪掉根目錄的 `docker-compose.yml` 與 `.dockerignore`** —— `_fresh_delete` 迴圈跑的是 `FRESH_DELETE` **加上** `FRESH_MIGRATE`，而後者含那兩個檔 | 舊註解寫「Phase 2 會重寫根目錄那兩份」，遷移做完之後那句就過期了。實測 `cx fresh --phase delete` 之後 `cx dev config` 回 EX_PRECOND「缺少 base compose」——**一個「重建成可以直接跑的新專案」的動詞，交出來的樹是不能跑的** |
+| R-2 | **`cx git commit` 把失敗報成成功** —— 每個 `cx_run git add/commit` 都沒有接退出碼，然後無條件印 ✔ | 實測：pre-commit hook 失敗時印「✔ 主庫已提交（4 項，含 gitlink）」、exit 0，而 repo 裡一個 commit 都沒有 |
+| R-3 | **骨架產生之後，範本自己的保護整組消失** —— `cx init shop` 產出的專案 `cx verify cli` 有 9 個 FAIL，其中 6 個是測試資料庫 guard 與 ESLint | `composer create-project` / `nuxi init` 產生的是**框架的**骨架。GRD-wire 的說明早就寫過同一件事，只是當時說的是 carryover，實際上 scaffold 更嚴重（連檔案都不存在） |
+| R-4 | **WAF 的 body 上限比 nginx 小**（Docker 12.5MB < edge 64m），A16 的順序反了 | 原生側從 `app_max_upload_mb` 推導整條鏈並明文要求這個順序 —— 兩條路徑對同一件事的規則不一致，而 Docker 是錯的那一邊 |
+| R-5 | **Docker 少了四個 PHP 前綴**（`/filament` `/login` `/logout` `/broadcasting`）與 `/images/` | 實測都回 Nitro 的 404。`/login` `/logout` 是 Laravel 預設的 auth 路由名，`/broadcasting/auth` 是 Echo 的授權端點，`/images/` 是 Filament 的資產路徑 |
+| R-6 | **`^~ /admin` 會吃掉 `/admino`** —— `^~` 是純前綴，原生的 `(/|$)` 不會 | 邊界差異，比清單差異更難發現 |
+| R-7 | **CSP / COEP / CORP 只有 Docker 有** —— 原生的 `nginx_csp` 是空字串 | 正好是反過來的：正式機才是真的會被打的那一邊 |
+| R-8 | 我自己在修 TUI 時引進的回歸：用 `2>&1 \| tee` 抓輸出會讓子行程的 stdout/stderr 變成 pipe，而 `common.sh` 的顏色是看 `[[ -t 2 ]]` | 選單裡跑的每個指令都失去紅✘綠✔，**反而更難看出哪裡失敗**。改用 `script -qec` 給真的 pty（實測顏色保留、退出碼原樣帶回） |
+
+### 新增的功能
+
+| 動詞 | 做什麼 |
+|---|---|
+| `cx init <名稱>` / `cx re-init` | 把範本設定成新專案。**幾乎沒有自己的邏輯** —— 依序呼叫 `cx rename`（必須在前）、`cx fresh`、`cx git remote-init/remote-set`。閘門用 `INIT <新名字>` 而不是 fresh 的 `DESTROY <舊名字>` |
+| `cx deploy hosts` | inventory 的產生與驗證（init/add/rm/show/check/edit）。`check` 擋 A15 的三種違反 |
+| `cx git feature start/finish/list` | gitflow。從 dev 開、合回 dev（`--no-ff`），不推送也不刪分支 |
+| `cx git config identity/editor/show` | 三個 repo 一起設，或 `--global`。editor 會拒絕 `true`/`false`/`:`/`cat` 這類 no-op |
+| `cx git commit --repo` | 只提交 main / backend / frontend 其中一個 |
+| `cx git remote-set` | 指到現成的 remote，不經過 gh |
+
+### 新增的檢查
+
+| id | 守什麼 |
+|---|---|
+| `A13-parity` | `docker/edge` 的 PHP 前綴 ⊇ `group_vars` 的 `nginx_php_prefixes` |
+| `A16` | WAF 的 body 上限 ≥ edge 的 `client_max_body_size`（跨檔） |
+
+### ⚠ 誠實說明：哪些東西**不能**拆到不同主機
+
+使用者要求「把 nginx、前端、後端、資料庫部署到不同或相同主機」。
+實際檢查後：**nginx / 前端 / 後端必須在同一台**，這不是設定問題而是架構事實 ——
+`php_fpm_socket` 是 unix socket，前端 PM2 綁 `127.0.0.1:3000`。
+要拆得改成 TCP + 內網授權 + upstream 指到遠端，那是架構變更。
+
+**可以**拆的是資料庫層：多台 `web` + 其中一台兼 `db_primary`
+（A15 要求 `db_primary` 剛好一台且必須也在 `web`，因為 migration 掛在 `web` 的 gate 上）。
+`cx deploy hosts check` 會擋下違反，並提醒多台 web 要一併處理的四件事。
+
+---
+
 ## 仍未驗證的項目
 
 ### Ansible 真機進度
@@ -396,7 +464,10 @@ cx deploy apply staging         # 真的跑（會列出目標主機並要求確�
 ### `cx fresh` 的重建階段
 
 備份、驗證封存、確認閘門、刪除都可用且有測過。
-**重建階段與 `--rollback` 仍未實作** —— 打了會得到 `EX_USAGE` 並指向本節。
+> ⚠ 這裡曾經寫著「重建階段與 `--rollback` 仍未實作」。**那已經過期**：
+> `fresh.sh` 的階段表含 rebuild / verify / git-init，`--rollback` 也實作並實跑過
+>（`bin/test/60_fresh.bats` 有「刪除之後可以用 --rollback 回到原狀」的案例）。
+> 同一份文件的其他段落早就這樣寫了 —— 這一行是漏改的。
 
 ---
 

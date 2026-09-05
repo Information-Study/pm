@@ -102,7 +102,9 @@ trap cx_on_err ERR
 # shellcheck source=/dev/null
 . "$CX_ROOT/.cxroot"
 
-cx_ui_init
+# cx_ui_init 會在「明確指定了一個不存在的 --ui 後端」時回傳非 0。
+# 不接這個退出碼的話，後面每一個對話框都會失敗，而使用者只會看到一片空白。
+cx_ui_init || exit "$EX_PRECOND"
 
 CX_MODE=${CX_MODE_OVERRIDE:-${CX_MODE:-dev}}
 export CX_MODE
@@ -125,6 +127,8 @@ declare -A CX_CMD_FILE_OF=(
     # test 不在這裡 —— 它有自己的檔，因為 cx test 同時是「test 模式的 compose」
     # 與「跑測試套件」兩件事（cx test up 與 cx test back）。
     [dev]=compose [prod]=compose
+    # re-init 與 init 是同一支：差別只有「吃不吃新名字」這個位置參數。
+    [re-init]=init
 )
 
 verb=${1:-tui}

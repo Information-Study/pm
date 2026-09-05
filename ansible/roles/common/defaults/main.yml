@@ -144,7 +144,18 @@ common_create_laravel_shared_tree: true
 common_extra_directories: []      # [{path: ..., mode: ..., owner: ..., group: ...}]
 
 # ── 日誌 ────────────────────────────────────────────────────────────────────
-common_log_dir_mode: "0770"
+# ⚠ 0750，不是 0770 —— 群組（web_group / www-data）不可以有寫入權。
+# 這底下的每個日誌目錄都有「**root** 依路徑名開檔」的寫入者：
+#   /var/log/php   → FPM master 建 slowlog（root，O_CREAT|O_APPEND，無 O_NOFOLLOW）
+#   /var/log/<app> → mysql 備份 cron 的 `>>`（user: root）、queue/schedule unit 的
+#                    StandardOutput=append:（systemd 在降權成 User=www-data
+#                    **之前**就開好 fd）
+# www-data 正是 web 層被打穿後攻擊者拿到的身分。目錄只要對它可寫，它就能
+# unlink 既有 log 再換成指向 /etc/cron.d/x 的 symlink，讓 root 幫它建檔並寫入。
+# fs.protected_symlinks 擋不住：它只作用在 sticky 且 world-writable 的目錄。
+# 合法的寫入者在 0750 之下都還在 —— PM2 以 deploy_user（目錄擁有者）寫，
+# logrotate 的 su 也是 deploy_user / root。
+common_log_dir_mode: "0750"
 common_logrotate_enabled: true
 common_logrotate_rotate: 14
 common_logrotate_frequency: "daily"

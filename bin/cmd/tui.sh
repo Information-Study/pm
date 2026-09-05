@@ -25,35 +25,128 @@ _tui_need_tty() {
 _TUI_MODE=${CX_MODE:-dev}
 _TUI_RUNNER=${CX_RUNNER:-auto}
 
+# 退出碼 → 人看得懂的意思。
+# 這張表跟 bin/lib/common.sh 的 readonly EX_* 是同一組值；
+# 失敗對話框只印數字的話，使用者還是不知道 3 跟 1 差在哪。
+_tui_rc_meaning() {                 # _tui_rc_meaning <rc>
+    case ${1:-} in
+        1)  printf '一般失敗（EX_FAIL）—— 真的有問題' ;;
+        2)  printf '用法錯誤（EX_USAGE）—— 參數或子指令給錯了' ;;
+        3)  printf '前置條件不足（EX_PRECOND）—— 環境缺東西，不是程式有問題' ;;
+        4)  printf '使用者取消（EX_ABORT）' ;;
+        20) printf '① 品質防線有 finding（EX_SCAN_QUALITY）' ;;
+        21) printf '② SAST 有 finding（EX_SCAN_SAST）' ;;
+        22) printf '③ SCA 有 finding（EX_SCAN_SCA）' ;;
+        23) printf '④ DAST 有 finding（EX_SCAN_DAST）' ;;
+        130) printf '被 Ctrl-C 中斷' ;;
+        *)  printf '未分類的退出碼' ;;
+    esac
+}
+
+# 失敗時把結果**留在畫面上**。
+#
+# ⚠ 為什麼一定要用對話框，而不是只 printf：
+#   whiptail 用的是終端機的 alternate screen buffer（實測：進場送
+#   \033[?1049h、離場送 \033[?1049l）。_tui_run 把輸出印在**主畫面**，
+#   然後回到選單時 whiptail 又切進 alternate buffer 把它蓋掉 ——
+#   使用者的感受就是「執行失敗，但沒有任何錯誤訊息」。
+#   把錯誤放進 msgbox，它就跟選單在同一個 buffer 裡，蓋不掉。
+_tui_show_failure() {               # _tui_show_failure <指令> <rc> <log 檔>
+    local what=$1 rc=$2 log=$3 tail_txt=''
+    [[ -s $log ]] && tail_txt=$(tail -n 18 "$log" \
+        | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r$//')
+    local body
+    body="指令：cx $what
+
+結束於 exit $rc —— $(_tui_rc_meaning "$rc")
+"
+    if [[ -n $tail_txt ]]; then
+        body+="
+最後 18 行輸出：
+------------------------------------------------------------
+$tail_txt"
+    else
+        body+="
+（這個指令沒有任何輸出）"
+    fi
+    if cx_interactive; then
+        _cx_dlg --title "✘ 執行失敗（exit $rc）" --scrolltext \
+            --msgbox "$body" 24 92 1>&8 2>&9 || true
+    else
+        printf '%s\n' "$body" >&9
+    fi
+}
+
 # 以真正的子行程執行動詞 —— 這是本檔最重要的一行
 _tui_run() {
     local -a argv=("$@")
     (( ${#argv[@]} )) || return 0
     printf '\n\033[34m▸ cx --mode %s --runner %s %s\033[0m\n\n' \
         "$_TUI_MODE" "$_TUI_RUNNER" "$(cx_q "${argv[@]}")" >&8
-    local rc=0
-    "$CX_ROOT/cx" --ui plain --mode "$_TUI_MODE" --runner "$_TUI_RUNNER" \
-        "${argv[@]}" </dev/tty >&8 2>&9 || rc=$?
+    # 同時**串流到終端機**與存進 log：串流是為了長指令看得到進度，
+    # 存檔是為了失敗時還能把內容放進對話框（printf 到主畫面會被選單蓋掉）。
+    #
+    # ⚠ 不能用 `… 2>&1 | tee log`。管線會讓子行程的 stdout/stderr 都變成 pipe，
+    #   而 bin/lib/common.sh 的顏色是看 `[[ -t 2 ]]` 決定的 —— 於是選單裡跑出來的
+    #   每一個指令都會失去紅✘綠✔，反而更難看出哪裡失敗；composer / npm /
+    #   docker compose 也會切到「非互動」分支，長指令的進度輸出跟著不見。
+    #   （2026-09-05 實測：管線版拿到的是純文字，script 版仍帶 \033[34m。）
+    #   script 給子行程一個真的 pty，兩件事同時成立，而且 -e 會把子行程的
+    #   退出碼原樣帶回來（實測 rc=2 與 rc=0 都正確）。
+    local log rc=0
+    log=$(mktemp) || log=''
+    local -a child=("$CX_ROOT/cx" --ui plain --mode "$_TUI_MODE"
+                    --runner "$_TUI_RUNNER" "${argv[@]}")
+    if [[ -n $log ]] && cx_have script; then
+        # ⚠ SHELL 必須明確指定 bash。
+        #   script -c 是把字串交給 $SHELL（沒設就是 /bin/sh）去執行，而 cx_q 用的是
+        #   bash 的 printf %q —— 含換行或特殊字元的參數會被寫成 $'a\nb' 這種
+        #   **bash 專屬**的 ANSI-C 引號。在 dash（Debian/Ubuntu 的 /bin/sh）底下
+        #   $'a\nb' 會被當成字面的 $a\nb，而且不會報錯，只是安靜地傳錯東西。
+        #   選單會把使用者輸入的 commit 訊息、分支名、專案名、主機 IP 走這條路。
+        SHELL=/bin/bash script -qec "$(cx_q "${child[@]}")" "$log" \
+            </dev/tty >&8 2>&9 || rc=$?
+    else
+        # 沒有 script 就退回「直接接 tty」——顏色保住，失敗對話框少了輸出摘要。
+        # 先把已經建好的暫存檔刪掉再清空變數，否則它會留在 $TMPDIR 沒人回收。
+        [[ -n $log ]] && rm -f "$log"
+        log=''
+        "${child[@]}" </dev/tty >&8 2>&9 || rc=$?
+    fi
     if (( rc )); then
         printf '\n\033[31m✘ cx %s 結束於 exit %d\033[0m\n' "${argv[0]}" "$rc" >&9
+        _tui_show_failure "$(cx_q "${argv[@]}")" "$rc" "$log"
     else
         printf '\n\033[32m✔ 完成\033[0m\n' >&8
+        printf '\n按任意鍵回到選單…' >&8
+        read -rsn1 </dev/tty || true
+        printf '\n' >&8
     fi
-    printf '\n按任意鍵回到選單…' >&8
-    read -rsn1 </dev/tty || true
-    printf '\n' >&8
+    [[ -n $log ]] && rm -f "$log"
     return 0
 }
 
+# ⚠ 回傳值有三種，呼叫端一律用 `|| return` 是不夠的：
+#     0  使用者選了一項（值印到 stdout）
+#     1  使用者選了離開／按了 ESC   ← 正常結束
+#     2  **介面後端壞了**            ← 必須讓使用者知道，不能當成「離開」
+#   把 2 併進 1 的後果，就是 2026-09-05 回報的那個症狀：
+#   選單一片空白、exit 0、使用者以為功能不存在。
 _tui_menu() {                       # _tui_menu <title> <back-label> <tag> <desc> ...
     local title=$1 back=$2; shift 2
-    local f; f=$(mktemp)
+    local f rc=0; f=$(mktemp)
     local -a items=("$@") ; items+=("<" "$back")
-    if _cx_dlg --title "$title" --cancel-button "離開" \
-            --menu "\n選擇一項：" 22 76 12 "${items[@]}" 2>"$f" 1>&8; then
+    _cx_dlg --title "$title" --cancel-button "離開" \
+            --menu "\n選擇一項：" 22 76 12 "${items[@]}" 2>"$f" 1>&8 || rc=$?
+    if (( rc == 0 )); then
         cat "$f"; rm -f "$f"; return 0
     fi
-    rm -f "$f"; return 1
+    rm -f "$f"
+    if (( rc >= 2 )); then
+        cx_error "選單畫不出來 —— 上面是原因。這不是「你按了離開」。"
+        return 2
+    fi
+    return 1
 }
 
 # 取一行輸入。回傳 0 且把值印到 stdout；使用者取消則回傳 1。
@@ -119,7 +212,10 @@ _tui_git() {
         pull     "三個 repo 一起更新（主庫先、子模組後）" \
         sync     "子模組 checkout 追蹤分支" \
         branch   "分支：列出／建立／切換／刪除" \
-        commit   "提交（子模組先、主庫 gitlink 後）" \
+        feature  "gitflow：在子模組開 feature／合回 dev" \
+        flow-init "補齊 gitflow 分支拓撲（三個 repo 的 dev）" \
+        commit   "提交（可指定單一 repo）" \
+        config   "git 身分與編輯器（三個 repo 一起設）" \
         push     "⚠ 推送（白名單 + 祕密掃描 + 子模組順序）" \
         guard    "push guard：狀態／安裝／移除" \
         scan     "推送前祕密掃描"); do
@@ -128,11 +224,110 @@ _tui_git() {
             guard)  _tui_git_guard ;;
             scan)   _tui_run git scan-secrets ;;
             branch) _tui_git_branch ;;
+            feature) _tui_git_feature ;;
+            flow-init) _tui_run git flow-init ;;
+            config) _tui_git_config ;;
             commit) _tui_git_commit ;;
             push)   cx_confirm "推送" \
                         "會把三個 repo 推到遠端（子模組先、主庫後）。\n\n推送前會先跑祕密掃描與白名單檢查。" \
                         && _tui_run git push ;;
             *)      _tui_run git "$c" ;;
+        esac
+    done
+}
+
+# 主機設定：inventory 是 cx deploy 唯一沒有工具幫忙產生的必要檔案。
+# 選單這一項存在的理由，就是讓「從全新 clone 走到部署」不需要離開 cx。
+_tui_deploy_hosts() {
+    local c
+    while c=$(_tui_menu "主機設定（ansible/inventory/hosts.yml）" "返回" \
+        show  "列出目前的主機與群組" \
+        add   "新增一台主機" \
+        rm    "移除一台主機" \
+        init  "建立空的 hosts.yml" \
+        check "驗證結構與 A15（db_primary 必須剛好一台且在 web 裡）" \
+        edit  "用編輯器直接開（註解會保留）"); do
+        case $c in
+            '<') return 0 ;;
+            add)
+                local name ip user
+                name=$(_tui_ask "新增主機" "inventory 裡的名稱（例：web-1）：") || continue
+                [[ -n $name ]] || continue
+                ip=$(_tui_ask "新增主機" "IP 或 DNS 名稱：") || continue
+                [[ -n $ip ]] || continue
+                user=$(_tui_ask "新增主機" "SSH 帳號（有 sudo；不是 deploy_user）：" "ubuntu") || user=''
+                local -a a=(deploy hosts add "$name" --ip "$ip")
+                [[ -n $user ]] && a+=(--user "$user")
+                _tui_run "${a[@]}" ;;
+            rm)
+                local name
+                name=$(_tui_ask "移除主機" "要移除哪一台？") || continue
+                [[ -n $name ]] || continue
+                _tui_run deploy hosts rm "$name" ;;
+            check) _tui_run deploy hosts check --ansible ;;
+            *)     _tui_run deploy hosts "$c" ;;
+        esac
+    done
+}
+
+# gitflow：feature 一律從 dev 開、合回 dev。
+# 側別選擇。feature 分支只開在子模組裡，所以每一個動作都要先問是哪一邊 ——
+# 主庫沒有 feature/*（理由見 bin/cmd/git.sh 的 _git_feature 說明）。
+_tui_feature_side() {
+    _tui_menu "哪一邊？" "取消" \
+        backend  "後端（Laravel + Filament）" \
+        frontend "前端（Nuxt + Vue）"
+}
+
+_tui_git_feature() {
+    local c side
+    while c=$(_tui_menu "gitflow — feature（只在子模組）" "返回" \
+        list   "列出兩個子模組的 feature/*" \
+        start  "在某個子模組從 dev 開一個新的 feature" \
+        finish "合回該子模組的 dev，主庫的 dev 同步 gitlink"); do
+        case $c in
+            '<') return 0 ;;
+            list) _tui_run git feature list ;;
+            start)
+                side=$(_tui_feature_side) || continue
+                [[ $side == '<' ]] && continue
+                local n; n=$(_tui_ask "新 feature" "名稱（會變成 feature/<名稱>）：") || continue
+                [[ -n $n ]] || continue
+                _tui_run git feature start "$n" --repo "$side" ;;
+            finish)
+                side=$(_tui_feature_side) || continue
+                [[ $side == '<' ]] && continue
+                _tui_run git feature finish --repo "$side" ;;
+        esac
+    done
+}
+
+# git 身分與編輯器。沒有身分的話 commit 會失敗，
+# 而 cx git commit 的前置檢查就是叫人來這裡。
+_tui_git_config() {
+    local c
+    while c=$(_tui_menu "Git 設定" "返回" \
+        show     "目前三個 repo 的 user / editor" \
+        identity "設定 user.name 與 user.email" \
+        editor   "設定 core.editor"); do
+        case $c in
+            '<') return 0 ;;
+            identity)
+                local n e g
+                n=$(_tui_ask "git 身分" "user.name：" "$(git config --global user.name 2>/dev/null)") || continue
+                e=$(_tui_ask "git 身分" "user.email：" "$(git config --global user.email 2>/dev/null)") || continue
+                [[ -n $n && -n $e ]] || continue
+                local -a a=(git config identity --name "$n" --email "$e")
+                cx_confirm "寫進 ~/.gitconfig？" \
+                    "選「是」寫成全域設定（--global）。\n選「否」只寫這三個 repo。" \
+                    && a+=(--global)
+                _tui_run "${a[@]}" ;;
+            editor)
+                local ed
+                ed=$(_tui_ask "git 編輯器" "core.editor（例：code --wait、nano、vim）：") || continue
+                [[ -n $ed ]] || continue
+                _tui_run git config editor "$ed" ;;
+            *) _tui_run git config "$c" ;;
         esac
     done
 }
@@ -235,6 +430,7 @@ _tui_env() {
         acl    "檔案權限（POSIX ACL）" \
         fresh  "⚠ 清理與重建專案" \
         rename "⚠ 把整個範本改成新的專案名" \
+        init   "⚠ 把範本設定成新專案（改名 → 重建 → 接遠端）" \
         status "三個 repo 的狀態"); do
         case $c in
             '<')     return 0 ;;
@@ -246,6 +442,7 @@ _tui_env() {
             acl)     _tui_acl ;;
             fresh)   _tui_fresh ;;
             rename)  _tui_rename ;;
+            init)    _tui_init ;;
             *)       _tui_run "$c" ;;
         esac
     done
@@ -336,6 +533,47 @@ _tui_acl_user() {
             rm)     _tui_run acl user rm "$who" ;;
         esac
     done
+}
+
+# init 是全專案破壞性最強的動作（改名 + 刪 .git + 重建骨架）。
+# 與 _tui_rename 同樣的節奏：先跑 dry-run 把計畫攤開，再問要不要真的做，
+# 而且**不加 --yes** —— cx init 自己的 typed gate（INIT <名字>）仍然會問。
+_tui_init() {
+    local c
+    c=$(_tui_menu "把範本設定成新專案" "返回" \
+        init    "改名 → 重建 → 接遠端（給全新的專案）" \
+        re-init "不改名，只重建一次") || return 0
+    [[ $c == '<' ]] && return 0
+    local mode
+    mode=$(_tui_menu "重建模式" "返回" \
+        scaffold  "全新骨架（你自己寫的程式碼不會回來）" \
+        carryover "全新骨架 + 把 app/ routes/ tests/ 疊回去") || return 0
+    [[ $mode == '<' ]] && return 0
+    local org
+    org=$(_tui_ask "GitHub 組織" "CX_GH_ORG（可留空，之後再設）：" "${CX_GH_ORG:-}") || org=''
+    # 兩個分支刻意各自把動詞寫成**字面**（而不是組進一個 args 陣列再展開）：
+    # verify_meta.py 的 TUI-coverage 是靠字面參數判斷「這個動詞從選單到得了」，
+    # 變數展開它看不見 —— 而那個檢查存在的理由，正是不讓動詞悄悄變成孤兒。
+    local -a tail=(--mode "$mode")
+    [[ -n $org ]] && tail+=(--org "$org")
+    local body="上面是 dry-run 的計畫。
+
+這會刪掉 .git 與前後端目前的內容，**不可逆**。
+cx init 自己還會要求你打一次確認字串。
+
+繼續嗎？"
+    if [[ $c == init ]]; then
+        local name
+        name=$(_tui_ask "新專案名稱" "小寫開頭，只能有小寫英數與 - _：") || return 0
+        [[ -n $name ]] || return 0
+        _tui_run --dry-run init "$name" "${tail[@]}"
+        cx_confirm --danger "真的要執行嗎？" "$body" || return 0
+        _tui_run init "$name" "${tail[@]}"
+    else
+        _tui_run --dry-run re-init "${tail[@]}"
+        cx_confirm --danger "真的要執行嗎？" "$body" || return 0
+        _tui_run re-init "${tail[@]}"
+    fi
 }
 
 # rename 會改寫專案身分（.cxroot / .env / group_vars…）。
@@ -462,6 +700,7 @@ _tui_db_restore() {
 _tui_deploy() {
     local c
     while c=$(_tui_menu "部署（Ansible）" "返回" \
+        hosts  "主機設定（inventory）—— 沒有它，下面每一項都會撞牆" \
         syntax "ansible-playbook --syntax-check" \
         lint   "ansible-lint + yamllint" \
         galaxy   "安裝 requirements.yml 的 collections" \
@@ -474,6 +713,7 @@ _tui_deploy() {
         rollback "⚠ 互動式回滾"); do
         case $c in
             '<')          return 0 ;;
+            hosts)        _tui_deploy_hosts ;;
             facts)        _tui_deploy_limit facts "主機名稱（必填，來自 inventory）" ;;
             vars|check|apply|app|rollback)
                           _tui_deploy_limit "$c" "限制範圍（留空 = staging）" ;;

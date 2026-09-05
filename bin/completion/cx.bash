@@ -22,9 +22,9 @@ _cx_completion() {
 
     local global_flags='--root --mode --ui --runner --dry-run --yes -y -h --help'
     # 這份清單就是「cx 到底做得到什麼」的權威來源之一 ——
-    # 新增動詞時四個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
+    # 新增動詞時六個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
     #（只有檔名與動詞不同名時才需要）、這裡、以及 bin/cmd/help.sh。
-    local verbs='help doctor setup acl lint style scan verify git fresh rename tui install uninstall code pma php
+    local verbs='help doctor setup acl lint style scan verify git fresh rename init re-init tui install uninstall code pma php
                  art composer npm db test sonar deploy
                  dev prod up down restart ps logs sh build config dc'
 
@@ -79,9 +79,9 @@ _cx_completion() {
                 COMPREPLY=($(compgen -W "all native env dirs guard tools system deps --help -h" -- "$cur"))
             else
                 case $sub in
-                    tools)  COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep" -- "$cur")) ;;
-                    system) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl" -- "$cur")) ;;
-                    native) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl" -- "$cur")) ;;
+                    tools)  COMPREPLY=($(compgen -W "composer node ansible trivy gitleaks semgrep shellcheck bats" -- "$cur")) ;;
+                    system) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl jq" -- "$cur")) ;;
+                    native) COMPREPLY=($(compgen -W "php nginx git docker mysql-client php-sqlite acl jq" -- "$cur")) ;;
                 esac
             fi
             ;;
@@ -101,7 +101,7 @@ _cx_completion() {
         sonar)
             COMPREPLY=($(compgen -W "up down status logs token url wait --help -h" -- "$cur")) ;;
         deploy)
-            COMPREPLY=($(compgen -W "syntax lint check ping facts vars apply app rollback galaxy --help -h" -- "$cur")) ;;
+            COMPREPLY=($(compgen -W "syntax lint check ping facts vars apply app rollback galaxy hosts --help -h" -- "$cur")) ;;
         verify)
             COMPREPLY=($(compgen -W "static runtime app ansible cli docs tui waf acl all --report --quiet --help -h" -- "$cur")) ;;
         test)
@@ -117,13 +117,13 @@ _cx_completion() {
             ;;
         git)
             if [[ -z $sub ]]; then
-                COMPREPLY=($(compgen -W 'status fetch pull sync commit save branch guard remote-init scan-secrets push' -- "$cur"))
+                COMPREPLY=($(compgen -W 'status fetch pull sync commit save branch feature flow-init config guard remote-init remote-set scan-secrets push' -- "$cur"))
                 return
             fi
             case $sub in
                 branch)
                     if (( argn == 1 )); then
-                        COMPREPLY=($(compgen -W 'list new switch delete' -- "$cur"))
+                        COMPREPLY=($(compgen -W 'list new switch delete --repo --from' -- "$cur"))
                     elif (( argn == 2 )) && [[ ${words[*]} == *' switch '* || ${words[*]} == *' delete '* ]]; then
                         local root; root=$(_cx_find_root)
                         [[ -n $root ]] && COMPREPLY=($(compgen -W \
@@ -131,9 +131,16 @@ _cx_completion() {
                             -- "$cur"))
                     fi
                     ;;
+                feature)
+                    if (( argn == 1 )); then
+                        COMPREPLY=($(compgen -W 'start finish list' -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W '--repo' -- "$cur"))
+                    fi
+                    ;;
                 guard)  (( argn == 1 )) && COMPREPLY=($(compgen -W 'install status remove' -- "$cur")) ;;
                 commit|save)
-                    COMPREPLY=($(compgen -W '-m --message --amend --skip-scan' -- "$cur")) ;;
+                    COMPREPLY=($(compgen -W '-m --message --amend --skip-scan --repo' -- "$cur")) ;;
                 pull)
                     COMPREPLY=($(compgen -W '--ff-only --allow-merge' -- "$cur")) ;;
                 push)
