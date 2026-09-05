@@ -30,7 +30,7 @@ _init_usage() {
                       （等同事後跑 cx git remote-init）
   --remote <URL>      指到**現成**的主庫 remote；backend / frontend 由同一個
                       目錄推導（proj.git → proj-backend.git / proj-frontend.git）
-  --mode <模式>       scaffold（預設，全新骨架）或 carryover（把現有程式碼疊回去）
+  --mode <模式>       carryover（預設，把現有程式碼疊回去）或 scaffold（純新骨架）
 
   跳過確認閘門請用**全域**旗標 --yes（放在動詞前面）：
     cx --yes init shop        # 危險，只在拋棄式副本上用
@@ -49,7 +49,22 @@ TXT
 }
 
 _init_parse() {                     # 共用的旗標解析；結果放進 _INIT_*
-    _INIT_ORG=''; _INIT_GH=0; _INIT_REMOTE=''; _INIT_MODE=scaffold
+    # 預設 carryover，與 cx fresh 一致。
+    #
+    # 這裡曾經是 scaffold，而那會產出一個**缺零件**的新專案：
+    # backend/ 不只是 Laravel 骨架，它還帶著範本自己接上去的三樣東西 ——
+    #   app/Providers/Filament/AdminPanelProvider.php
+    #   routes/api.php
+    #   database/migrations/*_create_personal_access_tokens_table.php
+    # 而 _fresh_rebuild_backend 只跑 create-project + require filament + require
+    # larastan，**從不跑 filament:install --panels**（它只用 cx_dim 叫你自己跑）。
+    # 於是 scaffold 出來的專案沒有後台、沒有 API 路由、沒有 Sanctum 資料表，
+    # 而 cx verify app 正是在驗 /admin 與 /sanctum。
+    #
+    # 現在 templates/backend/ 也收了那三個檔、由 scaffold_patch.py 裝回去，
+    # 所以兩個模式都能產出完整系統；carryover 當預設是因為它額外保住
+    # 使用者自己寫的東西，誤打的代價小得多。
+    _INIT_ORG=''; _INIT_GH=0; _INIT_REMOTE=''; _INIT_MODE=carryover
     while (( $# )); do
         case $1 in
             --org)    [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--org 需要值"
@@ -87,9 +102,15 @@ _init_gate() {                      # _init_gate <token> <新名字或空> <模�
   1. 刪掉 .git 與 .gitmodules —— 整個提交歷史消失
   2. 刪掉 backend/ 與 frontend/ 目前的內容"
     [[ $mode == scaffold ]] && body+="
-     （--mode scaffold：你自己寫的程式碼**不會**被疊回去）" \
+     ⚠ --mode scaffold：**只產生全新骨架**。
+        你自己寫的程式碼（app/ routes/ tests/ pages/ components/ …）
+        不會被疊回去，只會留在封存裡。
+        範本自己接的 Filament 後台、routes/api.php 與 Sanctum migration
+        會由 templates/ 重新裝回，所以系統仍然是完整的。" \
                             || body+="
-     （--mode carryover：app/ routes/ tests/ 等會從封存疊回去）"
+     --mode carryover（預設）：產生全新骨架之後，把 app/ routes/ tests/
+        resources/ database/{migrations,seeders,factories} 從封存疊回去。
+        框架骨架檔（config/ bootstrap/ package.json nuxt.config）用新版的。"
     body+="
   3. 用新的骨架重建，並重新連結 backend / frontend 兩個 submodule"
     [[ -n $newname ]] && body+="

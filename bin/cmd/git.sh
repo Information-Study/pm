@@ -1134,6 +1134,32 @@ _git_remote_init() {
     cx_have gh || cx_die "$EX_PRECOND" "找不到 gh CLI"
     gh auth status >/dev/null 2>&1 || cx_die "$EX_PRECOND" "gh 未登入（gh auth login）"
 
+    # ⚠ 這個動詞會在**真的 GitHub 上**建立三個 public repo，而且原本一道確認都沒有。
+    # 建錯了刪不掉：gh 的 token 通常沒有 delete_repo，得自己去網頁刪三次。
+    # 對外可見的動作要先問 —— 這是本專案對 cx git push 的既有標準，這裡缺了。
+    local _who _r _slug
+    _who=$(gh api user --jq .login 2>/dev/null || echo '<未知>')
+    local _list=''
+    while read -r _r; do
+        _slug=$(_git_repo_slug "$_r")
+        if gh repo view "$CX_GH_ORG/$_slug" >/dev/null 2>&1; then
+            _list+="  $CX_GH_ORG/$_slug（已存在，只會設定 origin）
+"
+        else
+            _list+="  $CX_GH_ORG/$_slug   ← 新建，PUBLIC
+"
+        fi
+    done < <(_git_repos_order)
+    cx_confirm --danger "在 GitHub 建立遠端（PUBLIC）" \
+"以 $_who 的身分，在組織 $CX_GH_ORG 底下處理這三個 repo：
+
+$_list
+新建的一律是 **public**。建錯的話 cx 刪不掉它們 ——
+gh 的 token 多半沒有 delete_repo 權限，要自己上網頁刪。
+
+專案身分來自 .cxroot（CX_GH_ORG / CX_REPO_*）。名字不對就先跑 cx rename。" \
+        || { cx_warn "已取消"; return "$EX_ABORT"; }
+
     cx_step "建立 GitHub 遠端（組織：$CX_GH_ORG）"
     local r slug url
     while read -r r; do

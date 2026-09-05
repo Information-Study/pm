@@ -84,3 +84,16 @@ need_cmd() {                        # need_cmd <指令...>
 # 「CLI 不存在」與「daemon 不通」是兩個不同的分支、不同的訊息，
 # 混在一起就是在測錯的程式碼。指向一個不存在的 socket 才是對的模擬。
 no_docker() { export DOCKER_HOST='unix:///nonexistent/docker.sock'; }
+
+# 直接叫 cx_verify_archive —— 它沒有對外的動詞（只有 cx_restore 與 fresh 會用），
+# 但「壞掉的封存必須驗不過」是本專案最重要的安全性質之一，值得直接測。
+# 用子行程而不是 source 進來：archive.sh 會 source common.sh，
+# 那會蓋掉 bats 自己的環境。
+cx_verify_in_fixture() {            # cx_verify_in_fixture <封存目錄>
+    env -u BATS_TEST_NAME CX_ROOT="$CX_TEST_ROOT" bash -c '
+        set -uo pipefail
+        . "$CX_ROOT/bin/lib/common.sh"
+        . "$CX_ROOT/bin/lib/archive.sh"
+        cx_verify_archive "$1"
+    ' _ "$1"
+}

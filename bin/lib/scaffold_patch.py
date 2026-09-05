@@ -92,6 +92,94 @@ def patch_backend(root, tpl):
     return changed
 
 
+# ── backend：範本自己接上去的系統接線 ────────────────────────────────────────
+def patch_backend_wiring(root, tpl):
+    """裝回 Laravel 骨架沒有、而這個範本靠它才成立的接線。
+
+    `composer create-project laravel/laravel` 給的是**框架的**骨架。本範本在它
+    之上接了四樣東西，而 `_fresh_rebuild_backend` 只跑 create-project +
+    require filament + require larastan —— **從不跑 `filament:install --panels`**
+    也不跑 `install:api`。所以重建之後這四樣全部不見：
+
+      * app/Providers/Filament/AdminPanelProvider.php   後台面板本身
+      * bootstrap/providers.php 裡的那一行註冊          少了它面板根本不會載入
+      * routes/api.php                                  Sanctum 保護的 /api/user
+      * database/migrations/*personal_access_tokens*    Sanctum 的資料表
+
+    而 `cx verify app` 正是在驗 /admin 與 /sanctum。
+
+    ⚠ carryover 也救不了全部：`_fresh_keep_dirs` 疊回來的是
+      app database/migrations database/seeders database/factories routes
+      resources tests —— **不含 bootstrap/**（骨架檔刻意用新版的）。
+      所以 bootstrap/providers.php 與 bootstrap/app.php 在**兩個模式**下都會掉。
+    """
+    changed = 0
+    be = os.path.join(root, "backend")
+    if not os.path.isdir(be):
+        return 0
+    src_root = os.path.join(tpl, "backend")
+
+    # 1) 純範本擁有、不與框架升級衝突的檔案：不存在才裝
+    for rel in ("app/Providers/Filament/AdminPanelProvider.php", "routes/api.php"):
+        src, dst = os.path.join(src_root, rel), os.path.join(be, rel)
+        if not os.path.exists(src) or os.path.exists(dst):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+        log(f"裝回 backend/{rel}")
+        changed += 1
+
+    # 2) Sanctum 的 migration —— 比對的是「有沒有這張表」，不是檔名，
+    #    因為時間戳前綴每次產生都不一樣，比檔名會每次都重裝一份。
+    mig_src = os.path.join(src_root, "database", "migrations")
+    mig_dst = os.path.join(be, "database", "migrations")
+    if os.path.isdir(mig_src):
+        os.makedirs(mig_dst, exist_ok=True)
+        have = [f for f in os.listdir(mig_dst) if "personal_access_tokens" in f]
+        for name in sorted(os.listdir(mig_src)):
+            if "personal_access_tokens" in name and not have:
+                shutil.copyfile(os.path.join(mig_src, name), os.path.join(mig_dst, name))
+                log(f"裝回 backend/database/migrations/{name}")
+                changed += 1
+
+    # 3) bootstrap/providers.php —— 這是一個**清單**，所以用合併不是覆蓋：
+    #    使用者可能已經加了自己的 provider。
+    prov = os.path.join(be, "bootstrap", "providers.php")
+    if os.path.exists(prov):
+        with open(prov, encoding="utf-8") as fh:
+            txt = fh.read()
+        if "AdminPanelProvider" not in txt:
+            t2 = txt
+            if "use App\\Providers\\Filament\\AdminPanelProvider;" not in t2:
+                t2 = re.sub(r"(use App\\Providers\\AppServiceProvider;\n)",
+                            r"\1use App\\Providers\\Filament\\AdminPanelProvider;\n", t2, count=1)
+            t2 = re.sub(r"(AppServiceProvider::class,\n)",
+                        r"\1    AdminPanelProvider::class,\n", t2, count=1)
+            if t2 != txt:
+                with open(prov, "w", encoding="utf-8") as fh:
+                    fh.write(t2)
+                log("bootstrap/providers.php：註冊 AdminPanelProvider")
+                changed += 1
+            else:
+                log("⚠ 看不懂 bootstrap/providers.php 的結構 —— "
+                    "請自己加 AdminPanelProvider::class（否則後台不會載入）")
+
+    # 4) bootstrap/app.php —— 只有在它還是「框架原版」時才覆蓋。
+    #    判準用 trustProxies：本範本的版本一定有它（兩條部署路線都在反向代理後面），
+    #    而框架原版沒有。已經有的話代表使用者接手了，不要動。
+    src_app = os.path.join(src_root, "bootstrap", "app.php")
+    dst_app = os.path.join(be, "bootstrap", "app.php")
+    if os.path.exists(src_app) and os.path.exists(dst_app):
+        with open(dst_app, encoding="utf-8") as fh:
+            cur = fh.read()
+        if "trustProxies" not in cur:
+            shutil.copyfile(src_app, dst_app)
+            log("裝回 backend/bootstrap/app.php（原本是框架原版，缺 trustProxies／"
+                "redirectGuestsTo／JSON 例外）")
+            changed += 1
+    return changed
+
+
 # ── frontend ─────────────────────────────────────────────────────────────────
 def patch_frontend(root, tpl):
     """裝回 ESLint 基線的三個零件。"""
@@ -177,6 +265,7 @@ def main():
     n = 0
     if a.only in (None, "backend"):
         n += patch_backend(a.root, tpl)
+        n += patch_backend_wiring(a.root, tpl)
     if a.only in (None, "frontend"):
         n += patch_frontend(a.root, tpl)
     log(f"共套用 {n} 項" if n else "已經是最新狀態，沒有變更")

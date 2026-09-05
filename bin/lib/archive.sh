@@ -65,7 +65,33 @@ cx_backup() {
 
     # ---- 主庫 ----
     cx_step "封存主庫"
+    # ⚠ 三種狀態要分開，不能只問 -d。
+    #   目錄  → 正常的 clone，物件庫（含 modules/）就在裡面
+    #   檔案  → git worktree 或被 absorb 的子模組：真正的物件庫在 CX_ROOT **之外**
+    #   不存在 → 已經被 fresh 過，或是 --resume-from 的中途狀態
+    #
+    # 中間那個是 2026-09-05 抓到的最嚴重缺陷：原本 -d 為假就走 else 只印一句
+    # warn，於是 worktree 上不產生 bundle、不產生 gitdir tar、MANIFEST 也沒有
+    # main_head=；而 cx_verify_archive 的 expect 清單是**從 MANIFEST 推導**的，
+    # 少了那個鍵就什麼都不檢查 → 回報「封存驗證通過」。
+    # 接著 _fresh_nuke 只刪掉那個指標檔（真歷史在 CX_ROOT 外，連越界防護都
+    # 看不到它），cx_restore 也沒有東西可以還原。
+    # 整條流程會「成功」，而使用者以為自己有一份可還原的封存。
+    if [[ -f $CX_ROOT/.git ]]; then
+        local _real_gd; _real_gd=$(git -C "$CX_ROOT" rev-parse --absolute-git-dir 2>/dev/null || echo '<unknown>')
+        cx_die "$EX_PRECOND" "$(printf '%s\n' \
+            "$CX_ROOT/.git 是檔案不是目錄 —— 這是 git worktree（或被 absorb 的子模組）。" \
+            "" \
+            "  真正的物件庫在：$_real_gd" \
+            "  那個路徑在 CX_ROOT 之外，所以：" \
+            "    * 封存抓不到主庫歷史（bundle 與 gitdir tar 都不會產生）" \
+            "    * 刪除只會拿掉這個指標檔，歷史其實還在" \
+            "    * cx fresh --rollback 沒有東西可以還原" \
+            "" \
+            "  請在主 checkout 上執行（git worktree list 看得到是哪一個）。")"
+    fi
     if [[ -d $CX_ROOT/.git ]]; then
+        echo "main_state=repo" >> "$m"
         local head_main; head_main=$(git -C "$CX_ROOT" rev-parse HEAD 2>/dev/null || echo '<unborn>')
         echo "main_head=$head_main" >> "$m"
         echo "main_commits=$(git -C "$CX_ROOT" rev-list --count HEAD 2>/dev/null || echo 0)" >> "$m"
@@ -93,6 +119,7 @@ cx_backup() {
         [[ -s $A/gitdir-main.tar.gz ]]             || cx_die "$EX_FAIL" "gitdir-main.tar.gz 不存在或是空檔 —— 封存不完整，已中止"
         cx_ok "gitdir-main.tar.gz（含 .git/modules/）"
     else
+        echo "main_state=absent" >> "$m"
         cx_warn "主庫沒有 .git，略過"
     fi
 
@@ -255,11 +282,22 @@ cx_verify_archive() {
     #
     # 現在改成「由 MANIFEST 推導出必須存在的清單，逐一斷言」。
     local -a expect=()
-    local head_main
+    local head_main main_state
     head_main=$(sed -n 's/^main_head=//p' "$A/MANIFEST.txt" | head -1)
-    if [[ -n $head_main ]]; then
-        expect+=(git-main.bundle gitdir-main.tar.gz)
-    fi
+    main_state=$(sed -n 's/^main_state=//p' "$A/MANIFEST.txt" | head -1)
+    # ⚠ 「MANIFEST 沒提到主庫」**不可以**當成「主庫不用檢查」。
+    # 那正是 worktree 缺陷得以通過驗證的原因：少一個鍵 → expect 少兩個項目 →
+    # 迴圈什麼都沒驗 → 回報通過。所以主庫的狀態必須是**明寫**的，
+    # 而且無法辨識時要失敗，不是放行。
+    [[ -z $main_state && -n $head_main ]] && main_state=repo   # 舊封存沒有這個鍵
+    case $main_state in
+        repo)   expect+=(git-main.bundle gitdir-main.tar.gz) ;;
+        absent) cx_warn "MANIFEST 記載封存當時主庫沒有 .git —— 這份封存不含主庫歷史" ;;
+        '')     cx_error "MANIFEST 既沒有 main_state 也沒有 main_head —— 無法判斷主庫有沒有被封存"
+                cx_dim "  這種封存不可以拿來還原：它可能是在 worktree 上產生的（見 cx_backup 的說明）"
+                fail=1 ;;
+        *)      cx_error "MANIFEST 的 main_state 無法辨識：$main_state"; fail=1 ;;
+    esac
 
     local c head gitdir
     for c in backend frontend; do

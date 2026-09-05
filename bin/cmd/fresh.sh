@@ -87,8 +87,15 @@ TXT
 _fresh_nuke() {
     local t=$1 real
     [[ -e $t || -L $t ]] || return 0
-    # 拒絕 symlink（避免被指到樹外）
-    [[ -L $t ]] && { cx_warn "跳過 symlink：$t"; return 0; }
+    # 拒絕 symlink（避免被指到樹外）—— 而且要**中止整個刪除**，不是略過後繼續。
+    # 原本是 warn + return 0：於是 $CX_ROOT/.git 若是 symlink，它被跳過，
+    # 迴圈照樣把 backend/ frontend/ README.md .gitmodules 全部刪掉，
+    # 最後才由下面的斷言 cx_die —— 而 cx_die 會 exit，
+    # _fresh_recovery_note 與 _fresh_state_write 都來不及寫。
+    # 樹被毀了一半，麵包屑卻停在 migrate。
+    [[ -L $t ]] && { cx_error "$t 是 symlink —— 拒絕刪除，且中止整個刪除階段"
+                     cx_dim "  symlink 可能指到樹外。請先自己確認它指向哪裡再處理。"
+                     return 1; }
     real=$(cd "$(dirname "$t")" && pwd -P)/$(basename "$t")
     # 必須嚴格位於 CX_ROOT 之下
     case $real in
@@ -114,6 +121,22 @@ _fresh_preflight() {
 
     [[ -f $CX_ROOT/.cxroot ]] || { cx_error "PF-02 找不到 .cxroot"; fail=1; }
     cx_ok "PF-02 CX_ROOT=$CX_ROOT"
+
+    # PF-10 這棵樹必須是一般的 clone，不能是 git worktree。
+    # worktree 的 .git 是指標檔，真正的物件庫在 CX_ROOT 之外 —— 封存抓不到、
+    # 刪除刪不掉、rollback 還原不了，而整條流程會「成功」。
+    # archive.sh 也有一道同樣的防線，但那時封存目錄已經建出來了；
+    # 這裡擋掉才符合「preflight 完全不動任何東西」。
+    if [[ -f $CX_ROOT/.git ]]; then
+        cx_error "PF-10 這是 git worktree（.git 是檔案）—— cx fresh 不支援"
+        cx_dim "  真正的物件庫：$(git -C "$CX_ROOT" rev-parse --absolute-git-dir 2>/dev/null || echo '<未知>')"
+        cx_dim "  請在主 checkout 上執行： git worktree list"
+        fail=1
+    elif [[ -d $CX_ROOT/.git ]]; then
+        cx_ok "PF-10 一般 clone（.git 是目錄）"
+    else
+        cx_warn "PF-10 沒有 .git —— 只有在已經 fresh 過的樹上才正常"
+    fi
 
     if cx_docker_ok; then
         cx_ok "PF-03 Docker daemon 可用（$(docker version --format '{{.Server.Version}}')）"
@@ -344,7 +367,7 @@ _fresh_delete() {
     local t
     for t in "${FRESH_DELETE[@]}" "${FRESH_MIGRATE[@]}"; do
         # docker-compose.yml 與 .dockerignore 已複製到 docker/legacy/，原處刪除
-        _fresh_nuke "$CX_ROOT/$t"
+        _fresh_nuke "$CX_ROOT/$t" || return 1
     done
 
     # 斷言：.gitmodules 與 .git 必須真的消失，否則後續 git init 會出問題。
@@ -355,10 +378,14 @@ _fresh_delete() {
     if (( CX_DRY_RUN )); then
         cx_dim "  [dry-run] 略過刪除後的斷言（實際上什麼都沒刪）"
     else
-    [[ ! -e $CX_ROOT/.gitmodules ]] || cx_die "$EX_FAIL" ".gitmodules 仍存在"
-    [[ ! -e $CX_ROOT/.git ]]        || cx_die "$EX_FAIL" ".git 仍存在"
-    [[ ! -e $CX_ROOT/backend ]]     || cx_die "$EX_FAIL" "backend/ 仍存在"
-    [[ ! -e $CX_ROOT/frontend ]]    || cx_die "$EX_FAIL" "frontend/ 仍存在"
+    # ⚠ 這裡一律 return，不可以 cx_die。cx_die 會 exit 整個行程，
+    #   於是 cmd_fresh_main 的 _fresh_recovery_note 與 _fresh_state_write
+    #   都不會執行 —— 樹已經被動過，卻沒有留下任何救援線索。
+    #   閘門**之後**的失敗一律交還控制權，這是本檔的通則。
+    [[ ! -e $CX_ROOT/.gitmodules ]] || { cx_error ".gitmodules 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/.git ]]        || { cx_error ".git 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/backend ]]     || { cx_error "backend/ 仍存在"; return 1; }
+    [[ ! -e $CX_ROOT/frontend ]]    || { cx_error "frontend/ 仍存在"; return 1; }
     fi
     cx_ok "斷言通過：.git / .gitmodules / backend / frontend 皆已移除"
 
@@ -367,7 +394,7 @@ _fresh_delete() {
     # 容器內 uid 1000 寫不進去，非 root 的操作者也刪不掉。
     cx_run mkdir -p "$CX_ROOT/backend" "$CX_ROOT/frontend"
     [[ -O $CX_ROOT/backend && -O $CX_ROOT/frontend ]] \
-        || cx_die "$EX_FAIL" "backend/ frontend/ 擁有者不是目前使用者"
+        || { cx_error "backend/ frontend/ 擁有者不是目前使用者"; return 1; }
     cx_ok "已建立空的 backend/ frontend/（擁有者 $(id -un)）"
 }
 
@@ -788,6 +815,17 @@ _fresh_git_init() {
         cx_ok "$c → $url"
     done
 
+    # ⚠ submodule add 對「已經是有效 repo」的目錄**不會 absorb gitdir** ——
+    # 它只印 "Adding existing repo at 'backend' to the index"，於是 backend/.git
+    # 留成真目錄、.git/modules/ 是空的。那跟任何人 clone 下來看到的佈局**不一樣**：
+    #   * 別人 clone 得到指標檔 + .git/modules/backend
+    #   * cx init 產出的卻是各自獨立的 .git 目錄
+    # 兩種佈局在 archive.sh 走的是不同分支（rev-parse --absolute-git-dir 的結果
+    # 一個在樹內、一個在樹外），也就是新專案第一次 cx fresh 的封存形狀會跟
+    # 範本自己的不一樣。收斂成標準佈局，讓後續每一條路徑只需要面對一種現實。
+    cx_run git -C "$CX_ROOT" submodule absorbgitdirs \
+        || cx_warn "submodule absorbgitdirs 失敗 —— 子模組的 .git 仍是獨立目錄（不影響功能）"
+
     cx_run git -C "$CX_ROOT" add -A || return 1
     if git -C "$CX_ROOT" diff --cached --quiet; then
         cx_ok "主庫沒有要提交的變更"
@@ -834,7 +872,9 @@ _fresh_phase_index() {              # _fresh_phase_index <名稱> → 索引
 # （不帶 --from）什麼都還原不了。唯一的安全網就這樣被自己蓋掉了。
 _FRESH_STATE=".cx/fresh.state"
 
-_fresh_state_write() {              # _fresh_state_write <已完成的階段> <封存路徑>
+# 語意：除了 delete 之外都是「已完成的階段」；delete 是「**已進入**」——
+# 理由見 cmd_fresh_main 裡那段呼叫的註解（唯一不可逆的階段要撐過中途被砍）。
+_fresh_state_write() {              # _fresh_state_write <階段> <封存路徑>
     (( CX_DRY_RUN )) && return 0
     cx_ensure_host_dirs "$CX_ROOT/.cx" >/dev/null 2>&1
     printf 'phase=%s\narchive=%s\nstamp=%s\n' "$1" "$2" "$(cx_stamp)" \
@@ -1028,8 +1068,15 @@ cmd_fresh_main() {
 
     # ── 3 delete（不可逆點）──────────────────────────────────────────────
     if (( floor <= 3 )); then
-        _fresh_delete || { _fresh_recovery_note "$A" "刪除失敗"; return "$EX_FAIL"; }
+        # ⚠ 麵包屑必須寫在 _fresh_delete **之前**。
+        # 原本寫在之後：刪除途中被 SIGKILL 的話，狀態仍停在 migrate（index 2），
+        # 於是下一次執行的守門 `pidx >= 3` 不成立 —— cx fresh 會對著已經被毀掉
+        # 的樹重新封存一次，並**覆寫 LATEST**，把唯一救得回來的封存蓋掉。
+        # 那正是 _fresh_state_write 上方註解宣稱要防的事，而它防不到。
+        # delete 這一格因此讀作「已進入」而非「已完成」—— 它是唯一不可逆的階段，
+        # 而麵包屑存在的意義就是撐過「死在階段中間」。
         _fresh_state_write delete "$A"
+        _fresh_delete || { _fresh_recovery_note "$A" "刪除失敗"; return "$EX_FAIL"; }
     fi
     (( ceiling >= 4 )) || { cx_ok "delete 階段完成"; cx_info "封存：$A"; return 0; }
 
