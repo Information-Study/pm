@@ -729,6 +729,101 @@ def check_setup_completion_drift():
             "tools 與 system 都涵蓋")
 
 
+def check_pma_auth():
+    """phpMyAdmin 不可以設 PMA_USER —— 那會把登入畫面整個關掉。
+
+    官方 phpmyadmin 映像的 config.inc.php 只要看到 PMA_USER，就把
+    $cfg['Servers'][$i]['auth_type'] 從 cookie 換成 config：登入表單消失，
+    任何連得到那個埠的人都以那組帳密自動登入。而這裡填過的是 **root**。
+
+    2026-09-05 實測：`curl http://127.0.0.1:8891/` 不帶任何 cookie，回的是
+    140KB 的已登入頁（title 是 mysql、內文有 root@172.18.0.4 與 logout 連結），
+    不是登入表單。docs/acceptance.md 的 M2「phpMyAdmin 真的能登入」當時只驗過
+    HTTP 200 —— 而自動登入的頁面回的正好也是 200，所以那一項驗不到這件事。
+
+    ${MYSQL_BIND:-127.0.0.1} 擋得住 LAN，擋不住 app_net 上的其他容器：
+    nuxt / app 裡跑的 npm、composer 相依套件連得到 http://phpmyadmin/，
+    而它們手上只有低權限的 DB_PASSWORD，本來拿不到 MYSQL_ROOT_PASSWORD。
+
+    bin/cmd/pma.sh 一直是照「cookie 認證」寫的（它叫使用者去看 .env 的
+    DB_USERNAME / DB_PASSWORD），所以這是設定與自己的說明不一致，不是取捨。
+    """
+    files = [f"docker/compose/{m}.yml" for m in ("dev", "test", "prod")]
+    present = [f for f in files if exists(f)]
+    if not present:
+        row("SKIP", "SEC-pma-auth", "phpMyAdmin 保留登入認證", "找不到任何 compose overlay")
+        return
+    bad = []
+    for f in present:
+        for ln, line in enumerate(read(f).splitlines(), 1):
+            # 只看設定行，不看註解 —— 註解裡正好寫著「不要設 PMA_USER」
+            if re.match(r"\s*PMA_(USER|PASSWORD)\s*:", line):
+                bad.append(f"{f}:{ln}")
+    if bad:
+        row("FAIL", "SEC-pma-auth", "phpMyAdmin 保留登入認證",
+            "這些地方設了 PMA_USER／PMA_PASSWORD，會關掉登入表單：" + " ".join(bad))
+    else:
+        row("PASS", "SEC-pma-auth", "phpMyAdmin 保留登入認證",
+            f"{len(present)} 份 overlay 都沒有 PMA_USER（cookie 認證）")
+
+
+def check_log_dir_mode():
+    """日誌目錄不可以對 web_group 可寫，而且三個 role 必須講同一個數字。
+
+    /var/log/php 與 /var/log/<app> 裡都有「**root** 依路徑名開檔」的寫入者：
+      * FPM master 以 open(O_CREAT|O_APPEND) 建 slowlog，沒有 O_NOFOLLOW
+      * mysql 備份 cron 的 `>> ...`（user: root）
+      * queue / schedule unit 的 StandardOutput=append:（systemd 在降權成
+        User=www-data **之前**就開好 fd）
+
+    群組是 www-data —— web 層被打穿之後攻擊者拿到的正是這個身分。目錄只要對它
+    可寫，它就能 unlink 既有的 log，換上一個指向 /etc/cron.d/x 或
+    /etc/ld.so.preload 的 symlink，讓 root 幫它建檔並寫進去。這與
+    CVE-2016-1247（Debian nginx）是同一個原語。fs.protected_symlinks 擋不住，
+    它只作用在 sticky 且 world-writable 的目錄。
+
+    三個 role 建同一批目錄（common / php / nodejs_pm2），數字不一致的話會
+    每次部署互相翻對方的 mode，永遠 changed —— 所以順便比對它們有沒有漂移。
+    """
+    srcs = {
+        "common": ("ansible/roles/common/defaults/main.yml", r"^common_log_dir_mode:\s*\"?([0-7]{3,4})\"?"),
+        "php": ("ansible/roles/php/defaults/main.yml", r"^php_log_dir_mode:\s*\"?([0-7]{3,4})\"?"),
+    }
+    modes = {}
+    for name, (f, pat) in srcs.items():
+        if not exists(f):
+            row("SKIP", "SEC-logdir-mode", "日誌目錄不對 web 群組開放寫入", f"缺少 {f}")
+            return
+        m = re.search(pat, read(f), re.M)
+        if not m:
+            row("SKIP", "SEC-logdir-mode", "日誌目錄不對 web 群組開放寫入", f"{f} 讀不到 mode")
+            return
+        modes[name] = m.group(1)
+
+    # nodejs_pm2 的 app_log_dir 是清單裡的一項，抓它自己那一段
+    f = "ansible/roles/nodejs_pm2/tasks/pm2.yml"
+    if exists(f):
+        m = re.search(r'-\s*path:\s*"\{\{\s*app_log_dir\s*\}\}"\n(?:\s+\w+:.*\n)*?\s+mode:\s*"([0-7]{3,4})"',
+                      read(f))
+        if m:
+            modes["nodejs_pm2"] = m.group(1)
+
+    writable = {n: v for n, v in modes.items() if int(v, 8) & 0o020}
+    if writable:
+        row("FAIL", "SEC-logdir-mode", "日誌目錄不對 web 群組開放寫入",
+            "群組可寫（root 會在這些目錄裡依路徑名開檔）："
+            + " ".join(f"{n}={v}" for n, v in sorted(writable.items())))
+        return
+    distinct = sorted(set(modes.values()))
+    if len(distinct) > 1:
+        row("FAIL", "SEC-logdir-mode", "日誌目錄不對 web 群組開放寫入",
+            "三個 role 的 mode 不一致，會每次部署互相翻："
+            + " ".join(f"{n}={v}" for n, v in sorted(modes.items())))
+    else:
+        row("PASS", "SEC-logdir-mode", "日誌目錄不對 web 群組開放寫入",
+            f"{' '.join(sorted(modes))} 都是 {distinct[0]}")
+
+
 def main():
     families = sys.argv[1:] or ["cli", "docs", "tui"]
     if "cli" in families:
@@ -742,6 +837,8 @@ def main():
         check_template_identity()
         check_php_prefix_parity()
         check_setup_completion_drift()
+        check_pma_auth()
+        check_log_dir_mode()
     if "tui" in families:
         check_tui()
     if "docs" in families:

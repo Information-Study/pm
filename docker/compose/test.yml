@@ -62,8 +62,17 @@ services:
     environment:
       PMA_HOST: mysql
       PMA_PORT: "3306"
-      PMA_USER: root
-      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:?根目錄 .env 缺少 MYSQL_ROOT_PASSWORD（跑 cx setup）}
+      # ⚠ 不要設 PMA_USER / PMA_PASSWORD。官方 phpmyadmin 映像一看到 PMA_USER
+      # 就把 $cfg['Servers'][$i]['auth_type'] 從 cookie 換成 config ——
+      # 登入表單整個消失，任何連得到這個埠的人都以那組帳密自動登入。
+      # 這裡填的是 root，所以等於對外開一個免認證的 MySQL root SQL 主控台。
+      # 實測：curl http://127.0.0.1:8891/ 不帶任何 cookie，回的是 140KB 的
+      # 已登入頁（root@172.18.0.4、有 logout 連結），不是登入表單。
+      # ${MYSQL_BIND:-127.0.0.1} 擋得住 LAN，但擋不住 app_net 上的其他容器
+      # —— nuxt / app 裡跑的 npm、composer 相依套件連得到 http://phpmyadmin/，
+      # 而它們手上只有低權限的 DB_PASSWORD，拿不到 MYSQL_ROOT_PASSWORD。
+      # 留白 = cookie 認證，用 .env 的 DB_USERNAME / DB_PASSWORD 登入，
+      # 這正是 bin/cmd/pma.sh:83-86 一直告訴使用者的流程。
       UPLOAD_LIMIT: 64M
     ports:
       - "${MYSQL_BIND:-127.0.0.1}:${PHPMYADMIN_PORT:-18891}:80"

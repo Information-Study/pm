@@ -54,6 +54,10 @@ common_laravel_shared_directories:
 #   php_log_dir 缺席對 php-fpm 是硬錯誤 ——
 #   "ERROR: Unable to create or open slowlog(...)" → "FPM initialization failed"，
 #   服務根本起不來，而且訊息不會告訴你是目錄不存在。
+#
+# mode 不寫在這裡 —— 兩個都吃 common_log_dir_mode(0750)，理由寫在
+# common/defaults/main.yml 那個常數旁邊（root 會依路徑名在這些目錄裡開檔，
+# 所以群組 www-data 不可以有寫入權）。這樣新增第三個日誌目錄時預設就是安全的。
 common_log_directories:
   - path: "{{ php_log_dir }}"
   - path: "{{ app_log_dir }}"

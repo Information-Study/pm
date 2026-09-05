@@ -13,9 +13,9 @@
     mode: "0700"
 
 # ⚠ mysql_backup_log 預設落在 /var/log/{{ app_slug }}，而那個目錄是 common role
-#   建的（deploy:web_group 0770），nodejs_pm2 也會確保它存在。三個 role 搶同一個
+#   建的（deploy:web_group 0750），nodejs_pm2 也會確保它存在。三個 role 搶同一個
 #   目錄的話，每次執行都會互相把 owner/group/mode 改回自己要的值 ——
-#   實測 mysql（root:adm 0750）與 nodejs_pm2（deploy:www-data 0770）
+#   實測 mysql（root:adm 0750）與 nodejs_pm2（deploy:www-data 0750）
 #   會在每一次部署互相翻轉。
 #
 #   所以這裡只負責「不存在就建出來」（讓 mysql role 單獨使用時仍然可用），

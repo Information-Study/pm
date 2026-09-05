@@ -52,7 +52,9 @@ Restart=always
 RestartSec={{ backend_queue_restart_sec | int }}
 Nice={{ backend_queue_nice | int }}
 
-# {{ app_log_dir }} 是 0770 {{ deploy_user }}:{{ web_group }}（common role 建的），
+# {{ app_log_dir }} 是 0750 {{ deploy_user }}:{{ web_group }}（common role 建的），
+# systemd 是在降權成 User= 之前、以 root 開這個 append: 目標的，所以目錄
+# 不能對 {{ web_group }} 可寫 —— 否則等於讓 web 層指定 root 要寫哪個檔。
 # 而且 common 的 logrotate 已經涵蓋 {{ app_log_dir }}/*.log（copytruncate），
 # 所以這裡用 append: 而不是自己再寫一份 logrotate。
 StandardOutput=append:{{ app_log_dir }}/queue-%i.log
