@@ -46,7 +46,11 @@
                    or ((nginx_http2_style is not defined) and (_nver is version('1.25.1', '>='))) %}
 {% set server_names = ((nginx_server_names | default([app_domain])) + (nginx_server_aliases | default([]))) | unique | list %}
 {% set php_prefixes = nginx_php_prefixes | default(['/api', '/admin', '/livewire', '/up', '/filament', '/sanctum', '/broadcasting', '/storage']) %}
-{% set php_regex = '^/(' ~ (php_prefixes | map('regex_replace', '^/', '') | join('|')) ~ ')(/|$)' %}
+{# A21：字面前綴 + 正規式前綴。後者是為了 Livewire v4 帶 APP_KEY hash 的端點
+   （/livewire-cda13245/update）—— 字面 "livewire" 比對不到它，
+   結果是後台的每一次互動都掉進 location / 被轉給 Nuxt。 #}
+{% set php_patterns = nginx_php_prefix_patterns | default(['livewire(-[0-9a-zA-Z]+)?']) %}
+{% set php_regex = '^/(' ~ ((php_prefixes | map('regex_replace', '^/', '') | list) + (php_patterns | list)) | join('|') ~ ')(/|$)' %}
 {% set _u = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800, 'M': 2592000, 'y': 31536000} %}
 {% set _sv = nginx_storage_expires | default('7d') | string %}
 {% set storage_max_age = ((_sv[:-1] | int) * _u[_sv[-1]]) if (_sv[-1] in _u) else (_sv | int) %}

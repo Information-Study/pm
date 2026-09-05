@@ -193,3 +193,27 @@
       WAF {{ waf_rule_engine if waf_enabled | bool else '停用' }}
       指令前綴 {{ waf_directive_prefix_eff | default('n/a') }}／
       前端 {{ frontend_mode }}{{ '（埠 ' ~ (nginx_frontend_ports | join(',')) ~ '）' if nginx_frontend_proxied | bool else '（靜態）' }}
+
+# ── A21：Livewire 端點真的走得到 PHP ────────────────────────────────────────
+# 上面那組只斷言「攻擊被擋」。攻擊被擋不代表正常流量過得去 ——
+# 2026-09-05 找到的缺陷正好是反例：24.04 與 26.04 兩次完整部署都 failed=0，
+# 但 Filament 後台的每一次互動其實都掉進 location / 被轉給 Nuxt，
+# 因為 php_regex 的字面 "livewire" 比對不到 /livewire-<hash>/。
+# 綠燈只證明了「沒人在測這件事」。
+- name: 驗證 | 渲染出來的 php_regex 吃得下 Livewire 的 hash 前綴
+  vars:
+    _lit: "{{ nginx_php_prefixes | map('regex_replace', '^/', '') | list }}"
+    _pat: "{{ nginx_php_prefix_patterns | default(['livewire(-[0-9a-zA-Z]+)?']) | list }}"
+    _rx: "^/({{ (_lit + _pat) | join('|') }})(/|$)"
+  ansible.builtin.assert:
+    that:
+      - "'/livewire-cda13245/update' is match(_rx)"
+      - "'/livewire-cda13245/livewire.min.js' is match(_rx)"
+      - "'/_nuxt/entry.js' is not match(_rx)"
+    quiet: true
+    fail_msg: >-
+      php_regex（{{ _rx }}）比對不到帶 hash 的 Livewire 端點。
+      Livewire v4 的前綴由 APP_KEY 推導（/livewire-<8 碼 hash>/），
+      光靠字面的 "/livewire" 是比對不到的，結果會是後台每次互動都被轉給 Nuxt。
+      修正：確認 nginx_php_prefix_patterns 含有 livewire(-[0-9a-zA-Z]+)?
+  tags: [nginx_verify]

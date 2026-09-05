@@ -343,6 +343,7 @@ nginx_vhost_path: "/etc/nginx/sites-available/{{ app_slug }}.conf"
 nginx_vhost_link: "/etc/nginx/sites-enabled/{{ app_slug }}.conf"
 nginx_snippets_dir: "/etc/nginx/snippets"
 # A13：這些前綴一定要交給 PHP，不可以被前端 catch-all 吃掉。
+# 這裡放**字面**前綴。需要正規式的放 nginx_php_prefix_patterns。
 nginx_php_prefixes:
   - "/api"
   - "/admin"
@@ -353,6 +354,18 @@ nginx_php_prefixes:
   - "/login"
   - "/logout"
   - "/broadcasting"
+# A21：Livewire v4（Filament v5 的底層）的端點前綴由 APP_KEY 推導 ——
+#   EndpointResolver::prefix() = '/livewire-' . substr(sha256(app.key.'livewire-endpoint'), 0, 8)
+#   實測 route:list 得到 /livewire-cda13245/update。每個部署都不同，key:generate 之後還會變。
+#   上面的字面 "/livewire" 比對不到它，於是每一次後台互動都會掉進 location /
+#   被轉給 Nuxt —— Filament 後台整個是壞的，而且 waf_enabled: false 也一樣壞。
+#   （這與 WAF 無關；WAF 那邊是另一個同源的缺陷，見 waf_exclusions_before 的 10010/10011。）
+#   所以額外提供一份**正規式**片段，與字面清單一起組成 php_regex。
+#   同時保留不帶 hash 的舊形式。Docker 那條路的 docker/edge/conf.d/default.conf
+#   早在 2026-09-04 就修過同一個坑，原生這條路當時漏掉了。
+nginx_php_prefix_patterns:
+  - "livewire(-[0-9a-zA-Z]+)?"
+
 # /storage 是 Laravel 的 public/storage symlink，由 nginx 直送（不走 PHP）。
 nginx_static_prefixes:
   - "/storage"

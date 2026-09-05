@@ -396,7 +396,7 @@ ansible-playbook -i inventory/hosts.yml site.yml --check --diff
 | `certbot_staging` | `false` | 先用 staging 把流程跑通，不吃正式 rate limit |
 | `mysql_repo_source` | `oracle` | Debian 一定要 `oracle`（發行版的是 MariaDB） |
 | `waf_enabled` | `true` | WAF 套件解析不出來時可先關掉讓 nginx 上線 |
-| `waf_mode` | `DetectionOnly` | 先觀察再改 `On`。直接上 `On` 很可能誤擋 Filament |
+| `waf_rule_engine` | role 預設 `On`；`group_vars/all/main.yml` 設成 `DetectionOnly` | 先觀察再改 `On`。**變數名是 `waf_rule_engine`，不是 `waf_mode`** —— 後者本文件曾經寫錯，而且沒有任何 role 讀它，設了完全沒有作用 |
 
 ### 預設關閉（要用再開）
 
@@ -437,8 +437,10 @@ ansible-playbook -i inventory/hosts.yml site.yml --check --diff
 2. `ansible-lint ansible/`，與 `cx lint` 的結果對帳
 3. 對 staging `--check --diff`，逐一看 diff
 4. 設 `certbot_staging=true` 先把 TLS 流程跑通
-5. 設 `waf_mode=DetectionOnly` 先觀察 CRS 會擋掉什麼，
+5. 設 `waf_rule_engine=DetectionOnly` 先觀察 CRS 會擋掉什麼，
    把誤擋的規則加進 `exclusions-before`，確認乾淨了再改 `On`
+   （注意 role 的預設是 `On`；`inventory/group_vars/all/main.yml` 才把它壓成
+   `DetectionOnly`。照抄 group_vars 範例時不要把這一行刪掉）
 6. 真的部署
 
 驗證完的項目請回填到根目錄 `claude.md` §12.5，

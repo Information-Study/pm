@@ -369,14 +369,16 @@ waf_exclusions_before:
   - id: 10010
     phase: 1
     comment: >-
-      Livewire v3（Filament v5 的底層）—— phase 1。/livewire/update 送的是整個元件狀態的
-      JSON 快照，裡面常有 CRS 認定為「協定異常」的字元。
-    condition: 'REQUEST_URI "@beginsWith /livewire/"'
+      Livewire v4（Filament v5 的底層）—— phase 1。/update 送的是整個元件狀態的
+      JSON 快照，裡面常有 CRS 認定為「協定異常」的字元。前綴由 APP_KEY 推導
+      （/livewire-<hash>/），所以用 @rx 而不是 @beginsWith /livewire/ ——
+      後者一條都比對不到，ruleEngine=On 之下後台每次互動都被 941/942 擋成 403。
+    condition: 'REQUEST_URI "@rx ^/livewire(-[0-9a-zA-Z]+)?/"'
     remove_ids: [920273, 920274]
   - id: 10011
     phase: 2
-    comment: Livewire —— phase 2（941 XSS / 942 SQLi 的誤判）
-    condition: 'REQUEST_URI "@beginsWith /livewire/"'
+    comment: Livewire —— phase 2（941 XSS / 942 SQLi 的誤判）。前綴形狀同 10010。
+    condition: 'REQUEST_URI "@rx ^/livewire(-[0-9a-zA-Z]+)?/"'
     remove_ids: [941100, 941110, 941160, 942100, 942190, 942260, 942430, 942440]
   - id: 10012
     phase: 1
