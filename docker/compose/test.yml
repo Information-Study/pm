@@ -53,8 +53,13 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    # ⚠ 用 curl 不用 wget。phpmyadmin:5 是 Debian 基底，**沒有 wget**
+    # —— 這與 docker-verification.md 3.10 記的 SonarQube 是同一個坑：
+    # healthcheck 用了映像裡不存在的工具，容器會永遠 unhealthy，
+    # 而 `docker inspect` 之外看不到原因，任何 condition: service_healthy
+    # 的依賴都會卡死。實測輸出是 `/bin/sh: 1: wget: not found`。
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:80/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
