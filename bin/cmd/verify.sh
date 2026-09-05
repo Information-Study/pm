@@ -281,7 +281,12 @@ _verify_waf() {
         return 0
     fi
 
-    code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+    # 一律明寫 Host。用 http://127.0.0.1:<埠> 探測時 curl 會把 Host 設成
+    # 數字 IP，而 CRS 的 920350「Host header is a numeric IP address」會因此
+    # 加分 —— 那是探測方式造成的，真實瀏覽器不會這樣送。
+    # 少了這一行，waf-livewire 會因為一條與 Livewire 無關的規則而永遠 FAIL。
+    local -a hosthdr=(-H "Host: ${CX_WAF_HOST:-localhost}")
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "${hosthdr[@]}" \
            "$base/?q=%3Cscript%3Ealert(1)%3C/script%3E" 2>/dev/null)
     if [[ $code == 403 ]]; then
         _vf PASS "waf-block" "攻擊特徵請求被擋成 403"
@@ -291,7 +296,7 @@ _verify_waf() {
 
     # Livewire 的前綴由 APP_KEY 推導，現場從後台登入頁撈 —— 絕不可以寫死。
     local lw edge_port body c_waf c_edge
-    lw=$(curl -s -m 15 "$base/admin/login" 2>/dev/null \
+    lw=$(curl -s -m 15 "${hosthdr[@]}" "$base/admin/login" 2>/dev/null \
          | grep -o '/livewire-[0-9a-zA-Z]\{6,\}' | head -1)
     if [[ -z $lw ]]; then
         _vf SKIP "waf-livewire" "Livewire 的正常請求不被誤擋" "抓不到端點前綴"
@@ -309,10 +314,10 @@ _verify_waf() {
     # 前者是富文字欄位貼上 HTML，後者是表格篩選器打了一句話 —— 兩個都是
     # 後台的日常操作，也正是 10011 移除 941/942 那幾條規則的理由。
     body='{"components": [{"snapshot": "{\"data\": {\"bio\": \"<script>alert(1)</script>\", \"q\": \"1 UNION SELECT NULL FROM users\"}}", "updates": {}, "calls": []}]}'
-    c_waf=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST \
+    c_waf=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "${hosthdr[@]}" \
             -H 'Content-Type: application/json' -H 'X-Livewire: 1' \
             --data "$body" "$base$lw/update" 2>/dev/null)
-    c_edge=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST \
+    c_edge=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "${hosthdr[@]}" \
             -H 'Content-Type: application/json' -H 'X-Livewire: 1' \
             --data "$body" "http://127.0.0.1:$edge_port$lw/update" 2>/dev/null)
     if [[ $c_waf == "$c_edge" ]]; then

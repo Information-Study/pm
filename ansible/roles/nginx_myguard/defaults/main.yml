@@ -379,7 +379,7 @@ waf_exclusions_before:
     phase: 2
     comment: Livewire —— phase 2（941 XSS / 942 SQLi 的誤判）。前綴形狀同 10010。
     condition: 'REQUEST_URI "@rx ^/livewire(-[0-9a-zA-Z]+)?/"'
-    remove_ids: [941100, 941110, 941160, 942100, 942190, 942260, 942430, 942440]
+    remove_ids: [941100, 941110, 941160, 942100, 942190, 942260, 942270, 942430, 942440]
   - id: 10012
     phase: 1
     comment: Filament 後台 /admin —— phase 1
@@ -391,7 +391,7 @@ waf_exclusions_before:
       Filament 後台 /admin —— phase 2。富文字欄位與表格篩選器送出的內容
       幾乎必定會踩到 941/942。
     condition: 'REQUEST_URI "@beginsWith /admin"'
-    remove_ids: [941100, 941160, 942100, 942430, 942440]
+    remove_ids: [941100, 941160, 942100, 942270, 942430, 942440]
   - id: 10014
     phase: 1
     comment: >-

@@ -459,9 +459,15 @@ _scan_waf_engine() {
     # 而呼叫者（可能是 dev 模式的 cx scan）之後還要用自己的那一份。
     # 前綴賦值 `VAR=x func` 對**函式**而言在 bash 裡會殘留到函式回傳之後，
     # 所以這裡明確 export 而不是靠前綴。
+    # --force-recreate 是必要的，不是保險：CRS 的排除規則是 bind mount 進去的，
+    # 而 ModSecurity 只在**啟動時**載入規則。改了 exclusions-before 之後如果
+    # compose 判定「設定沒變」而不重建容器，跑的還是舊規則 ——
+    # 於是你會看到「檔案明明改好了，行為完全沒變」。
+    # 2026-09-05 實際踩到：加了一條 ruleRemoveById 之後探測仍然 403，
+    # docker exec grep 得到新規則，但生效的是舊的。
     ( export MODSEC_RULE_ENGINE="$engine" CX_MODE=test
       cx_compose_init test
-      cx_dc up -d --wait waf ) >/dev/null 2>&1 || rc=$?
+      cx_dc up -d --wait --force-recreate waf ) >/dev/null 2>&1 || rc=$?
     return "$rc"
 }
 
