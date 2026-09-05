@@ -303,6 +303,31 @@ _acl_user() {
             cx_ok "$who 已可$( ((ro)) && echo '讀取' || echo '修改' )前後端原始碼"
             ;;
         rm|remove)
+            # ⚠ web 與 dev 這兩個身分的 ACL 條目是**基礎模型**的一部分
+            # （cx acl apply 設的），不是「授予其他開發者」的那一種。
+            # 把它們 -x 掉會讓整個權限模型當場消失，而這個指令原本只會印
+            # 「✔ <帳號> 的 ACL 已移除」，完全看不出剛剛拆掉了什麼。
+            #
+            # 這在本機特別容易發生：web 與 dev 常常都是你自己的 uid
+            #（容器的 www-data 對齊成 APP_UID），於是
+            #     cx acl user add 自己  →  cx acl user rm 自己
+            # 這一組看起來完全無害的操作會把 cx acl apply 的成果整個抹掉。
+            # 2026-09-05 實測踩到：rm 之後 cx acl check 從全綠變成四個警告。
+            # 兩邊都要正規化成數字 uid 才比得起來：_acl_resolve 回傳的是**名稱**
+            # （sixtou），而 _acl_web_id / _acl_dev_id 回傳的是 uid（1000）。
+            # 這正是本檔 _acl_uid_of 上面那段註解講的同一個坑 —— 直接比會恆為
+            # 不等，於是這道護欄形同不存在（第一版就是這樣寫的）。
+            local rmid webid devid
+            rmid=$(_acl_uid_of "$id"); webid=$(_acl_uid_of "$(_acl_web_id)")
+            devid=$(_acl_uid_of "$(_acl_dev_id)")
+            if [[ -n $rmid && ( $rmid == "$webid" || $rmid == "$devid" ) ]]; then
+                cx_error "$who（uid $rmid）是本專案的 $( [[ $rmid == "$webid" ]] && printf 'web' || printf 'dev' ) 身分，不能用 acl user rm 移除"
+                cx_dim "  那個條目是 cx acl apply 建立的基礎權限模型，不是額外授權。"
+                cx_dim "  移除它會讓 web 讀不到程式碼／Laravel 寫不了 storage。"
+                cx_dim "  真的要清掉整棵樹的 ACL： cx acl drop"
+                cx_dim "  只是想改身分： cx acl apply --web-user <名稱|uid>"
+                return "$EX_USAGE"
+            fi
             cx_step "收回 $who 的權限"
             local d
             for d in backend frontend; do
