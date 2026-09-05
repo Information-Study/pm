@@ -156,3 +156,17 @@ YML
     run cat "$CX_TEST_ROOT/.git/HEAD"
     assert_out_has "sentinel"
 }
+
+@test "setup env 的身分只認 .cxroot，不認 .env.example 裡的現值" {
+    # _setup_env 原本比對整行字面值（'PROJECT_SLUG=pm'），等於把「範本裡目前
+    # 的值」變成第二事實來源：只要有人改過 .env.example（cx rename 就會改），
+    # 那兩個 case 就再也比不到，產生出來的 .env 會靜默沿用範本裡的舊值。
+    make_root drifted >/dev/null
+    printf 'PROJECT_SLUG=someoneelse\nIMAGE_PREFIX=someoneelse\nAPP_UID=1000\n' \
+        > "$CX_TEST_ROOT/.env.example"
+    run cx_raw --root "$CX_TEST_ROOT" setup env
+    assert_rc 0
+    run cat "$CX_TEST_ROOT/.env"
+    assert_out_has "PROJECT_SLUG=drifted" "IMAGE_PREFIX=drifted"
+    assert_out_lacks "someoneelse"
+}

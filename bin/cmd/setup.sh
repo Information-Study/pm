@@ -92,8 +92,13 @@ _setup_env() {
             'APP_KEY=__CHANGE_ME__')             line="APP_KEY=$app_key" ;;
             'APP_UID=1000')                      line="APP_UID=$uid" ;;
             'APP_GID=1000')                      line="APP_GID=$gid" ;;
-            'PROJECT_SLUG=pm')                   line="PROJECT_SLUG=$slug" ;;
-            'IMAGE_PREFIX=pm')                   line="IMAGE_PREFIX=$slug" ;;
+            # ⚠ 比對**鍵**而不是整行字面值。原本寫的是 'PROJECT_SLUG=pm'，
+            #   那等於把「範本裡目前的值」變成第二事實來源：只要有人改過
+            #   .env.example（cx rename 就會改），這兩個 case 就再也比不到，
+            #   而產生出來的 .env 會靜默沿用範本裡的舊值。
+            #   身分只有一個來源：.cxroot（cx_project），這裡無條件覆寫。
+            'PROJECT_SLUG='*)                    line="PROJECT_SLUG=$slug" ;;
+            'IMAGE_PREFIX='*)                    line="IMAGE_PREFIX=$slug" ;;
         esac
         printf '%s\n' "$line" >> "$out"
     done < "$tpl"

@@ -92,9 +92,11 @@ cmd_rename_main() {
         "/^CX_PROJECT_NAME=$old\$/p" "/^CX_REPO_MAIN=$old\$/p" \
         "/^CX_REPO_BACKEND=$old-/p" "/^CX_REPO_FRONTEND=$old-/p" && targets+=(.cxroot)
     _rename_plan_file .env "$old" "$new" \
-        "/^PROJECT_SLUG=$old\$/p" "/^IMAGE_PREFIX=$old\$/p" && targets+=(.env)
+        "/^PROJECT_SLUG=$old\$/p" "/^IMAGE_PREFIX=$old\$/p" \
+        "/^DB_DATABASE=$old\$/p" "/^DB_USERNAME=$old\$/p" && targets+=(.env)
     _rename_plan_file .env.example "$old" "$new" \
-        "/^PROJECT_SLUG=$old\$/p" "/^IMAGE_PREFIX=$old\$/p" && targets+=(.env.example)
+        "/^PROJECT_SLUG=$old\$/p" "/^IMAGE_PREFIX=$old\$/p" \
+        "/^DB_DATABASE=$old\$/p" "/^DB_USERNAME=$old\$/p" && targets+=(.env.example)
     _rename_plan_file sonar-project.properties "$old" "$new" \
         "/^sonar.projectKey=$old\$/p" "/^sonar.projectName=$old\$/p" && targets+=(sonar-project.properties)
     _rename_plan_file ansible/inventory/group_vars/all/main.yml "$old" "$new" \
@@ -148,16 +150,21 @@ cmd_rename_main() {
                               -e "s|^CX_REPO_FRONTEND=$old-|CX_REPO_FRONTEND=$new-|" \
                     "$CX_ROOT/$f" ;;
             .env|.env.example)
+                # DB_DATABASE / DB_USERNAME 也要改：group_vars 的 db_name/db_user
+                # 已經跟著改名了，這裡不改的話 Docker 用 $old 庫、Ansible 用 $new 庫。
+                # 舊 volume 裡的 $old 資料庫不會自動搬 —— 所以最後會提醒 down -v。
                 cx_run sed -i -e "s|^PROJECT_SLUG=$old\$|PROJECT_SLUG=$new|" \
                               -e "s|^IMAGE_PREFIX=$old\$|IMAGE_PREFIX=$new|" \
+                              -e "s|^DB_DATABASE=$old\$|DB_DATABASE=$new|" \
+                              -e "s|^DB_USERNAME=$old\$|DB_USERNAME=$new|" \
                     "$CX_ROOT/$f" ;;
             sonar-project.properties)
                 cx_run sed -i -e "s|^sonar.projectKey=$old\$|sonar.projectKey=$new|" \
                               -e "s|^sonar.projectName=$old\$|sonar.projectName=$new|" \
                     "$CX_ROOT/$f" ;;
             ansible/inventory/group_vars/all/main.yml)
-                cx_run sed -i -e "s|^app_name: \"$old\"\$|app_name: \"$new\"|" \
-                              -e "s|^app_slug: \"$old\"\$|app_slug: \"$new\"|" \
+                cx_run sed -i -e "s|^app_name: \"$old\"|app_name: \"$new\"|" \
+                              -e "s|^app_slug: \"$old\"|app_slug: \"$new\"|" \
                               -e "s|^db_name: &db_name \"$old\"\$|db_name: \&db_name \"$new\"|" \
                               -e "s|^db_user: &db_user \"$old\"\$|db_user: \&db_user \"$new\"|" \
                               -e "s|/$old\.git|/$new.git|g" \
@@ -172,10 +179,13 @@ cmd_rename_main() {
             --roles)
                 local rf
                 for rf in "${role_files[@]}"; do
+                    # ⚠ 不要在 "$old" 後面加 $ 錨點 —— 這些值常帶尾端註解
+                    #   （common/defaults 的 app_slug: "pm"  # 路徑、systemd unit 名…），
+                    #   加了錨點就會靜默漏掉。用 \b 收邊即可。
                     cx_run sed -i \
-                        -e "s|^\\(\\s*app_name:\\s*\\)\"$old\"\$|\\1\"$new\"|" \
-                        -e "s|^\\(\\s*app_slug:\\s*\\)\"$old\"\$|\\1\"$new\"|" \
-                        -e "s|^\\(\\s*app_slug:\\s*\\)$old\$|\\1$new|" \
+                        -e "s|^\(\s*app_name:\s*\)\"$old\"|\1\"$new\"|" \
+                        -e "s|^\(\s*app_slug:\s*\)\"$old\"|\1\"$new\"|" \
+                        -e "s|^\(\s*app_slug:\s*\)$old\b|\1$new|" \
                         -e "s|^\(\s*author:\s*\)$old\b|\1$new|" \
                         -e "s|^\(\s*namespace:\s*\)$old\b|\1$new|" \
                         -e "s|default('$old')|default('$new')|g" \
@@ -193,5 +203,8 @@ cmd_rename_main() {
     cx_dim "  3. 重跑 cx setup guard（git hook 裡有專案名的白名單）"
     cx_dim "  4. inventory/hosts.yml 的群組名要改成 $new_grp"
     cx_dim "  5. cx verify cli —— TPL-* 四項應該全綠"
-    cx_dim "  6. .git 沒有被碰過；remote 要不要改由你決定"
+    cx_dim "  6. .gitmodules 仍指向 ../$old-backend.git 與 ../$old-frontend.git ——"
+    cx_dim "     刻意不自動改：那些 remote 現在還存在，改了會讓既有的 checkout 壞掉。"
+    cx_dim "     等新的 repo 真的建好再改，然後跑 git submodule sync"
+    cx_dim "  7. .git 沒有被碰過；remote 要不要改由你決定"
 }
