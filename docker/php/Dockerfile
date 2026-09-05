@@ -183,7 +183,11 @@ FROM base AS test
 # 只在要收覆蓋率時才由 cx test 打開。常開會讓 ZAP 的時間量測全部失真。
 RUN install-php-extensions xdebug
 
-COPY docker/php/zz-mode-dev.ini /usr/local/etc/php/conf.d/zz-mode.ini
+# ⚠ 不要在這裡沿用 zz-mode-dev.ini。test 是被 ZAP 掃、被 ModSecurity 擋的
+# 那個模式，display_errors = On 會把路徑與堆疊直接寫進 HTTP 回應，
+# 等於在 DAST 的攻擊面上多開一個資訊洩漏。APP_DEBUG=false 擋得住 Laravel 的
+# 除錯頁，擋不住 PHP 自己的 fatal error 輸出。
+COPY docker/php/zz-mode-test.ini /usr/local/etc/php/conf.d/zz-mode.ini
 
 COPY --from=vendor-dev --chown=www-data:www-data /var/www/html/vendor ./vendor
 COPY --chown=www-data:www-data backend/ ./

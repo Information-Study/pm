@@ -32,7 +32,6 @@ services:
       - nuxt-build:/app/.nuxt
       - nuxt-output:/app/.output
     environment:
-      NUXT_DEVSERVER_HOST: "0.0.0.0"
       CHOKIDAR_USEPOLLING: "true"
 
   edge:
@@ -54,6 +53,15 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    # 這個 service 原本是全專案唯一沒有 healthcheck 的一個，於是
+    # `cx dev ps` 只會說 Up —— 容器活著但 PHP 起不來（例如 PMA_HOST 打錯）
+    # 的狀態完全看不出來。映像基於 Alpine，有 wget、沒有 curl。
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks: [app_net]
 
 volumes:

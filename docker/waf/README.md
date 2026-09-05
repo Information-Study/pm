@@ -16,14 +16,22 @@ crs-setup.conf
 plugins/*-config.conf
 plugins/*-before.conf          ← exclusions-before 掛在這裡
 rules/*.conf                   ← CRS 本體
-plugins/*-after.conf
-modsecurity-override.conf      ← exclusions-after 掛在這裡
+plugins/*-after.conf           ← exclusions-after 掛在這裡
+modsecurity-override.conf      ← 不要掛在這裡（見下）
 ```
 
-| 檔 | 掛載到 | 放什麼 | 為什麼必須在這一側 |
+| 檔 | 掛載到（容器內絕對路徑） | 放什麼 | 為什麼必須在這一側 |
 |---|---|---|---|
-| `exclusions-before/pm-exclusions-before.conf` | `plugins/pm-exclusions-before.conf` | `ctl:ruleRemoveById` | `ctl:` 只影響「同 phase 中尚未執行」的規則。載在 CRS 之後等於沒寫 |
-| `exclusions-after/pm-exclusions-after.conf` | `modsecurity-override.conf` | `SecRuleUpdateTargetById` | 那是**載入期**指令，要修改的規則必須已經被 Include 進來 |
+| `exclusions-before/pm-exclusions-before.conf` | `/opt/owasp-crs/plugins/pm-exclusions-before.conf` | `ctl:ruleRemoveById` | `ctl:` 只影響「同 phase 中尚未執行」的規則。載在 CRS 之後等於沒寫 |
+| `exclusions-after/pm-exclusions-after.conf` | `/opt/owasp-crs/plugins/pm-exclusions-after.conf` | `SecRuleUpdateTargetById` | 那是**載入期**指令，要修改的規則必須已經被 Include 進來 |
+
+> ⚠ **不要掛在 `modsecurity-override.conf` 上。**
+> 這份文件與 `exclusions-after` 的檔頭原本都是這樣寫的，而實際的掛載點
+> （`docker/compose/test.yml`）早在修掉 A10 的時候就改成 plugins 機制了 ——
+> 文件停在舊的說法。原因是映像的 `90-copy-modsecurity-config.sh` 會 `touch`
+> 並覆寫 `modsecurity-override.conf`，以 `:ro` 掛上去的話那個腳本 exit 1，
+> 容器進入無限重啟，而錯誤訊息完全不會提到掛載。
+> plugins 機制由 `94-activate-plugins.sh` 負責，實測會把兩行 Include 取消註解。
 
 ## 三個會讓 nginx 起不來的寫法
 

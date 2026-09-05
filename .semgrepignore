@@ -19,8 +19,6 @@ reports/
 # ansible-galaxy 下載的上游 collection，不是我們的程式碼
 ansible/collections/
 
-# 舊版專案的參考副本（.gitignore 也排除它）
-example/
 
 *.min.js
 *.min.css

@@ -4,8 +4,10 @@
 #
 # 這個模式的對外入口是 waf，不是 edge：
 #   ZAP → waf:8080 (ModSecurity + CRS) → edge:8080 → app / nuxt
-# cx scan dast 會用 MODSEC_RULE_ENGINE=DetectionOnly 與 On 各跑一次，
-# 兩份 alert 的差集就是 WAF 的實際攔截率。
+# cx scan dast 會用 MODSEC_RULE_ENGINE=DetectionOnly 與 On 各跑一次
+#（每輪之前真的重建 waf 容器），跑完還原成本檔案宣告的值。
+# ⚠ 兩份 alert 的差集**不是**攔截率 —— zap-baseline 是被動掃描，相減永遠是 0。
+# 攔截率由 bin/lib/waf_probe.py 的主動探測量，見 docker/security/zap/README.md。
 
 services:
 
@@ -28,6 +30,36 @@ services:
     ports:
       # edge 仍然發布，方便對照「有沒有經過 WAF」的差異。
       - "${EDGE_HTTP_PORT:-18080}:8080"
+
+  # test 也要有 phpMyAdmin —— 這個模式是「開發測試與 DevSecOps 專用」，
+  # 掃描跑出問題時要能立刻翻資料庫對帳。埠 18891 一直都預留在
+  # docker/env/test.env 裡，只是 service 從來沒被寫出來。
+  #
+  # 只綁 127.0.0.1，而且**不掛在 waf 後面** —— WAF 前門是 ZAP 的掃描目標，
+  # 多掛一個管理介面進去只會讓 DAST 報告混進一堆 phpMyAdmin 自己的 alert。
+  # prod 仍然完全沒有這個 service（D13），verify_checks 的 check_prod_closed
+  # 會繼續盯著。
+  phpmyadmin:
+    image: ${PHPMYADMIN_IMAGE:-phpmyadmin:5}
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: "3306"
+      PMA_USER: root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:?根目錄 .env 缺少 MYSQL_ROOT_PASSWORD（跑 cx setup）}
+      UPLOAD_LIMIT: 64M
+    ports:
+      - "${MYSQL_BIND:-127.0.0.1}:${PHPMYADMIN_PORT:-18891}:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [app_net]
 
   # ── ModSecurity + OWASP CRS 反向代理 ──────────────────────────────────────
   waf:
