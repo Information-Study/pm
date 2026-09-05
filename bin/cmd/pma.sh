@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # cx pma — 開啟 phpMyAdmin。
 #
-# phpMyAdmin 只在 dev 模式的 compose 裡（test / prod 刻意沒有管理介面）。
+# phpMyAdmin 在 dev 與 test 兩個模式的 compose 裡；prod 刻意沒有（D13）。
 # 這個動詞負責三件事，缺一個都會讓人卡住：
-#   1. 確認模式是 dev（在 test/prod 打這個指令要講清楚為什麼沒有）
+#   1. 擋掉 prod（在那裡打這個指令要講清楚為什麼沒有）
 #   2. 確認容器真的在跑（沒跑就給出啟動指令，而不是叫使用者自己看 docker ps）
 #   3. 從**合併後**的 compose 設定讀出實際發布的埠，而不是寫死 8891
 #      —— docker/env/dev.env 可以覆寫，寫死就會給出錯的網址
@@ -48,19 +48,21 @@ cmd_pma_main() {
         esac
     done
 
-    if [[ $CX_MODE != dev ]]; then
-        cx_error "phpMyAdmin 只在 dev 模式提供（目前 --mode $CX_MODE）"
-        cx_dim "  test / prod 刻意不放管理介面：那是額外的攻擊面，"
-        cx_dim "  而且 prod 的 MySQL 根本不發布埠。"
-        cx_dim "  要看 test/prod 的資料庫請用： cx --mode $CX_MODE db shell"
+    # dev 與 test 都有 phpMyAdmin；prod 刻意沒有（D13）。
+    # test 那一份是 2026-09-05 補的 —— 原始規格本來就要求，只是 service
+    # 一直沒被寫出來（而 docker/env/test.env 的 PHPMYADMIN_PORT 早就預留著）。
+    if [[ $CX_MODE == prod ]]; then
+        cx_error "prod 刻意不提供 phpMyAdmin"
+        cx_dim "  管理介面是額外的攻擊面，而且 prod 的 MySQL 根本不發布埠。"
+        cx_dim "  要看 prod 的資料庫請用： cx --mode prod db shell"
         return "$EX_USAGE"
     fi
 
     cx_runner_need_docker "cx pma"
-    cx_compose_init dev
+    cx_compose_init "$CX_MODE"
 
     local port; port=$(_pma_port)
-    [[ -n ${port:-} ]] || port=8891
+    [[ -n ${port:-} ]] || { [[ $CX_MODE == test ]] && port=18891 || port=8891; }
     local url="http://127.0.0.1:${port}"
 
     if (( url_only )); then printf '%s\n' "$url"; return 0; fi

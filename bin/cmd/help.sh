@@ -51,7 +51,7 @@ cx — pm 專案統一入口
   npm <參數>        npm（在 frontend/；容器或原生）
     npm --backend <參數>  在 backend/ 執行（Laravel 端的 Vite 資產）
   db status|shell|migrate|fresh|seed|dump|restore|admin|wait
-  pma [--url]       開啟 phpMyAdmin（只有 dev 模式有）
+  pma [--url]       開啟 phpMyAdmin（dev 與 test 有；prod 刻意沒有）
   style [範圍]      程式碼風格，**會改檔案**：PHP 用 Pint、前端用 Prettier
                     範圍：php / js / all（預設 all）；--check 只檢查不改
                     兩個工具都已隨既有相依裝好，不需要另外安裝
