@@ -282,28 +282,52 @@ _fresh_tool() {                     # _fresh_tool <node|php>
     printf 'none'
 }
 
+# _fresh_delete 刪完之後會**重新建立空的** backend/ 與 frontend/
+# （為了確保擁有者是呼叫者而不是之後某個容器的 root）。所以重建這一側的
+# 前置條件不能是「目錄不存在」，而是「目錄是空的」——
+# 2026-09-05 拋棄式副本實跑時，第一版寫成前者，於是重建在第一步就自己擋自己。
+_fresh_dir_ready() {                # _fresh_dir_ready <path>
+    local d=$1
+    [[ -e $d ]] || return 0                       # 不存在：可以建
+    [[ -d $d ]] || { cx_error "$d 存在但不是目錄"; return 1; }
+    if [[ -n $(ls -A "$d" 2>/dev/null) ]]; then
+        cx_error "$d 不是空的 —— 重建階段預期它是空的或不存在"
+        return 1
+    fi
+    return 0
+}
+
 _fresh_rebuild_frontend() {
     local dir="$CX_ROOT/frontend"
     cx_step "重建前端（Vue 3 + Nuxt 4）"
-    [[ -e $dir ]] && { cx_error "$dir 已存在 —— 重建階段預期它已被刪除"; return 1; }
+    _fresh_dir_ready "$dir" || return 1
 
     local tool; tool=$(_fresh_tool node)
     case $tool in
         native)
             cx_info "用 host 的 npx 產生骨架"
-            # --no-install：相依交給 cx setup deps，重建階段不下載 400MB。
-            # --gitInit false：三個 repo 的初始化統一由 _fresh_git_init 做。
+            # 旗標的三個理由：
+            #   --template minimal  非互動模式下 nuxi 把它列為**必填**，不給會直接
+            #                       列出可用範本然後失敗（2026-09-05 實測）。
+            #                       minimal 對應本專案原本的形狀：單一 app.vue。
+            #   --no-install        相依交給 cx setup deps，重建階段不下載 400MB。
+            #   --no-gitInit        三個 repo 的初始化統一由 _fresh_git_init 做。
+            #                       非互動模式下這個布林旗標也是必填的 ——
+            #                       「不給」不等於 false，會直接失敗（實測）。
             cx_run npx --yes nuxi@latest init "$dir" \
-                --packageManager npm --gitInit false --no-install --force </dev/null \
+                --template "${CX_NUXT_TEMPLATE:-minimal}" \
+                --packageManager npm --no-install --no-gitInit --force </dev/null \
                 || { cx_error "nuxi init 失敗"; return 1; }
             ;;
         docker)
             cx_info "用一次性的 node 映像產生骨架"
             cx_run docker run --rm -u "$(id -u):$(id -g)" \
                 -v "$CX_ROOT:/w" -w /w \
+                -e HOME=/tmp \
                 "${CX_IMG_NODE:-node:24.20-bookworm-slim}" \
                 npx --yes nuxi@latest init frontend \
-                --packageManager npm --gitInit false --no-install --force </dev/null \
+                --template "${CX_NUXT_TEMPLATE:-minimal}" \
+                --packageManager npm --no-install --no-gitInit --force </dev/null \
                 || { cx_error "nuxi init 失敗（容器）"; return 1; }
             ;;
         *)  cx_error "重建前端需要 npm 或 Docker，兩者都不可用"
@@ -319,7 +343,10 @@ _fresh_rebuild_frontend() {
 _fresh_rebuild_backend() {
     local dir="$CX_ROOT/backend"
     cx_step "重建後端（Laravel 13 + Filament v5 + Larastan）"
-    [[ -e $dir ]] && { cx_error "$dir 已存在 —— 重建階段預期它已被刪除"; return 1; }
+    # composer create-project 不接受「已存在且非空」的目標，空目錄則沒問題。
+    _fresh_dir_ready "$dir" || return 1
+    # 空目錄也要先移開：create-project 對「已存在的目錄」一律拒絕，即使是空的。
+    [[ -d $dir ]] && cx_run rmdir "$dir"
 
     local tool; tool=$(_fresh_tool php)
     local -a run=()

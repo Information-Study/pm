@@ -373,7 +373,7 @@ cx_restore() {
         local h n
         h=$(sed -n "s/^${c}_head=//p" "$m" | head -1)
         n=$(sed -n "s/^${c}_commits=//p" "$m" | head -1)
-        [[ -n $h ]] && cx_info "$(printf '%-6s' "$c")HEAD ${h:0:12}・${n:-?} 個 commit"
+        [[ -n $h ]] && cx_info "$(printf '%-8s' "$c")HEAD ${h:0:12}・${n:-?} 個 commit"
     done
 
     if (( ${#existing[@]} )); then
