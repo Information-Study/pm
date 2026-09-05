@@ -386,6 +386,11 @@ _setup_system_have() {
         nginx)        cx_have nginx ;;
         git)          cx_have git ;;
         mysql-client) cx_have mysql ;;
+        # acl 曾經漏在這裡。症狀不是「acl 裝不起來」，而是 setup system 一路
+        # 把成功報成失敗：_setup_system_have acl 永遠落到 *) return 1，於是
+        # 安裝後的複驗迴圈判定「裝完之後仍然不可用」→ EX_FAIL，
+        # 連帶讓 cx setup native 的階段①中斷。
+        acl)          cx_have setfacl && cx_have getfacl ;;
         docker)       cx_have docker ;;
         *) return 1 ;;
     esac
