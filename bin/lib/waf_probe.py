@@ -25,7 +25,39 @@ import sys
 
 # 映像版本的單一事實來源是 bin/lib/common.sh；cx 會把它 export 進來。
 # 這裡的字面值只是「直接跑這支程式」時的備援，不是第二份宣告。
-CURL_IMAGE = os.environ.get("CX_IMG_CURL") or "curlimages/curl:8.11.1"
+DEFAULT_CURL_IMAGE = "curlimages/curl:8.11.1"
+
+# 從環境變數進來、之後會被交給 subprocess 的值，一律先驗形狀。
+#
+# 這裡沒有 shell（subprocess 收的是 argv 列表，不是字串），所以不存在
+# shell injection；但「不會被注入」不等於「可以不看」——
+# 一個打錯字的 CX_IMG_CURL 會變成 docker 去 registry 拉一個不存在的映像，
+# 錯誤訊息完全指不到是環境變數寫錯。驗形狀同時解決這兩件事，
+# 也讓 Semgrep 的 dangerous-subprocess-use-tainted-env-args 有明確的收斂點。
+_IMAGE_RE = re.compile(
+    r"^[a-z0-9]+(?:[._-][a-z0-9]+)*"                 # 第一段（registry 或 namespace）
+    r"(?::[0-9]{1,5})?"                              # 選用的 registry port
+    r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"            # 其餘路徑段
+    r"(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?"        # 選用的 tag
+    r"(?:@sha256:[a-f0-9]{64})?$"                    # 選用的 digest
+)
+# docker 網路名：docker 自己只接受 [a-zA-Z0-9][a-zA-Z0-9_.-]*
+_NET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
+
+
+def _checked(value, pattern, what, fallback=None):
+    """驗過形狀才交給 subprocess；不合法就用備援值或直接退出。"""
+    if value and pattern.match(value):
+        return value
+    if fallback is not None:
+        print(f"  ⚠ {what} 的值不合法（{value!r}）—— 改用 {fallback}", file=sys.stderr)
+        return fallback
+    print(f"  ✘ {what} 的值不合法：{value!r}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+CURL_IMAGE = _checked(os.environ.get("CX_IMG_CURL"), _IMAGE_RE,
+                      "CX_IMG_CURL", DEFAULT_CURL_IMAGE)
 
 # (名稱, 路徑, 是否為攻擊, POST body 或 None)
 CASES = [
@@ -119,6 +151,21 @@ def probe(net, path, body=None):
                 "-H", "X-Livewire: 1",
                 "--data-binary", body]
     cmd.append(f"http://waf:8080{path}")
+    # 書面理由（sarif_gate.py 只放行有書面理由的抑制），對應下一行的 nosemgrep：
+    #   規則追的是 CX_IMG_CURL / CX_NET 這兩個環境變數流進 subprocess。
+    #   三件事讓它在這裡不構成風險，而且不是靠「看起來還好」：
+    #   (1) 沒有 shell —— subprocess 收的是 argv 列表，shell=False 是預設值，
+    #       所以不存在字串被重新解析的路徑。
+    #   (2) 兩個值在模組載入時都過了 _checked()：CX_IMG_CURL 比對 _IMAGE_RE
+    #       （小寫、明確的 tag/digest 形狀），不合法就退回釘住的預設值；
+    #       CX_NET 比對 _NET_RE（docker 自己接受的字元集），不合法直接 exit 2。
+    #       Semgrep 的污點分析看不懂正規表示式當 sanitizer，所以仍會標記。
+    #   (3) 這兩個變數由**執行 cx 的人**設定 —— 與能直接跑 docker 的是同一個
+    #       身分。能改它們的人本來就能直接下 docker run，沒有提權。
+    #
+    # ⚠ nosemgrep 必須**緊貼**被標記的那一行（中間不能夾任何東西），
+    #   所以理由寫在上面，指令單獨一行放在下面。
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
     out = subprocess.run(cmd, capture_output=True, text=True)
     return (out.stdout or "000").strip()
 
@@ -154,7 +201,7 @@ def declared_engine(root):
 
 def main() -> int:
     root = os.environ["CX_ROOT"]
-    net = os.environ["CX_NET"]
+    net = _checked(os.environ.get("CX_NET"), _NET_RE, "CX_NET")
     out_path = sys.argv[1]
 
     cases = list(CASES)
