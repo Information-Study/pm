@@ -26,6 +26,38 @@ cd pm
 
 建立後台管理員：`./cx db admin`
 
+## 版本
+
+每一列都標了**來源檔案** —— 這張表不是第二事實來源，只是把散在各處的釘版
+集中列出來。改版本請改來源，不要改這裡。
+
+| 元件 | Docker（映像釘版） | 原生（Ansible） | 來源 |
+|---|---|---|---|
+| PHP | `php:8.5-fpm-alpine` | 8.5（ondrej/sury） | `env/docker/php/Dockerfile` 的 `ARG PHP_IMAGE` ／ `group_vars/all/main.yml` 的 `php_version` |
+| Node | `node:24.20-alpine` | 24（nodesource） | `env/docker/nuxt/Dockerfile` 的 `ARG NODE_IMAGE` ／ `roles/nodejs_pm2/defaults` |
+| MySQL | `mysql:8.4` | 8.4（repo.mysql.com，A4） | `docker-compose.yml` ／ `group_vars/all/main.yml` 的 `mysql_version_series` |
+| Nginx | `nginx:1.30-alpine` | 發行版套件 + MyGuard | `docker-compose.yml` ／ `roles/nginx_myguard` |
+| phpMyAdmin | `phpmyadmin:5.2.3`（dev 與 test） | — | `env/docker/compose/{dev,test}.yml` |
+| ModSecurity CRS | `owasp/modsecurity-crs:4.28.0-nginx-alpine-202608131208`（僅 test） | `roles/nginx_myguard` | `env/docker/compose/test.yml` |
+| SonarQube | `sonarqube:26.9.0.129388-community` + `postgres:17.11-alpine` | — | `env/docker/compose/sonar.yml` |
+| Composer | `composer:2.10.3` | 同（`cx setup tools` 核對 SHA256） | `bin/lib/common.sh` 的 `CX_IMG_COMPOSER` |
+| 掃描器 | trivy 0.74.0 ・ semgrep 1.175.0 ・ ZAP 2.17.0 ・ sonar-scanner 12.1.0 | 同 | `bin/lib/common.sh` 的 `CX_IMG_*` |
+| scaffold | nuxi 3.37.0 | — | `bin/lib/common.sh` 的 `CX_NUXI_VERSION` |
+
+**Laravel / Filament / Nuxt / npm 的版本刻意不寫在這裡。**
+它們由 `src/backend/composer.lock` 與 `src/frontend/package-lock.json` 決定 ——
+在這裡寫一個數字就是製造第四份會漂移的說法。要看實際版本：
+
+```bash
+./cx composer show laravel/framework filament/filament
+./cx npm ls nuxt
+```
+
+> 為什麼外部映像一律釘到具體版本（連 `latest` 都不用）：
+> `cx verify static` 的 `4b` 檢查會擋下沒釘版的映像。
+> 三個模式可以同時運行，而未釘版的映像會讓「同一個 tag 在不同時間拉到
+> 不同東西」——那種差異在出事的時候完全查不出來。
+
 常用的捷徑：
 
 ```bash

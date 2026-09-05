@@ -741,6 +741,48 @@ Filament 後台實際操作、Sanctum 完整登入流程、真實跨源 CORS）*
 
 ---
 
+## 6.5 測試者的分支流程：`hotfix/*`
+
+發現缺陷之後，用 `hotfix/*` 而不是 `feature/*`：
+
+```bash
+cx git branch switch dev                              # 先站到開發線
+cx git hotfix start auth-bypass --repo backend        # 從 dev 開 hotfix/auth-bypass
+# … 修 …
+cx test back && cx verify cli docs tui                # 至少過第 0–1 層
+cx git commit --repo backend
+cx git hotfix finish --repo backend                   # 合回 dev，主庫 gitlink 跟上
+cx git push
+```
+
+**拓撲與 `feature/*` 完全相同**（從 `dev` 開、合回 `dev`、只開在子模組、
+主庫的 `dev` 在 finish 時同步 gitlink）—— 差別只有前綴。
+用途是**分開追蹤**：缺陷與正在進行的功能混在同一個前綴底下，
+`cx git feature list` 就看不出哪些是「還在做」哪些是「在救火」。
+
+> ⚠ **這不是 gitflow 的 hotfix。**
+> gitflow 的 hotfix 從 `main` 開、合回 `main` + `dev`，配版本號與 tag。
+> 本專案的 hotfix **不碰 `main`** —— `main` 只由 `cx git release` 碰。
+
+`finish` 刻意**不推送、不刪分支**：那兩件事各自有自己的閘門。
+
+### 放行之後：`cx git release`
+
+`dev → main` 是**唯一**會碰 `main` 的動作：
+
+```bash
+cx git release            # 三個 repo 一起，並讓主庫的 gitlink 對齊子模組的 main
+cx git push
+```
+
+它會先跑一次祕密掃描、列出三個 repo 各有幾個 commit 要發布、要求 `--danger`
+等級的確認。**不推送、不打 tag。**
+`dev` 沒有領先 `main` 時不會建空的 merge commit。
+
+完整說明見 [`cx/cx-reference.md`](cx/cx-reference.md) 的 `cx git release` 一節。
+
+---
+
 ## 7. 五個最常見的誤讀
 
 | 誤讀 | 為什麼錯 |

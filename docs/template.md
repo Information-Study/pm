@@ -224,7 +224,9 @@ $EDITOR .cxroot          # 改專案名、GitHub 組織、repo 名
 ./cx verify              # 報告落在 reports/verify/<時間戳>.md
 ```
 
-> `cx setup guard` 已經包含在 `cx setup` 裡，但它是在**你改完 `.cxroot` 之後**
+> ⚠ `cx setup guard` 是**選用**的，`cx setup` **不含**它
+>（2026-09-04 起改為選用，見 `bin/cmd/setup.sh` 的 `_setup_all`）。
+> 要裝的話它必須在**你改完 `.cxroot` 之後**
 > 才讀白名單的。順序寫反（先 setup 再改 `.cxroot`）的話要補跑一次
 > `./cx setup guard`，否則 hook 裡烤的還是舊專案的白名單。
 
@@ -248,8 +250,8 @@ $EDITOR .cxroot          # 改專案名、GitHub 組織、repo 名
 | 兩條 runner（容器／原生）各自獨立 | `--runner` |
 | 一行安裝整套原生工具鏈 | `cx setup native` |
 | 用 VS Code 開專案（WSL 也可以） | `cx code` |
-| 開 phpMyAdmin（只有 dev） | `cx pma` |
-| 39 項驗收清單 | `cx verify` |
+| 開 phpMyAdmin（dev **與 test**；prod 刻意沒有，D13） | `cx pma` |
+| 完整驗收清單（項數見報告 —— 寫死的數字必然過期） | `cx verify` |
 
 換掉名字之後這些全部可以直接用 —— 它們依賴的是 `.cxroot` 與
 `env/docker/compose/*.env` 的變數，不是寫死的字串。

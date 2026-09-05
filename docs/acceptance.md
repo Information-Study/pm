@@ -74,7 +74,7 @@ cx test all            # 後端 PHPUnit + 前端型別檢查
 | `composer` | ✔ | ✔ | 兩邊的 vendor 不保證可互換（musl vs glibc） |
 | `npm` / `npm --backend` | ✔ | ✔ | backend 的容器路徑刻意用 glibc 映像 |
 | `db`（除 restore） | ✔ | ✔ | mysql client 跑在 mysql 容器裡 |
-| `db restore` | ✔ | ✔ | |
+| `db restore` | ✔ | ✘ | **設計上只有容器路徑** —— `bin/cmd/db.sh` 會硬失敗（`EX_USAGE`）並印出手動指令。`docs/runners.md` §5 才是對的，這一格 2026-09-06 之前寫反了 |
 | `test back` / `test front` | ✔ | ✔ | 原生需要 `pdo_sqlite` |
 | `test coverage` | ✔ | ✘ | 需要容器內的 xdebug |
 | `style` / `lint php\|js` | ✔ | ✔ | |

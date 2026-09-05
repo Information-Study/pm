@@ -32,7 +32,7 @@ Trivy / Semgrep / PHPStan / ZAP 全部 EACCES。
 ## 2. 最快的看法
 
 ```bash
-cx verify                      # 驗收（39 項）→ reports/verify/<時間戳>.md
+cx verify                      # 驗收 → reports/verify/<時間戳>.md（項數見報告本身）
 cx scan all                    # 四道防線 + 祕密掃描 → reports/ 底下各自的目錄
 cx test all                    # 測試套件（結果只印在終端機）
 ```

@@ -215,6 +215,14 @@ gitleaks，掃**全部歷史**而不只是工作區。
 
 ## 7. 第五道：WAF
 
+> ⚠ **這一節的 CRS 版本敘述已經由 [`nginx-reference.md`](nginx-reference.md) §3 取代。**
+> 2026-09-05 的實測發現 Docker 側是 CRS 3.3.10、原生側是 4.30.0 —— 兩條路徑
+> 跑的是不同大版本的規則集，而 4.x 對 Livewire 的正常請求會誤擋（403）。
+> 現在 Docker 側釘在 `owasp/modsecurity-crs:4.28.0-nginx-alpine-...`，
+> 排除規則改用 `ctl:ruleRemoveByTag` 而不是逐條 ID。
+> **逐項對照與排除規則的來由只寫在 `nginx-reference.md` §3 一個地方** ——
+> 這裡不重述，避免第二份會漂移的說法。
+
 ModSecurity + OWASP CRS，只在 test 模式的 `waf` 服務裡。
 
 排除規則走官方擴充點：
