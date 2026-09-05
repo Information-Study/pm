@@ -205,7 +205,9 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 
 > 驗證日期：**2026-09-04**
 > 環境：WSL2 Ubuntu 26.04.1 / Docker Engine 29.7.2 / Compose v5.5.0 / 10 vCPU / 12.5 GB
-> 執行方式：`cx verify all`（52 項，0 失敗、0 未驗），報告在 `reports/verify/`
+> 執行方式：`cx verify all`，報告在 `reports/verify/`
+> （**2026-09-04 當時**是 52 項、0 失敗、0 未驗。項數之後隨著新增檢查一直在變，
+>   這裡保留當時的數字當作歷史紀錄，不要拿它跟現在比。）
 >
 > 這一輪之前，Docker daemon 在本機不可用；`sudo usermod -aG docker $USER` +
 > `wsl --shutdown` 之後才第一次真的跑起來。
@@ -228,7 +230,7 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 | D14 dev 不 COPY 原始碼 | ✅ | dev stage 只 COPY vendor |
 | D15 nuxt 多 target | ✅ | deps / dev / build / prod / static |
 | 2.1 dev 映像能開機 | ✅ | `vendor-dev` 無 `--no-autoloader`；entrypoint 另有 `composer install` 保險 |
-| 2.2 三模式並存 | ✅ | **14 個容器同時運行，零埠衝突**；base 檔無 `ports:` |
+| 2.2 三模式並存 | ✅ | **三個模式同時運行、零埠衝突**；base 檔無 `ports:`（2026-09-04 當時 14 個；test 之後加了 phpMyAdmin，現在是 15） |
 | 2.3 相對路徑 | ✅ | 一律 `--project-directory "$CX_ROOT"`；`cx up` 會先斷言每個 bind mount 來源存在 |
 | 2.4 env-file | ✅ | 條件式組出清單；`cx doctor` 對缺 `.env` 是**硬失敗** |
 | 2.5 網路名 | ✅ | `pm_dev_net` / `pm_test_net` / `pm_prod_net` / `pm_devsecops_net` 都明寫 |

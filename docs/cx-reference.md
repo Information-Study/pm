@@ -59,22 +59,22 @@ cx setup [子指令]
 | `guard` | 安裝三個 repo 的 pre-push hook（白名單從 `.cxroot` 產生）。**選用** —— `cx setup` 不含這一步 |
 | **`native`** | **一行裝完整套原生工具鏈** = `system` → `tools` → `deps`。不吃名稱過濾器 —— `system` 與 `tools` 的清單互斥，要裝單一項目請直接用那兩個子指令 |
 | `system [名稱...]` | **需要 root** 的系統套件：`php nginx git docker mysql-client php-sqlite acl jq` |
-| `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep shellcheck` |
+| `tools [名稱...]` | 免 root 安裝工具鏈。可選 `composer node ansible trivy gitleaks semgrep shellcheck bats` |
 | `deps` | backend 的 `composer install` + `npm ci` + `vite build`、frontend 的 `npm ci` |
 
 ### 哪個工具在哪一邊
 
 | | 工具 | 裝到哪 |
 |---|---|---|
-| `system`（要 root） | `php`（cli + 8 個擴充）・`nginx`・`git`・`docker`（含 compose v2）・`mysql-client`・`php-sqlite` | 系統 |
-| `tools`（免 root） | `composer`・`node`（含 `npm` / `npx`）・`ansible`（含 `ansible-lint` / `yamllint`）・`trivy`・`gitleaks`・`semgrep` | `~/.local` |
+| `system`（要 root） | `php`（cli + 8 個擴充）・`nginx`・`git`・`docker`（含 compose v2）・`mysql-client`・`php-sqlite`・`acl`・`jq` | 系統 |
+| `tools`（免 root） | `composer`・`node`（含 `npm` / `npx`）・`ansible`（含 `ansible-lint` / `yamllint`）・`trivy`・`gitleaks`・`semgrep`・`shellcheck`・`bats` | `~/.local` |
 | 不必安裝 | `artisan` —— 它是 `backend/artisan`，隨 Laravel 一起來 | — |
 
 打錯邊不會只丟一句「未知的工具」，會直接告訴你正確的指令：
 
 ```
 $ cx setup system npm
-✘ 未知的系統工具：npm（可用：php nginx git docker mysql-client php-sqlite）
+✘ 未知的系統工具：npm（可用：php nginx git docker mysql-client php-sqlite acl jq）
     npm 隨 node 一起裝 → cx setup tools node
 ```
 
@@ -118,7 +118,7 @@ cx pma --url      # 只印網址（給腳本用）
 cx pma --no-open  # 印資訊但不開瀏覽器
 ```
 
-**只有 dev 模式有。** test / prod 刻意不放管理介面（額外的攻擊面，
+**dev 與 test 兩個模式有；prod 刻意沒有。** prod 不放管理介面（額外的攻擊面，
 而且 prod 的 MySQL 根本不發布埠）。在別的模式打會被擋下並告訴你用
 `cx --mode <m> db shell`。
 
@@ -157,7 +157,7 @@ runner: native（指定） — php 8.5.4
 
 ### `cx setup system` 對 root 的態度
 
-那六個是系統套件，一定要 root。cx 的原則是：
+那八個是系統套件，一定要 root。cx 的原則是：
 
 1. **絕不偷偷跑 sudo。** 要用 root 就明講，而且有確認閘門（會先列出
    完整的 `apt-get install` 指令再問你）。
@@ -229,7 +229,7 @@ WAF 悄悄失效，而且沒有任何線索。
 ## `cx test` — 測試套件
 
 ```
-cx test <back|front|all|coverage|larastan>
+cx test <cli|back|front|all|coverage|larastan>
 ```
 
 | 子指令 | 做什麼 | 需要什麼 |
@@ -275,7 +275,9 @@ cx acl <子指令> [參數...]
 | `fix-owner` | 把不屬於你的檔案要回來（列出並確認；需要 sudo） |
 | `drop [路徑...]` | 清空 ACL，回到純 chmod（有確認閘門） |
 
-旗標：`--web-user`、`--dev-user`（名稱或 uid）、`-n/--dry-run`。
+旗標：`--web-user`、`--dev-user`（名稱或 uid）。
+乾跑用**全域**旗標、寫在動詞前面：`cx --dry-run acl apply`。
+**沒有 `-n` 這個短旗標** —— `cx acl -n` 會被當成子指令。
 
 需要 `setfacl`：`cx setup system acl`。
 
@@ -617,8 +619,8 @@ cx git <子指令> [參數...]
 | `sync` | 子模組 checkout 到追蹤分支 |
 | `commit [-m 訊息]` | 子模組先、主庫 gitlink 後 |
 | `save [-m 訊息]` | `commit` 的別名 |
-| `branch list\|new\|switch\|delete <名稱>` | 三個 repo 同步操作 |
-| `remote-init` | 用 `gh` 建立 Information-Study 的三個 public repo |
+| `branch list\|new\|switch\|delete <名稱> [--repo main\|backend\|frontend\|all]` | 預設三個 repo 一起；`new` 另接 `--from <ref>`（switch/delete **不吃**，會 EX_USAGE）；主庫拒絕 `feature/*` |
+| `remote-init` | 用 `gh` 在 `.cxroot` 的 `CX_GH_ORG` 底下建三個 public repo（**有確認閘門**） |
 | `push [--force]` | 推送 |
 | `scan-secrets` | 祕密掃描（commit / push 前會自動跑） |
 | `guard install\|status\|remove` | pre-push hook |
@@ -661,7 +663,7 @@ pm
 2. `fetch --prune`（黑名單遠端硬擋）
 3. 主庫 `merge --ff-only origin/<分支>`
 4. `git submodule update --init --recursive` —— 子模組移到 gitlink
-5. `cx git sync` —— 把子模組從 detached HEAD 接回追蹤分支（用 `checkout -B`，不丟 commit）
+5. `cx git sync` —— 把子模組從 detached HEAD 接回追蹤分支：內容相同就純 `checkout`、HEAD 領先就 `-B` 快轉、**分支領先或已分岔則保持 detached**（不會倒退分支）
 6. 若子模組的 `origin/<分支>` 比 gitlink 新，**警告但不自動採用**
 
 ### 分岔時不自動合併
@@ -720,12 +722,15 @@ CX_GIT_DEV_BRANCH=dev        # 開發主線
 `git.sh` 原本有**六處寫死 `main`**。現在 `_git_main_branch` / `_git_dev_branch`
 是唯一來源，`branch delete` 也會拒絕刪掉這兩條（`_git_is_protected_branch`）。
 
-### feature：從 dev 開，合回 dev
+### feature：只開在子模組，從該子模組的 dev 開、合回 dev
 
 ```bash
-cx git feature start login      # 建立 feature/login（三個 repo，從 dev 開）
+cx git flow-init                            # 先補齊拓撲（冪等，只補缺的）
+cx git feature start login --repo backend   # 只在 backend 建 feature/login（從它的 dev）
 cx git feature list
-cx git feature finish           # 合回 dev（--no-ff）；不推送、不刪分支
+cx git feature finish --repo backend        # 合回 backend 的 dev（--no-ff），
+                                            # 再讓主庫的 dev 只提交這一顆 gitlink
+                                            # 不推送、不刪分支
 ```
 
 `finish` 刻意**不做**推送與刪分支：那兩件事各自有自己的閘門，混進來會讓
@@ -854,10 +859,16 @@ cx git remote-set git@github.com:me/shop.git   # 指到已經存在的
 ## `cx fresh` — 清理與重建
 
 ```
-cx fresh [--phase preflight|backup|migrate|delete|all] [--mode backup-only|carryover|scaffold]
+cx fresh [--phase preflight|backup|migrate|delete|rebuild|verify|git-init|all]
+         [--resume-from rebuild|verify|git-init]
+         [--mode backup-only|carryover(預設)|scaffold] [--rollback] [--from <封存目錄>]
 ```
 
-流程：**備份 → 驗證備份 → 確認閘門 → 刪除 → 重建**。
+流程：**preflight → 備份 → 驗證封存 → 確認閘門 → 遷移 → 刪除 → 重建 → 驗證重建 → 三 Git 初始化**。
+
+> **PF-10：這棵樹必須是一般的 clone。** `.git` 是檔案（git worktree）時 `cx fresh` 直接拒絕、
+> 什麼都不動 —— worktree 的物件庫在 `CX_ROOT` 之外，封存抓不到它、刪除也刪不掉它，
+> 而整條流程會「成功」。2026-09-05 之前這個情況會產出一份**通過驗證但不含主庫歷史**的封存。
 
 `_fresh_nuke` 的護欄（任何一條不成立就中止，不是跳過）：
 - 拒絕 symlink（避免被指到樹外）
@@ -929,7 +940,7 @@ cx re-init --mode carryover                # 名字不變，重建骨架但留�
 | 步驟 | 由誰做 |
 |---|---|
 | 改寫專案身分 | `cx rename <新名稱> [--org]` |
-| 刪 `.git`、重建骨架、重新連結 submodule、`git init` | `cx fresh --mode scaffold\|carryover` |
+| 刪 `.git`、重建骨架、重新連結 submodule、`git init` | `cx fresh --mode carryover`（**預設**）或 `--mode scaffold` |
 | 建立或接上遠端 | `cx git remote-init`（gh）或 `cx git remote-set <URL>` |
 
 破壞性邏輯、封存與 rollback 全都在 `cx fresh` —— 那是本專案唯一經過對抗式
@@ -1028,7 +1039,7 @@ nginx、前端、後端目前**必須在同一台**。這不是設定問題，�
 ## `cx rename` — 把範本改成新的專案名
 
 ```bash
-cx --dry-run rename shop     # 只列出變更點，不動任何檔案
+cx --dry-run rename shop --org my-org   # 只列出變更點，不動任何檔案
 cx rename shop               # 列出變更點 → 確認閘門 → 套用
 ```
 

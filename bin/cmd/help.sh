@@ -75,11 +75,21 @@ cmd_help_main() {
   sonar up|down|status|token|url|logs|wait
                     常駐 SonarQube（獨立 project pm_devsecops）
 
-  verify [範圍...]  跑 docs/docker-verification.md 的驗收清單並產出報告
-                    範圍：static / runtime / app / ansible / all
+  verify [範圍...] [--quiet] [--report <檔>]
+                    驗收並產出報告。範圍：
+                      cli docs tui        純靜態，什麼都不用裝（含跨檔一致性）
+                      static              需要 Docker（合併後的 compose）
+                      runtime app         需要容器跑起來
+                      waf acl ansible     需要對應的環境
+                      all                 以上全部
+                    不給範圍時跑： cli docs tui static app ansible
+                    （刻意不含 runtime / waf / acl —— 那三個需要額外環境，
+                      放進預設會讓「什麼都沒裝的樹」永遠有紅字）
 
 ── 第三階段：部署 ───────────────────────────────────────────────────────────
   prod up -d --build   起正式環境的容器（只發布 80）
+  deploy hosts init|add|rm|show|check|edit
+                    產生與驗證 ansible/inventory/hosts.yml（唯一沒有工具幫忙的必要檔案）
   deploy syntax     ansible-playbook --syntax-check（三個 playbook）
   deploy lint       ansible-lint（production profile）+ yamllint
   deploy check [限制]  --check --diff 乾跑

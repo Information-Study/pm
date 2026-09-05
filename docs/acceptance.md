@@ -86,7 +86,12 @@ cx test all            # 後端 PHPUnit + 前端型別檢查
 | `git` / `acl` / `deploy` / `verify` / `doctor` | — | ✔ | 與 runner 無關 |
 
 `✘` 的那幾格不是缺陷，是誠實的宣告：打了會得到帶理由的 `EX_PRECOND`，
-不會靜默降級。`cx verify` 的 `LC-declared-gaps` 盯著這一點。
+不會靜默降級。
+
+> ⚠ 這一格原本寫著「`cx verify` 的 `LC-declared-gaps` 盯著這一點」——
+> **那個檢查不存在**（`grep -rn LC-declared-gaps bin/` 沒有任何結果，也從未出現在任何
+> 報告裡）。這張矩陣目前是**手動維護**的。發明一個不存在的守門 ID，比誠實承認缺口更糟：
+> 它讓讀者以為這件事已經被自動守住了。
 
 ### Docker 不可用時
 
@@ -184,10 +189,11 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 
 ---
 
-## 6.5 本輪實測結果（2026-09-05）
+### 7.2 本輪實測結果（2026-09-05）
 
 環境：WSL2 Ubuntu 26.04.1・Docker 29.7.2・Compose v5.5.0・PHP 8.5.4・Node 24.20.0
-三個模式全部從這個工作樹重新 build 並啟動（17 個容器同時運行）。
+三個模式全部從這個工作樹重新 build 並啟動（15 個容器：dev 5 ・ test 6 ・ prod 4；
+當時 SonarQube stack 也開著，所以 `docker ps` 是 17）。
 
 ### `cx verify all`
 
@@ -291,7 +297,7 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 | 三個 Git 初始化 | ✅ 各自 main、各 1 commit、`.gitmodules` 用相對 URL |
 | `fresh --rollback` | ✅ exit=0（兩次），HEAD 與 commit 數都與 MANIFEST 一致 |
 
-### 7.1 TUI
+#### TUI
 
 TUI 需要 TTY，非互動環境會回 `EX_PRECOND` 並印出可行動訊息（這一點是自動驗的）。
 選單結構的正確性由 `cx verify tui` 自動驗：

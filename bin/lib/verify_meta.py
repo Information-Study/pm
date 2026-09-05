@@ -87,9 +87,14 @@ def subcommands_of(verb):
         s, re.S | re.M)
     if not m:
         return None
-    return set(re.findall(r'compgen -W "([^"]*)"', m.group(1))
-               and " ".join(re.findall(r'compgen -W "([^"]*)"', m.group(1))).split()
-               or [])
+    # ⚠ 單引號與雙引號都要吃。原本只抓 compgen -W "…"，而 git 那一整塊用的是
+    # 單引號 —— 於是 subcommands_of("git") 回傳**空集合**，check_tui 對 git 的
+    # 子指令從來沒有驗過任何東西。一條看起來在跑、實際上什麼都沒比對的檢查，
+    # 比沒有檢查更糟：它會讓人以為那個面向已經被守住了。
+    words = []
+    for _q, body in re.findall(r"""compgen -W (['"])(.*?)\1""", m.group(1), re.S):
+        words += body.split()
+    return set(words)
 
 
 # ══ CLI：cx 自己的四方同步 ═════════════════════════════════════════════════
@@ -176,8 +181,16 @@ def check_cli_usage_flags():
     if bad:
         row("FAIL", "CLI-flags", "usage 宣傳的旗標 parser 都接受", " ".join(sorted(bad)))
     else:
+        # ⚠ 把「沒被檢查的是誰」印出來。原本只說「N 個不適用」，於是
+        # 24 個動詞裡只有 6 個真的被驗過這件事是隱形的。
+        # 2026-09-05 試過放寬判準（把 cx_error + return EX_USAGE 也算成「會拒絕」），
+        # 結果對 deploy 的 --env/--key/--port/--user/--no-db/--no-web 與 test 的
+        # --build/--filter 產生 8 個假警報 —— 那些旗標分別由 bin/lib/inventory.py
+        # 與下游的 compose/phpunit 處理，本來就不該出現在該檔案裡。
+        # 一條永遠紅燈的檢查等於沒有人會再看它，所以維持窄判準，但把缺口寫出來。
         row("PASS", "CLI-flags", "usage 宣傳的旗標 parser 都接受",
-            f"{checked} 個旗標；{len(skipped)} 個轉發型動詞不適用")
+            f"{checked} 個旗標／{len(skipped) + len(skipped and [] or [])} 略過："
+            f"{' '.join(sorted(skipped))}")
 
 
 def check_cli_help_sync():
@@ -729,6 +742,241 @@ def check_setup_completion_drift():
             "tools 與 system 都涵蓋")
 
 
+def check_git_subcommands():
+    """`cx git` 的子指令必須在四個地方一致。
+
+    這一族今天就抓得到東西：help.sh 曾經同時漏掉 feature、config、remote-set。
+    而且它是**新**檢查 —— subcommands_of 原本只吃雙引號的 compgen -W，
+    git 那一塊用單引號，所以 git 的子指令從來沒有被任何檢查比對過。
+
+    四個來源都從實際的東西推導，不另外手打第五份清單：
+      dispatch   cmd_git_main 的 case 分支
+      usage      _git_usage heredoc 的行首詞
+      補全       bin/completion/cx.bash 的 git) 區塊
+      help       bin/cmd/help.sh 的 `git <子指令>` 行
+    """
+    gs = read("bin/cmd/git.sh")
+    if not gs:
+        row("SKIP", "GIT-subs", "cx git 子指令四方一致", "讀不到 bin/cmd/git.sh")
+        return
+
+    # ⚠ 不可以用非貪婪抓到第一個 esac：guard) 那一臂裡面**還有一個** case…esac，
+    #   於是它後面的 push / remote-init / remote-set / scan-secrets 全部被截掉，
+    #   然後這條檢查會反過來說「usage 多了不存在的子指令」。
+    #   改成抓整個函式本體，只認**恰好 8 個空白縮排**的臂（巢狀的那些更深）。
+    m = re.search(r"cmd_git_main\(\)\s*\{\n(.*?)\n\}", gs, re.S)
+    if not m:
+        row("SKIP", "GIT-subs", "cx git 子指令四方一致", "剖析不到 cmd_git_main")
+        return
+    dispatch = set()
+    for arm in re.findall(r"^ {8}([a-z|_-]+)\)", m.group(1), re.M):
+        for a in arm.split("|"):
+            if a and not a.startswith("-"):
+                dispatch.add(a)
+
+    um = re.search(r"_git_usage\(\)\s*\{.*?<<'TXT'\n(.*?)\nTXT", gs, re.S)
+    usage = set()
+    if um:
+        for ln in um.group(1).splitlines():
+            w = re.match(r"^  ([a-z][a-z-]*)", ln)
+            if w:
+                usage.add(w.group(1))
+
+    # 補全只取**頂層**那一份（if [[ -z $sub ]] 底下的），不要把 branch/feature/
+    # guard 的子項一起算進來 —— 那些是第二層，不是 cx git 的子指令。
+    cb = read("bin/completion/cx.bash")
+    gm = re.search(r"^\s{8}git\)\n\s*if \[\[ -z \$sub \]\]; then\n\s*COMPREPLY=\(\$\(compgen -W (['\"])(.*?)\1",
+                   cb, re.S | re.M)
+    comp = set(gm.group(2).split()) if gm else set()
+
+    hs = read("bin/cmd/help.sh")
+    helps = set(re.findall(r"^\s*git ([a-z][a-z-]*)", hs, re.M))
+
+    problems = []
+    # dispatch 是事實。其他三個都必須涵蓋它（可以多，因為補全會列 branch 的子項）
+    for name, have in (("usage", usage), ("補全", comp), ("help", helps)):
+        missing = sorted(d for d in dispatch if d not in have)
+        if missing:
+            problems.append(f"{name} 少了：{' '.join(missing)}")
+    # 反向：不存在的子指令不可以出現在任何一份清單裡
+    for name, have in (("usage", usage), ("補全", comp), ("help", helps)):
+        extra = sorted(x for x in have if x not in dispatch)
+        if extra:
+            problems.append(f"{name} 多了不存在的：{' '.join(extra)}")
+
+    if problems:
+        row("FAIL", "GIT-subs", "cx git 子指令四方一致", "；".join(problems))
+    else:
+        row("PASS", "GIT-subs", "cx git 子指令四方一致", f"{len(dispatch)} 個子指令")
+
+
+def check_git_branch_model():
+    """`.cxroot` 的 CX_GIT_* 與程式碼裡的讀取端要雙向對得起來。
+
+    兩個方向都會出事：
+      定義了沒人讀 —— 使用者改了那一行，行為卻不變（fresh.sh 曾經寫死 -b main，
+                      於是 CX_GIT_MAIN_BRANCH 只是裝飾）
+      讀了沒定義   —— 靠 shell 的 :- 預設值默默跑掉，換一台機器才發現不一樣
+    """
+    cxroot = read(".cxroot")
+    if not exists(".cxroot"):
+        row("SKIP", "GIT-branch-model", "分支模型變數雙向一致", "沒有 .cxroot")
+        return
+    defined = set(re.findall(r"^(CX_GIT_[A-Z_]+)=", cxroot, re.M))
+
+    used, required = set(), set()
+    for f in sorted((ROOT / "bin/cmd").glob("*.sh")) + sorted((ROOT / "bin/lib").glob("*.sh")):
+        txt = f.read_text(encoding="utf-8")
+        used |= set(re.findall(r"\$\{?(CX_GIT_[A-Z_]+)", txt))
+        # ⚠ 有沒有給預設值，語意完全不同：
+        #   ${VAR:-x}  可選 —— 那正是「舊的 .cxroot 也要能跑」的相容機制
+        #   $VAR       必要 —— 沒定義就會是空字串，行為靜默改變
+        # 第一版把兩者一視同仁，於是任何**還沒加這些變數的既有專案**都會紅，
+        # 而那是設計上要支援的狀態。一條對正常狀態報錯的檢查等於沒有檢查。
+        for name in re.findall(r"\$\{(CX_GIT_[A-Z_]+)\}", txt):
+            required.add(name)
+        for name in re.findall(r"\$(CX_GIT_[A-Z_]+)\b", txt):
+            required.add(name)
+
+    orphan = sorted(defined - used)                 # 定義了沒人讀
+    undef  = sorted(required - defined)             # 沒有預設值卻沒定義
+    problems = []
+    if orphan:
+        problems.append(f".cxroot 定義了但沒有任何程式碼讀：{' '.join(orphan)}")
+    if undef:
+        problems.append(f"程式碼讀了（且沒給預設值）但 .cxroot 沒定義：{' '.join(undef)}")
+    if problems:
+        row("FAIL", "GIT-branch-model", "分支模型變數雙向一致", "；".join(problems))
+    else:
+        row("PASS", "GIT-branch-model", "分支模型變數雙向一致",
+            (" ".join(sorted(defined)) or "（.cxroot 沒有 CX_GIT_*，程式碼走預設值）")
+            + f"；讀取端 {len(used)} 個")
+
+
+def check_doc_index():
+    """宣稱是「完整清單」的文件索引，必須真的完整。
+
+    claude.md 的 §9 與 docs/README.md 的表格都是索引。少一份文件不會壞掉任何
+    東西 —— 它只是讓那份文件沒有人找得到，而這正是本專案已經發生過的事
+    （三份角色指南寫完之後，claude.md 的清單裡一份都沒有）。
+    """
+    docs = sorted(p.name for p in (ROOT / "docs").glob("*.md"))
+    if not docs:
+        row("SKIP", "DOC-index", "文件索引涵蓋 docs/ 全部", "找不到 docs/*.md")
+        return
+    problems = []
+    for src in ("claude.md", "docs/README.md"):
+        if not exists(src):
+            continue
+        txt = read(src)
+        missing = [d for d in docs if d not in txt]
+        if missing:
+            problems.append(f"{src} 沒有提到：{' '.join(missing)}")
+    if problems:
+        row("FAIL", "DOC-index", "文件索引涵蓋 docs/ 全部", "；".join(problems))
+    else:
+        row("PASS", "DOC-index", "文件索引涵蓋 docs/ 全部", f"{len(docs)} 份都在索引裡")
+
+
+def check_doc_filemap():
+    """claude.md 的檔案地圖要對得上實際的 bin/cmd 與 bin/lib。
+
+    地圖過期的症狀很輕微（沒有人會壞掉），但它是新人理解專案的第一張圖，
+    而且它過期的時候看起來完全正常。實測 2026-09-05：地圖列 18 個 bin/cmd，
+    實際有 24 個；bin/lib 的 .py 漏掉 4 個。
+    """
+    cm = read("claude.md")
+    if not cm:
+        row("SKIP", "DOC-filemap", "claude.md 的檔案地圖與實際相符", "讀不到 claude.md")
+        return
+    problems = []
+    for d, pat in (("bin/cmd", "*.sh"), ("bin/lib", "*.py"), ("bin/lib", "*.sh")):
+        real = sorted(p.stem for p in (ROOT / d).glob(pat))
+        if not real:
+            continue
+        missing = [x for x in real if not re.search(r"\b%s\b" % re.escape(x), cm)]
+        if missing:
+            problems.append(f"{d}/{pat} 沒出現在地圖裡：{' '.join(missing)}")
+    if problems:
+        row("FAIL", "DOC-filemap", "claude.md 的檔案地圖與實際相符", "；".join(problems))
+    else:
+        row("PASS", "DOC-filemap", "claude.md 的檔案地圖與實際相符", "bin/cmd 與 bin/lib 全部有提到")
+
+
+def check_doc_verify_scopes():
+    """help.sh 宣傳的 verify 範圍，必須涵蓋 verify.sh 真的實作的每一個。
+
+    docs/README.md 明寫「cx help 的輸出是動詞與參數的唯一權威」，
+    所以 help 少寫一個範圍，等於那個範圍對使用者不存在。
+    """
+    vs = read("bin/cmd/verify.sh")
+    hs = read("bin/cmd/help.sh")
+    if not vs or not hs:
+        row("SKIP", "DOC-verify-scopes", "help 的 verify 範圍涵蓋實作", "讀不到來源")
+        return
+    m = re.search(r"case \$1 in\n\s*([a-z|]+)\)", vs)
+    scopes = set()
+    for mm in re.finditer(r"^\s{12}([a-z|]+)\)\s*(?:scopes|SCOPES|_vf|;;)", vs, re.M):
+        for a in mm.group(1).split("|"):
+            scopes.add(a)
+    # 保險：直接從 usage 的範圍行抓
+    um = re.search(r"範圍[：:]\s*([a-z /|]+)", vs)
+    if um:
+        for a in re.split(r"[ /|]+", um.group(1)):
+            if a:
+                scopes.add(a)
+    scopes -= {"", "all"}
+    if not scopes:
+        row("SKIP", "DOC-verify-scopes", "help 的 verify 範圍涵蓋實作", "剖析不到 verify.sh 的範圍")
+        return
+    # 取「verify」那一段的說明區塊：從 verify 行起，直到下一個頂層動詞行
+    #（兩個空白 + 動詞名）為止。窗口寫死幾行會在說明變長時默默失效。
+    hm = re.search(r"^  verify .*?(?=^  [a-z]|\Z)", hs, re.S | re.M)
+    hay = hm.group(0) if hm else hs
+    missing = sorted(x for x in scopes if x not in hay)
+    if missing:
+        row("FAIL", "DOC-verify-scopes", "help 的 verify 範圍涵蓋實作",
+            f"help.sh 少了：{' '.join(missing)}")
+    else:
+        row("PASS", "DOC-verify-scopes", "help 的 verify 範圍涵蓋實作",
+            f"{len(scopes)} 個範圍")
+
+
+def check_doc_test_count():
+    """文件裡寫死的 bats 案例數必須與實際相符。
+
+    這種數字每加一個案例就過期一次，而且過期得毫無徵兆。實測 2026-09-05：
+    docs/progress.md 寫 66，實際 68；本輪之後是 89。
+    只查「案例」附近的數字，不去猜文件裡每一個數字的意思。
+    """
+    real = 0
+    for f in sorted((ROOT / "bin/test").glob("*.bats")):
+        real += len(re.findall(r"^@test ", f.read_text(encoding="utf-8"), re.M))
+    if real == 0:
+        row("SKIP", "DOC-testcount", "文件寫的 bats 案例數與實際相符", "找不到 bats 檔")
+        return
+    bad = []
+    for rel in ("claude.md", "README.md") + tuple(f"docs/{p.name}" for p in (ROOT / "docs").glob("*.md")):
+        if not exists(rel):
+            continue
+        txt = read(rel)
+        for mm in re.finditer(r"\*?\*?(\d{2,3})\s*個案例", txt):
+            # ⚠ 只查「整套的總數」。文件裡也會寫**單一檔案**的案例數
+            #（例如「bin/test/80_init.bats（12 個案例）」），那不是總數，
+            # 拿總數去比它一定紅 —— 而一條必然紅的檢查等於沒有檢查。
+            # 判準：往前看 60 個字元，出現具體的 <名字>.bats 就當成單檔計數。
+            before = txt[max(0, mm.start() - 60):mm.start()]
+            if re.search(r"\b\w+\.bats\b", before):
+                continue
+            if int(mm.group(1)) != real:
+                bad.append(f"{rel}:{mm.group(1)}")
+    if bad:
+        row("FAIL", "DOC-testcount", "文件寫的 bats 案例數與實際相符",
+            f"實際 {real}，但這些地方寫別的：{' '.join(sorted(set(bad)))}")
+    else:
+        row("PASS", "DOC-testcount", "文件寫的 bats 案例數與實際相符", f"{real} 個案例")
+
+
 def check_pma_auth():
     """phpMyAdmin 不可以設 PMA_USER —— 那會把登入畫面整個關掉。
 
@@ -839,10 +1087,16 @@ def main():
         check_setup_completion_drift()
         check_pma_auth()
         check_log_dir_mode()
+        check_git_subcommands()
+        check_git_branch_model()
     if "tui" in families:
         check_tui()
     if "docs" in families:
         check_docs()
+        check_doc_index()
+        check_doc_filemap()
+        check_doc_verify_scopes()
+        check_doc_test_count()
     for st, ident, title, note in ROWS:
         print(f"{st}|{ident}|{title}|{note}")
     return 0

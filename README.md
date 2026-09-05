@@ -214,7 +214,7 @@ ansible-vault create ansible/inventory/group_vars/vault.yml
 
 ```bash
 ./cx dev up -d && ./cx test up -d && ./cx prod up -d
-docker ps        # 14 個容器，零埠衝突
+docker ps        # 三個模式共 15 個容器（dev 5 / test 6 / prod 4），零埠衝突
 ```
 
 靠的是**兩件事同時成立**：
@@ -319,6 +319,26 @@ pm/
 整套工具鏈與「pm」這個名字是**解耦**的：改 `.cxroot` 一個檔，compose 的
 project 前綴、SonarQube 的 project 與網路、push guard 的白名單、
 `cx fresh` 的確認字串就全部跟著換。
+
+### 建議做法：`cx init`
+
+```bash
+cx init shop                                     # 改名 + 抹掉範本的 git 歷史 + 重建
+cx init shop --gh                                # 順便用 gh 建三個 GitHub public repo
+cx init shop --remote git@github.com:me/shop.git # 或接到現成的遠端
+```
+
+它會先做完整封存並**驗證封存可用**才進確認閘門；出事可以 `cx fresh --rollback`。
+抹掉的是三個 repo 的全部歷史（主庫的 `.git` 一併帶走 `.git/modules/` 裡的兩個
+子模組物件庫），保留的是 `bin/` `docker/` `ansible/` `docs/` `.env` 等基礎設施。
+
+完整流程、兩個模式的差別、閘門文字、以及實測紀錄，見
+[`docs/guide-developer.md`](docs/guide-developer.md) 的 **§0**。
+
+### 手動等價做法（不想用 `cx init` 時）
+
+底下這段做的是同一件事的手工版本。它**不會**幫你封存、不會驗證、也沒有 rollback，
+而且要自己記得改 `.cxroot`：
 
 ```bash
 rsync -a --exclude .git --exclude node_modules --exclude vendor \

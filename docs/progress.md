@@ -1,10 +1,13 @@
 # 進度追蹤
 
-> 最後更新：**2026-09-04**
+> 最後更新：**2026-09-05**
 >
-> 最後一次完整回歸：`cx doctor` 25 通過 / 1 警告 / **0 失敗**；
-> `cx verify all` **52 項全過**；12 個 cx 動詞（doctor / verify / scan ×4 /
-> test ×2 / deploy ×2 / db / git）全數 exit 0；三個模式的 14 個容器同時運行。
+> 最後一次完整回歸：`cx doctor` 35 通過 / 0 警告 / 0 失敗；`cx verify all` 0 失敗；
+> `cx test cli`、`cx lint all`、`cx deploy lint` 皆 rc=0；三個模式的 15 個容器同時運行（dev 5 ・ test 6 ・ prod 4）。
+>
+> ⚠ **通過項數刻意不寫在這裡。** 它每加一條檢查就過期一次，而過期得毫無徵兆 ——
+> 本檔曾經長期停在「52 項」而實際早已不同。要看數字請跑 `cx verify all`，
+> 或看 `reports/verify/` 最新的那一份。
 > 這份文件的維護原則：**沒跑過的就寫沒跑過。** 不要因為程式碼看起來對就標成已驗證。
 > 可機器驗證的部分請以 `cx verify` 的輸出為準，不要手抄。
 
@@ -28,7 +31,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 |---|---|---|---|
 | 0 | `claude.md` 專案指南 | ✅ 完成 | — |
 | 1 | 更名、`cx` 骨架、備份、刪除舊紀錄 | ✅ 完成 | — |
-| 2 | Docker 三模式 + 多階段映像 + edge + WAF | ✅ **完成並實測** | `cx verify all`（52 項全過） |
+| 2 | Docker 三模式 + 多階段映像 + edge + WAF | ✅ **完成並實測** | `cx verify all` 0 失敗（項數見報告） |
 | 3 | 前後端重建 + 三 Git 初始化 | ✅ 完成 | migration / 測試 / 端點皆已實跑 |
 | 4 | DevSecOps 四道防線 + `cx scan` | ✅ **四道全部跑得動** | 見下表 |
 | 5 | Ansible 12 role + playbook | ✅ **對真實 systemd 目標完整跑通**（475 task、failed=0） | `cx deploy apply`（見下方「Ansible 真機進度」） |
@@ -45,13 +48,13 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
 | `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`（另有**應用層 hard guard**：任何非 sqlite 的目標都 fail-fast，退出碼 3）；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
-| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**66 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
+| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**97 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |
 | `verify` | ✅ | **cli / docs / tui / static / runtime / app / waf / acl / ansible / all**。前三個不需要 Docker 也不需要 `.env`，剛 clone 下來的樹就跑得完 |
-| `deploy` | ✅ | syntax / lint / check / ping / facts / vars / apply / app / rollback / galaxy |
-| `git` | ✅ | status / **fetch** / **pull** / sync / commit / branch / guard / remote-init / scan-secrets / push |
+| `deploy` | ✅ | syntax / lint / check / ping / facts / vars / apply / app / rollback / galaxy / **hosts**（init/add/rm/show/check/edit） |
+| `git` | ✅ | status / fetch / pull / sync / commit（`save`）/ branch / **feature** / **flow-init** / **config** / guard / remote-init / **remote-set** / scan-secrets / push。gitflow：feature 只開在子模組，主庫的 dev 在 finish 時同步 gitlink |
 | `art` `composer` `npm` | ✅ | 容器與原生兩條路都可用，`--runner` 可強制；`npm --backend` 是新增的（舊 `npm-php` service 從來不存在） |
 | `lint` | ✅ | ansible / php / **js（ESLint + Prettier）** / sh。`sh` 有一小撮「其實是正確性缺陷」的 warning 視同 error（`fatal_warn`） |
 | `style` | ✅ | php（Pint）/ js（Prettier）—— **會改檔案**，與 `lint` 的分工是硬的 |
@@ -137,7 +140,7 @@ push 白名單: ^(https://github\.com/|git@github\.com:)Acme-Inc/(shop|shop-api|
 | `cx setup deps` | 重建三棵相依樹（204 + 89 + 278 MB） |
 | `cx deploy galaxy` | 重建 `ansible/collections`（38 MB） |
 | `cx dev restart nuxt` | 容器當時在跑，node_modules 被抽掉會讓 dev server 壞掉，要重啟 |
-| 之後 | `cx doctor` 32/0/0、`cx verify` 39 通過 0 失敗、17 個容器仍在跑、端點全 200 |
+| 之後 | `cx doctor` 32/0/0、`cx verify` 39 通過 0 失敗、容器仍在跑、端點全 200 |
 | `reports/` | `.gitignore` 與 `README.md` 都由 `cx setup dirs` 自動補回，之後 `git status reports/` 是空的 |
 
 ### 第一輪失敗，暴露三個缺陷（都已修）

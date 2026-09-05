@@ -663,14 +663,17 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 | SonarQube | `cx sonar up\|token\|status` | 獨立 project `pm_devsecops` |
 | 驗收 | `cx verify [static\|runtime\|app\|ansible\|all]` | 產出 `reports/verify/<時間戳>.md` |
 | Git 同步 | `cx git sync\|save\|status` | |
+| gitflow | `cx git flow-init` 建立拓撲；`cx git feature start\|finish --repo backend\|frontend` | 功能分支**只開在子模組**；主庫只有 `main ← dev`，它的 `dev` 在 finish 時同步 gitlink |
 | 建立遠端 | `cx git remote-init`（gh 建 3 個 public repo） | |
 | 推送 | `cx git push`（白名單 + 祕密掃描 + 子模組順序） | |
 | Ansible 靜態檢查 | `cx deploy syntax` / `cx deploy lint` | `ansible-playbook --syntax-check` / `ansible-lint` |
 | 部署 | `cx deploy check\|apply\|app\|rollback [限制]` | `ansible-playbook -i inventory/hosts.yml site.yml` |
 | 診斷 | `cx doctor` | — |
 
-**尚未實作**（打了會得到 exit 2 並指向 §12）：
-`cx fresh --rollback`、`cx fresh --mode carryover|scaffold` 的重建階段。
+> ⚠ 這裡曾經寫著「`cx fresh --rollback` 與重建階段尚未實作」，而同一份檔案的
+> §12.6 又說它們全部可用並實測過 —— **一份文件自己跟自己矛盾**，而讀者沒有辦法
+> 判斷該信哪一邊。2026-09-05 移除那段：兩者都早就實作並實跑驗證過了
+>（見 §12.6 的表格，以及 `bin/test/60_fresh.bats` 與 `bin/test/80_init.bats`）。
 
 `cx` 可從專案任何子目錄執行（向上找 `.cxroot` 標記 —— **不用 `git rev-parse`**，
 因為 `cx fresh` 會刪掉 `.git`，用 git 當解析器會在流程中途壞掉）。
@@ -752,6 +755,11 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症狀 → 原因 → 解法，全部是實際踩過的坑 |
 | [`docs/progress.md`](docs/progress.md) | 逐項進度追蹤與「仍未驗證什麼」 |
 | [`docs/docker-verification.md`](docs/docker-verification.md) | Phase 2 的驗收需求 **與實測結果**（2026-09-04 已回填） |
+| [`docs/guide-developer.md`](docs/guide-developer.md) | **開發者指南**：開新專案 → setup → 三模式 → 日常動詞 → gitflow → 除錯 |
+| [`docs/guide-tester.md`](docs/guide-tester.md) | **測試者指南**：test / verify / scan、報告判讀、放行條件 |
+| [`docs/guide-deployer.md`](docs/guide-deployer.md) | **部署者指南**：主機規劃 → 祕密 → check → apply → 回滾 |
+| [`docs/nginx-reference.md`](docs/nginx-reference.md) | Docker 與原生的 nginx 逐項對照（路由／大小／標頭／WAF） |
+| [`docs/acceptance.md`](docs/acceptance.md) | 需求追溯矩陣與人工驗收項目的實測證據 |
 
 `docs/docker-verification.md` 現在包含：15 項舊缺陷的驗收條件與結果、
 5 項阻斷級與 12 項重大項目的逐項結論、WAF 攔截率實測、
@@ -778,9 +786,12 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 ├── claude.md                本文件（原理與坑）
 ├── bin/
 │   ├── lib/{common,ui,archive,guard}.sh
-│   ├── lib/{ansible_lint,compose_mounts,verify_checks,sarif_gate}.py
+│   ├── lib/{ansible_lint,compose_mounts,verify_checks,verify_meta,
+│   │        inventory,scaffold_patch,waf_probe,sarif_gate}.py
 │   ├── cmd/{setup,doctor,compose,test,db,sonar,scan,verify,deploy,git,
-│   │        fresh,install,lint,tui,art,composer,npm,help}.sh
+│   │        fresh,init,rename,install,lint,style,tui,acl,code,pma,php,
+│   │        art,composer,npm,help}.sh
+│   ├── test/{helpers/,*.bats}        cx 自己的行為測試（cx test cli）
 │   └── completion/cx.bash
 ├── templates/gitignore/{main,backend,frontend}
 ├── docker/
@@ -869,13 +880,14 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 
 ### 12.2 Phase 2 — Docker（✅ 已驗證）
 
-`cx verify all` 共 52 項，**0 失敗、0 未驗**。
+`cx verify all` **0 失敗**。項數與未驗數請以實際輸出為準 —— 每加一條檢查就會變，而且未驗（SKIP）**不等於通過**，那是本專案的教條。
 逐項結果與 20 條「原始清單裡沒有、驗證過程才發現」的缺陷，
 全部回填在 [`docs/docker-verification.md`](docs/docker-verification.md) §6–§7。
 
 重點結論：
 
-* 三個模式**同時運行** 14 個容器，零埠衝突
+* 三個模式**同時運行** 15 個容器（dev 5 ・ test 6 ・ prod 4），零埠衝突
+  （`docker ps` 看到的可能更多：常駐的 SonarQube stack 另外兩個，Ansible 目標容器再一個）
 * D5 修正確認：`supervisorctl status` 看得到 5 個 RUNNING —— 舊版的 `CMD` 陣列缺陷
   讓 supervisord 從未啟動，**queue worker 從來沒跑過**
 * WAF 在 blocking 模式擋下 SQLi / XSS / 路徑穿越（403），而 `/admin/login` 不誤擋
@@ -965,7 +977,7 @@ nuxi 在非互動下 `--template` 與 `--gitInit` 都是必填、還原摘要少
 
 ```bash
 cx doctor              # 先確認哪些阻擋已解除
-cx verify all          # 52 項驗收，產出帶時間戳的報告
+cx verify all          # 全部驗收，產出帶時間戳的報告
 cx scan all            # 四道防線
 cx deploy syntax       # Ansible 語法
 cx deploy lint         # ansible-lint + yamllint

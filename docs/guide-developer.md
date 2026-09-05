@@ -20,6 +20,147 @@
 
 ---
 
+## 0. 從這個範本開一個新專案
+
+> 這一節只有**開新專案**的人需要。已經在既有專案裡寫功能的人，直接跳到 §1。
+
+`pm` 是一個範本。要把它變成你自己的專案（換名字、抹掉範本的 git 歷史、接上你自己的
+遠端），用 `cx init`：
+
+```bash
+cx init shop                              # 改名成 shop，重建，之後自己接遠端
+cx init shop --gh                         # 順便用 gh 建三個 GitHub public repo
+cx init shop --org my-org --gh            # 指定 GitHub 組織
+cx init shop --remote git@github.com:me/shop.git    # 接到現成的遠端
+```
+
+`cx re-init` 是同一支程式，差別只在**不改名**（原地重建）。
+
+### 0.1 它做了什麼，順序為什麼不能換
+
+```
+改名（cx rename）→ 重建（cx fresh）→ 接遠端（cx git remote-init / remote-set）
+```
+
+`cx init` 自己幾乎沒有邏輯 —— 破壞性流程、封存與 rollback 全都在 `cx fresh` 裡
+（那是本專案唯一經過對抗式稽核與實跑驗證的一份），身分改寫在 `cx rename`。
+
+**rename 必須在 fresh 之前。** `_fresh_git_init` 會用 `.cxroot` 的 `CX_REPO_*`
+重新產生 `.gitmodules`；反過來做的話，`.gitmodules` 會帶著**範本的舊名字**被寫進新專案
+的第一個 commit。
+
+### 0.2 什麼會被抹掉、什麼會留下
+
+抹掉（不可逆）：
+
+| 項目 | 說明 |
+|---|---|
+| `.git`、`.gitmodules` | 主庫的整個提交歷史 |
+| `.git/modules/{backend,frontend}` | **兩個子模組的物件庫就在這裡面** —— 刪掉主庫的 `.git` 會一起帶走 |
+| `backend/`、`frontend/` 的內容 | 依 `--mode` 決定會不會疊回來（見 §0.3） |
+
+留下不動：`bin/` `cx` `.cxroot` `templates/` `docs/` `claude.md` `docker/`
+`ansible/` `.env` `docker-compose.yml` `.dockerignore` `.vscode/` `reports/`。
+
+> **`.env` 會被保留，但它裡面是範本的密碼與 APP_KEY。** 新專案應該重新產生：
+> `cx setup env`。閘門的文字會提醒你這件事。
+
+### 0.3 `carryover` 與 `scaffold` 的差別
+
+```bash
+cx init shop                      # --mode carryover（預設）
+cx init shop --mode scaffold      # 只要全新骨架
+```
+
+| | carryover（預設） | scaffold |
+|---|---|---|
+| 框架骨架 | 全新產生（`composer create-project` / `nuxi init`） | 同左 |
+| 你寫的 `app/` `routes/` `tests/` `pages/` `components/` … | **從封存疊回來** | **不疊回來**，只留在封存裡 |
+| 範本自己的接線（Filament 面板、`routes/api.php`、Sanctum migration、測試防護、ESLint） | 由 `templates/` 裝回 | 同左 |
+
+兩個模式都會產出**完整可用**的系統。差別只有「你自己寫的程式碼會不會回來」。
+
+> ⚠ 這個預設在 2026-09-05 從 `scaffold` 改成 `carryover`。理由：`cx fresh` 的預設
+> 一直是 `carryover`，兩個動詞預設相反本身就是缺陷；而且預設不該是「最危險的那一個」。
+>
+> 同一天還修掉一個更嚴重的問題：`scaffold` 產出的專案**沒有 Filament 後台、
+> 沒有 `routes/api.php`、沒有 Sanctum 的資料表** —— 因為 `_fresh_rebuild_backend`
+> 只跑 `create-project` + `require filament` + `require larastan`，**從不跑
+> `filament:install --panels`**；而 `carryover` 疊回來的清單裡沒有 `bootstrap/`，
+> 所以連 `bootstrap/providers.php`（註冊面板的那一行）也會掉。
+> 現在那五樣收在 `templates/backend/`，由 `bin/lib/scaffold_patch.py` 冪等地裝回去。
+
+### 0.4 閘門：你會被問什麼
+
+`cx init` **只問一次**（它在內部對 `cx fresh` 設了 `--yes`，所以 `DESTROY <名字>` 與
+`NO CARRYOVER` 這兩個 token 是自動回答的）。也就是說 `INIT <新名字>` 那一段文字
+是你唯一會看到的警告 —— 它會列出上面 §0.2 的清單、封存路徑、以及目前的 `--mode`。
+
+```
+確認：INIT shop
+… 會發生的事、保留不動的東西、封存位置 …
+要繼續請輸入： INIT shop
+```
+
+非互動環境（沒有 tty）會直接 `EX_ABORT`(4)，什麼都不動。要在腳本裡跑得加 `--yes`。
+
+### 0.5 先看一遍再動手
+
+```bash
+cx --dry-run init shop            # 列出會依序執行什麼，以及 rename 的每一個變更點
+cx --dry-run fresh --mode carryover   # fresh 的乾跑要單獨看（init 的乾跑不會進到 fresh）
+```
+
+### 0.6 出事了怎麼辦
+
+破壞性動作之前一定會先做完整封存（原始碼 tar、三個 git bundle、真實 gitdir、
+mysqldump、SHA256SUMS），而且**先驗證封存可用**才進閘門。
+
+```bash
+cx fresh --rollback                        # 回到動手之前（用最新那份封存）
+cx fresh --rollback --from <封存目錄>       # 指定某一份
+```
+
+中途失敗時，專案根目錄會留下 `CX-RECOVERY.md`，裡面就是當下該打的指令。
+
+> ⚠ **`cx fresh` 不支援 git worktree，會直接拒絕（`EX_PRECOND`）。**
+> worktree 的 `.git` 是指標檔，真正的物件庫在 `CX_ROOT` 之外 —— 封存抓不到它、
+> 刪除也刪不掉它。2026-09-05 之前這個情況會產出一份**通過驗證但不含主庫歷史**的封存，
+> 而流程會「成功」。請在主 checkout 上執行（`git worktree list` 看得到是哪一個）。
+
+### 0.7 做完之後
+
+`cx init` 最後會印出接下來的步驟。照著跑：
+
+```bash
+cx setup env             # 重新產生 .env（新的密碼與 APP_KEY）—— 一定要做
+cx setup deps            # 安裝前後端相依
+cx dev up -d --build     # 起開發環境
+cx git flow-init         # 建立 gitflow 的分支拓撲（見 §6.2）
+cx git config identity --name "你的名字" --email "你的信箱"   # 新 repo 沒有身分
+cx verify cli docs tui   # 應該全綠
+```
+
+產出的分支拓撲：三個 repo 都在 `main`，各自有 `dev`；`.gitmodules` 追蹤子模組的
+分支。`cx git flow-init` 會把缺的補齊。
+
+### 0.8 這一段實際跑過嗎
+
+跑過。2026-09-05 在拋棄式 clone（真 submodule、本地 bare remote）上，
+`carryover` 與 `scaffold` 各完整跑過一次 `cx init shop`，並逐項斷言：
+
+* `.git/modules` 消失，三個 repo 的舊 commit `git cat-file -e` **全部失敗**
+* 三個 repo 各只剩 1 個 commit
+* `.cxroot` / `.env` 的 `PROJECT_SLUG` / `IMAGE_PREFIX` / compose 專案名 / 映像名
+  全部變成新名字；`.gitmodules` → `../shop-backend.git`
+* Filament 面板與其註冊、`routes/api.php`、Sanctum migration、測試防護、ESLint 都在
+* `cx setup env` 之後 `cx dev config` rc=0
+
+自動化的版本在 `bin/test/80_init.bats`（12 個案例；完整破壞性那一個需要網路，
+預設 skip，用 `CX_TEST_NETWORK=1` 開）。
+
+---
+
 ## 1. 第一次設定
 
 ### 1.1 前置需求
@@ -97,9 +238,9 @@ detached HEAD **領先**追蹤分支時（你剛好在 detached 狀態下 commit
 
 > `shellcheck`、`bats`、`jq` 三個確實在實作的清單裡（`bin/cmd/setup.sh` 的
 > `CX_SETUP_TOOLS` / `CX_SETUP_SYSTEM_TOOLS`），`cx lint sh` 會叫你去裝 shellcheck、
-> `cx test cli` 會叫你去裝 bats；但 `cx setup --help` 的說明文字與 bash 補全
-> 都還沒補上這三個。
-> 也就是說 `cx setup tools shellcheck` 會動，只是 `<TAB>` 補不出來。
+> `cx test cli` 會叫你去裝 bats。bash 補全**已經**補上這三個，而且
+> `cx verify cli` 的 `CLI-setup-comp` 就是在盯補全清單與權威清單一致。
+> 也就是說 `cx setup tools shellcheck` 會動，`<TAB>` 也補得出來。
 
 #### `~/.local/bin` 必須在 PATH 上
 
@@ -474,8 +615,8 @@ MySQL 根本不發布埠）。在 prod 模式下這個動詞會回 `EX_USAGE`(2)
 可以覆寫，寫死就會給出錯的網址。密碼不會印出來（終端機 scrollback 與 tmux buffer 會留），
 只告訴你長度與去哪裡看。
 
-> `cx pma --help` 的說明文字還寫著「只在 dev 模式提供」，那是舊的；
-> test 的 phpMyAdmin service 是 2026-09-05 補上的，實作已經同時支援兩個模式。
+> `cx pma --help` 與實作一致：dev 與 test 兩個模式都提供 phpMyAdmin
+>（test 的 service 是 2026-09-05 補上的），prod 刻意不放管理介面。
 
 ---
 
@@ -624,10 +765,11 @@ cx verify --quiet             # 只印總結
 | 操作 | 順序 | 為什麼 |
 |---|---|---|
 | `commit` / `push` | **子模組先、主庫後** | 主庫的 gitlink 指向子模組的 commit。反過來會讓 gitlink 指向一個尚不存在的 commit —— push 時遠端會回 `upload-pack: not our ref`，而且看不出是誰造成的 |
-| `pull` / `branch switch` / `branch new` | **主庫先、子模組後** | 本專案設了 `submodule.recurse=true`。主庫切換分支時會「順便」把子模組拉到 gitlink 所指的 commit，讓子模組進入 detached HEAD。實測：子模組先切、主庫再切 → 子模組變成 DETACHED、分支丟失。所以子模組的 checkout 必須是最後一步才會生效 |
+| `pull` / `branch switch` / `branch new` | **主庫先、子模組後** | `cx` 在主庫切分支時明確帶 `--recurse-submodules`，git 會「順便」把子模組拉到 gitlink 所指的 commit，讓子模組進入 detached HEAD。實測：子模組先切、主庫再切 → 子模組變成 DETACHED、分支丟失。所以子模組的 checkout 必須是最後一步才會生效 |
 
 `cx git` 的每一個動詞都已經照這兩條規則排好，而且切換之後會**驗證沒有任何 repo 是
-detached HEAD**（`submodule.recurse` 的副作用是靜默的，只看 `switch` 的 exit code 看不出來）。
+detached HEAD**（`--recurse-submodules` 的副作用是靜默的，只看 `switch` 的 exit code 看不出來）。
+實測補充：它**只** detach gitlink 真的有變的那個子模組，另一個仍然留在自己的分支上。
 
 ### 6.2 分支模型：gitflow，`dev` 是開發主線
 
@@ -638,8 +780,27 @@ CX_GIT_MAIN_BRANCH=main      # 發布線
 CX_GIT_DEV_BRANCH=dev        # 開發主線
 ```
 
-`feature/*` 從 `dev` 開、合回 `dev`。`main` 只由 release / hotfix 碰，所以
-`cx git feature` 完全不動 `main`。`cx git branch delete` 會拒絕刪掉這兩條。
+拓撲是**不對稱**的 —— 主庫與子模組扮演的角色不一樣：
+
+```
+主庫 pm        main ← dev                （**沒有 feature/***）
+backend        main ← dev ← feature/*
+frontend       main ← dev ← feature/*
+```
+
+`feature/*` **只開在子模組裡**，從該子模組的 `dev` 開、合回該子模組的 `dev`。
+主庫是基礎設施倉庫（`bin/` `docker/` `ansible/` `docs/`），它的 `dev` 只負責
+把子模組的 gitlink 往前推 —— 那件事發生在 `cx git feature finish` 裡。
+`cx git branch new` 會**拒絕**在主庫開 `feature/*`，`branch delete` 會拒絕刪
+`main` 與 `dev`。
+
+> **為什麼主庫不開 feature，也不拆成 `dev-frontend` / `dev-backend`？**
+> 2026-09-05 在拋棄式 repo 上實測過：前端與後端各自從同一條 `dev` 開分支、
+> 各自只推進自己那一顆 gitlink、再先後合回 `dev` —— **兩次合併都 rc=0，零衝突**，
+> 因為 `backend` 與 `frontend` 是不同路徑，git 自己就合得起來。
+> 對照組：兩邊同時改共用基礎設施才是真的 `CONFLICT (content)`。
+> 也就是說，把主庫拆成兩條長期線會為了一個**不存在**的衝突，
+> 讓真正存在的那個（基礎設施要合兩次、而且會漂移）變嚴重。
 
 **只做 feature 這一條線。** release / hotfix 牽涉到版本號與 tag，而本專案目前沒有版本號
 策略 —— 做一半的 release 流程比沒有更糟。
@@ -670,40 +831,59 @@ cx git config editor --global "vim"
 cx git status                          # 先看三個 repo 各在哪、髒不髒、領先落後
 cx git pull                            # 更新（主庫先、子模組後；預設只允許快轉）
 
-cx git feature start login             # → feature/login（三個 repo，從 dev 開）
+cx git flow-init                       # 只有第一次：補齊三個 repo 的 dev（冪等）
+
+cx git feature start login --repo backend   # → backend 的 feature/login（從它的 dev）
 # ... 寫程式 ...
 cx lint && cx test all                 # 提交前
-cx git commit -m "feat(auth): 加入登入流程"
-cx git feature finish                  # 合回 dev（--no-ff）
+cx git commit --repo backend -m "feat(auth): 加入登入流程"
+cx git feature finish --repo backend   # 合回 backend 的 dev（--no-ff），
+                                       # 再讓主庫的 dev 提交那一顆 gitlink
 cx git push                            # 推送（白名單 + 祕密掃描 + 子模組先）
-cx git branch delete feature/login     # 刪分支（需確認）
+cx git branch delete feature/login --repo backend    # 刪分支（需確認）
 ```
 
 `feature start` 會自動補 `feature/` 前綴（`cx git feature start login` 與
 `cx git feature start feature/login` 等價）。
 
-`feature finish` 不給名稱時用主庫**目前所在的分支**。它會先檢查三個 repo：
-分支存在、工作區乾淨、`dev` 存在；然後主庫先切到 `dev`（子模組最後），
-再依 commit 順序 `merge --no-ff`。
+`--repo` 是**必要的**（或者 `cd` 進 `backend/` / `frontend/` 再下指令，它會自己推導）。
+`--repo main` 與 `--repo all` 會被 `EX_USAGE` 拒絕 —— 主庫沒有 feature 分支這回事。
+
+`feature finish` 不給名稱時用**該子模組**目前所在的分支（不是主庫的 —— 主庫根本沒有
+feature 分支可以猜）。它檢查：該子模組有這條分支、有 `dev`、工作區乾淨；主庫有 `dev`，
+且**除了兩顆 gitlink 以外**沒有未提交變更。
+
+> 主庫的 gitlink 本來就會是髒的 —— 子模組剛提交了 feature 的工作，那正是這個動詞
+> 要記錄的東西。第一版把前置條件寫成「主庫整個乾淨」，於是 `finish` 永遠過不了
+> 自己的檢查。
+
+順序也是刻意的：主庫**先**切到 `dev`，而且那一次切換**不帶** `--recurse-submodules`
+—— 帶了的話會把剛合併好的子模組重設回 `dev` 記錄的舊 gitlink，後面 `git add` 記進去的
+就是舊的 sha。然後子模組 `merge --no-ff`，最後主庫用明確的 pathspec **只** `add` 那一顆
+gitlink（不是 `add -A`：另一邊的 gitlink 可能正髒著，不該被順手掃進這個 commit）。
 
 **`finish` 刻意不推送、也不刪分支。** 那兩件事各自有自己的閘門，混進來會讓 `finish`
 變成一個「一次做了三件不可逆的事」的動詞。合併衝突時它會叫你解完自己 `git commit`，
 **不要再跑一次 `finish`**。
 
 ```bash
-cx git feature list                    # 列出三個 repo 的 feature/*
+cx git feature list                    # 列出兩個子模組的 feature/*
 ```
 
-> **前置條件：三個 repo 都要有 `dev` 分支。** `feature start` 會逐個 repo 驗證起點
-> 存在，缺了就 `EX_PRECOND`(3) 並指名是哪一個 repo。
-> **本工作區實測（2026-09-05）：`backend` 與 `frontend` 目前只有 `main`，沒有 `dev`**，
-> 所以在這裡直接跑 `cx git feature start` 會被擋下。補法：
-> `cx git branch new dev --from main`（三個 repo 一起建），推上去之後就正常了。
+> **前置條件：`--repo` 指到的那個子模組要有 `dev`。** 缺了的話 `feature start`
+> 只會警告「從目前的 HEAD 開」並提示 `cx git flow-init`；真正硬失敗的是 `finish`
+>（該子模組或主庫沒有 `dev` → `EX_PRECOND`(3)，訊息直接叫你去跑 `flow-init`）。
 >
-> **未驗證**：`cx git feature start` / `finish` 目前**沒有實測紀錄**。
-> [cx-reference.md](cx-reference.md) 的「`cx git` 的驗證紀錄（2026-09-04）」涵蓋的是
-> `status` / `fetch` / `pull` / `sync` / `branch` 的完整生命週期與黑名單紅線，
-> 不含 gitflow 這兩個動詞；`bin/test/*.bats` 也沒有涵蓋它們。
+> **本工作區實測（2026-09-05）：`backend` 與 `frontend` 目前只有 `main`，沒有 `dev`。**
+> 補法是 `cx git flow-init` —— 冪等，只補缺的，先乾跑列出要做什麼再要求確認。
+> 它用 `git branch` 而不是 `switch -c`（只寫 ref、不動工作區，所以不會觸發子模組
+> detach），而且會避開**落後的 `main`**：這兩個子模組的本地 `main` 都比 gitlink 舊
+>（backend 少 2 個 commit），從那裡開 `dev` 等於一出生就落後。
+>
+> **驗證狀態**：`flow-init` / `feature start` / `feature finish` / `feature list`
+> 由 `bin/test/72_gitflow.bats` 的 17 個 `@test` 涵蓋，含三個負向案例：
+> 主庫不可以用 `branch new` 繞過去開 `feature/*`、`finish` 不會把另一側的髒 gitlink
+> 掃進同一個 commit、`sync` 不會倒退子模組的分支。
 
 ### 6.5 `cx git commit`
 
@@ -739,14 +919,21 @@ cx git commit --repo main -m "chore: 更新 frontend 指標"
 
 ```bash
 cx git branch list                          # 三個 repo 的分支、相對時間、上游、同步狀態
-cx git branch new fix/x                     # 從**目前的 HEAD** 開
+cx git branch new fix/x                     # 預設從**各 repo 自己的 `dev`** 開
 cx git branch new fix/x --from dev          # 指定起點
 cx git branch new fix/x --repo backend      # 只在某一個 repo
-cx git branch switch main                   # 三個 repo 一起切
+cx git branch switch main                   # 預設三個 repo 一起切
+cx git branch switch tmp/x --repo backend   # 只切某一個 repo
 cx git branch delete fix/x                  # 需確認；拒絕刪當前分支、main 與 dev
 ```
 
-> ⚠ **`branch new` 不給 `--from` 時是從你目前所在的 commit 開，不是從 `dev` 開。**
+> **`branch new` 的起點：`--from` > 該 repo 自己的 `dev` > 該 repo 目前的 HEAD。**
+> 起點是**逐個 repo** 解析的，不是拿主庫的答案代表三個 repo —— 主庫有 `dev`、
+> 兩個子模組只有 `main`（clone 之後的常態）是很普通的狀態。有 repo 缺 `dev` 時
+> 它會點名那幾個、從各自的 HEAD 開，並提示 `cx git flow-init`。
+>
+> `switch` 與 `delete` 也吃 `--repo`，但**不吃** `--from` —— 給了會 `EX_USAGE`，
+> 不會被安靜忽略（被接受卻毫無作用的旗標比報錯更糟）。
 > `cx git --help` 的說明文字與 [cx-reference.md](cx-reference.md) 都寫「預設從 dev 開」，
 > 但 `bin/cmd/git.sh` 的 `_git_branch_new` 是 `local base=${_GIT_BRANCH_FROM:-}`，
 > 空的時候走的是裸 `switch -c <名稱>`。只有 `cx git feature start` 會明確把起點設成 `dev`。
@@ -897,7 +1084,7 @@ IDE 端監聽 `9003`，容器連回 host 用 `host.docker.internal`（compose �
 | 測試打到了真的資料庫 | 裸跑 `php artisan test`（`phpunit.xml` 的 `force` 在容器裡無效） | 一律用 `cx test back` |
 | `cx doctor` 在子目錄回報 28 個「未設執行位元」 | 已修（曾經是相對路徑 bug） | 更新到最新的 `cx` |
 | `✘ cx 的選單需要終端機（TTY）` | 非互動環境跑 `cx tui`（`--ui plain` 也算，`cx_interactive` 把它排除在互動之外） | 直接給明確的動詞，例如 `cx doctor` |
-| 子模組變成 detached HEAD | `submodule.recurse=true` 的副作用 | `cx git sync` |
+| 子模組變成 detached HEAD | gitlink 把子模組釘在某個 commit（`clone --recurse-submodules` 之後的常態），或主庫帶 `--recurse-submodules` 切分支 | `cx git sync` |
 
 **每一個症狀的完整說明（原因、實際的失敗訊息、解法）都在
 [troubleshooting.md](troubleshooting.md)。** 那份文件的每一條都是實際踩過的坑，
@@ -967,9 +1154,10 @@ cx verify cli docs tui
 
 # 一條 feature
 cx git pull
-cx git feature start <名稱>
-cx git commit -m "feat(scope): …"
-cx git feature finish
+cx git flow-init                       # 只有第一次
+cx git feature start <名稱> --repo backend|frontend
+cx git commit --repo backend|frontend -m "feat(scope): …"
+cx git feature finish --repo backend|frontend
 cx git push
 cx git branch delete feature/<名稱>
 
@@ -988,4 +1176,4 @@ cx doctor                    cx dev config             cx --dry-run <動詞>
 | 上真機 | [guide-deployer.md](guide-deployer.md)、[ansible-reference.md](ansible-reference.md) |
 | 東西壞了 | [troubleshooting.md](troubleshooting.md) |
 | 還有什麼沒驗證 | [progress.md](progress.md)、[acceptance.md](acceptance.md) |
-| 拿這個 repo 開新專案 | `cx init <新名稱>`（見 [cx-reference.md](cx-reference.md) 的 `cx init` 一節）與 [template.md](template.md) |
+| 拿這個 repo 開新專案 | 見本文件 **§0**；完整參數表在 [cx-reference.md](cx-reference.md) |
