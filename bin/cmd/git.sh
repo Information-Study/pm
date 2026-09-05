@@ -78,6 +78,29 @@ _git_is_protected_branch() {        # _git_is_protected_branch <名稱>
     [[ $1 == "$(_git_main_branch)" || $1 == "$(_git_dev_branch)" ]]
 }
 
+# 子模組此刻該站在哪一條分支上。
+#
+# ⚠ 不可以只讀 .gitmodules 的 branch。那個值只有**一個**分支名，而主庫有兩條線：
+#   main（發布）與 dev（開發）。主庫站在 dev、gitlink 指向子模組的 dev commit，
+#   而 .gitmodules 寫著 main —— 於是 cx git sync 會把子模組接到 main，跟 gitlink
+#   對不起來。實測 2026-09-06：flow-init 之後跑 sync，兩個子模組都被接到 main，
+#   即使當時工作正在 dev 線上。症狀是 git status 說子模組「有未提交的變更」，
+#   而實際上只是它站錯了分支。
+#
+# 規則：主庫在 main 或 dev 上 → 子模組用同一條（兩條線各自自洽）；
+#       其餘（主庫 detached、或未來有別的分支）→ 落回 .gitmodules 的宣告值，
+#       再落回 main。.gitmodules 的 branch 從此只是 fallback 與 --remote 的目標。
+_git_sub_target_branch() {          # _git_sub_target_branch <子模組名>
+    local name=$1 super mainb devb
+    mainb=$(_git_main_branch); devb=$(_git_dev_branch)
+    super=$(git -C "$CX_ROOT" branch --show-current 2>/dev/null || echo '')
+    if [[ $super == "$mainb" || $super == "$devb" ]]; then
+        printf '%s' "$super"; return 0
+    fi
+    git config -f "$CX_ROOT/.gitmodules" --get "submodule.$name.branch" 2>/dev/null \
+        || printf '%s' "$mainb"
+}
+
 _git_repo_slug() {
     case $1 in
         "$CX_ROOT/backend")  printf '%s\n' "$CX_REPO_BACKEND"  ;;
@@ -199,10 +222,30 @@ _git_sync() {
     cx_step "同步子模組到追蹤分支"
     local c b head
     for c in backend frontend; do
-        b=$(git config -f "$CX_ROOT/.gitmodules" --get "submodule.$c.branch" 2>/dev/null || echo main)
+        b=$(_git_sub_target_branch "$c")
 
         if git -C "$CX_ROOT/$c" symbolic-ref -q HEAD >/dev/null 2>&1; then
-            cx_ok "$c 已在分支 $(git -C "$CX_ROOT/$c" branch --show-current)"
+            local cur; cur=$(git -C "$CX_ROOT/$c" branch --show-current)
+            if [[ $cur == "$b" ]]; then
+                cx_ok "$c 已在分支 $cur"
+            elif _git_is_protected_branch "$cur"; then
+                # 站在「另一條長期線」上 —— 例如主庫在 dev，子模組卻在 main。
+                # 這種狀態不是有人正在上面工作，而是上一次 sync 讀 .gitmodules
+                # 的單一 branch 值留下的（見 _git_sub_target_branch 的說明）。
+                # 症狀：git status 說子模組有未提交變更，實際上只是站錯了線。
+                # 這裡只在工作區乾淨時才切 —— 髒的話切過去會把改動帶走。
+                if [[ -n $(git -C "$CX_ROOT/$c" status --porcelain) ]]; then
+                    cx_warn "$c 在 $cur、應該在 $b，但工作區不乾淨 —— 沒有切換"
+                    cx_dim "  先 cx git commit --repo $c，再跑一次 cx git sync"
+                elif cx_run git -C "$CX_ROOT/$c" switch -q "$b" 2>/dev/null; then
+                    cx_ok "$c：$cur → $b（跟上主庫目前的線）"
+                else
+                    cx_warn "$c 在 $cur、應該在 $b，但 $b 不存在 —— 先跑 cx git flow-init"
+                fi
+            else
+                # feature/* 或 hotfix/*：有人正在上面工作，不要動它。
+                cx_ok "$c 在工作分支 $cur（不動；主庫目前在 $b 線上）"
+            fi
             continue
         fi
 
@@ -1584,8 +1627,7 @@ _git_push() {
         br=$(git -C "$r" branch --show-current)
         if [[ -z $br ]]; then
             local tracked
-            tracked=$(git config -f "$CX_ROOT/.gitmodules" \
-                        --get "submodule.$(basename "$r").branch" 2>/dev/null || echo main)
+            tracked=$(_git_sub_target_branch "$(basename "$r")")
             cx_warn "$slug 是 detached HEAD —— 先 checkout 追蹤分支 $tracked"
             cx_run git -C "$r" checkout -q -B "$tracked" HEAD \
                 || { cx_error "$slug 無法 checkout $tracked"; rc_all=1; continue; }

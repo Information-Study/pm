@@ -14,7 +14,7 @@
    要手寫就用 `cx deploy hosts edit`，那條路徑不會經過這裡。
 
 群組模型（來源：ansible/site.yml 的 roles 區塊）：
-    pm_servers   site.yml 的作用對象，所有主機都要在裡面（common / hardening）
+    <專案>_servers  site.yml 的作用對象，所有主機都要在裡面（common / hardening）
     web          php-fpm / nginx / node+PM2 / deploy_* / healthcheck
     db_primary   MySQL，而且由它執行 artisan migrate。**剛好一台**，
                  而且必須同時是 web 成員（A15：migration 掛在 web 的 gate 上，
@@ -32,6 +32,20 @@ try:
 except ImportError:                                  # pragma: no cover
     print("需要 PyYAML：pip install --user pyyaml", file=sys.stderr)
     sys.exit(3)
+
+# site.yml 的作用群組名。cx 會 export CX_PROJECT_NAME（見 cx 的 export 那一行：
+# bin/lib/*.py 是子行程，看不到只被 source 的變數）。
+#
+# ⚠ 這裡原本寫死 "pm_servers"，而 cx rename 的改名清單裡**沒有這個檔**
+#   （rename.sh 改的是 .cxroot / .env / sonar-project.properties /
+#     group_vars/all/main.yml / ansible/site.yml / bin/cmd/deploy.sh）。
+#   後果很具體：cx rename shop 之後 site.yml 與 deploy.sh 都變成 shop_servers，
+#   但 cx deploy hosts init/add 產生的 hosts.yml 群組仍叫 pm_servers →
+#   ansible 比對到 0 台主機，而它對「比對不到任何主機」只印 warning 並回 0。
+#   也就是 cx deploy ping / check / apply 全部靜默地什麼都不做卻回報成功。
+#   守著這件事的 TPL-group 檢查只比對 site.yml 與 deploy.sh，看不到這個檔。
+PROJECT = os.environ.get("CX_PROJECT_NAME", "").strip() or "pm"
+SERVERS_GROUP = f"{PROJECT}_servers"
 
 ENVS = ("staging", "production")
 # 主機名會變成 ansible 的 inventory_hostname，也會被拼進路徑與 systemd unit 名。
@@ -54,7 +68,7 @@ def load(path):
     #   原本只用 next() 取一個 env，然後 render() 把所有主機寫進那一個群組 ——
     #   於是一個同時有 staging 與 production 的檔案，只要跑一次 add/rm，
     #   production 群組就會整個消失、它的主機被搬進 staging，
-    #   而 pm_servers 也跟著少一個 child。hosts.yml 不進版控，沒有 diff 會提醒，
+    #   而 <專案>_servers 也跟著少一個 child。hosts.yml 不進版控，沒有 diff 會提醒，
     #   也沒有還原點。（2026-09-05 實測重現。）
     hosts = []
     for env_name in ENVS:
@@ -84,7 +98,7 @@ def render(env, hosts):
     add("# 再跑一次 add/rm 會重新產生這個檔，手寫的註解會不見（結構與值會保留）。")
     add("#")
     add("# 群組的意義（來源：ansible/site.yml 的 roles 區塊）：")
-    add("#   pm_servers  site.yml 的作用對象，所有主機都要在裡面")
+    add(f"#   {SERVERS_GROUP}  site.yml 的作用對象，所有主機都要在裡面")
     add("#   web         php-fpm / nginx / node+PM2 / deploy_* / healthcheck")
     add("#   db_primary  MySQL + artisan migrate。剛好一台，且必須也在 web 裡")
     add("#")
@@ -111,7 +125,7 @@ def render(env, hosts):
             if h.get("key"):
                 add(f"          ansible_ssh_private_key_file: {h['key']}")
     add("")
-    add("    pm_servers:")
+    add(f"    {SERVERS_GROUP}:")
     add("      children:")
     for e in present:
         add(f"        {e}: {{}}")

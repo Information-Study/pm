@@ -239,3 +239,50 @@ setup() {
     [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = dev ] \
         || _fail_with "沒有接回 dev"
 }
+
+# ── 子模組該站哪一條線：依主庫當前分支，不是 .gitmodules 的單一值 ──────────
+#
+# .gitmodules 的 branch 只能寫一個值，而主庫有 main 與 dev 兩條線。
+# 2026-09-06 實測：flow-init 之後跑 sync，兩個子模組都被接到 main，
+# 即使工作正在 dev 線上 —— 症狀是 git status 說子模組有未提交變更，
+# 實際上只是它站錯了線。
+
+@test "sync 依主庫當前分支決定子模組的線（主庫在 dev → 子模組到 dev）" {
+    git -C "$CX_TEST_ROOT" config -f .gitmodules submodule.backend.branch main
+    git -C "$CX_TEST_ROOT" switch -q dev
+    git -C "$CX_TEST_ROOT/backend" switch -q main
+
+    run cx_bin --yes git sync
+    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = dev ] \
+        || _fail_with "主庫在 dev，backend 卻在 $(git -C "$CX_TEST_ROOT/backend" branch --show-current)"
+}
+
+@test "sync 依主庫當前分支決定子模組的線（主庫在 main → 子模組到 main）" {
+    git -C "$CX_TEST_ROOT" config -f .gitmodules submodule.backend.branch dev
+    git -C "$CX_TEST_ROOT" switch -q main
+    git -C "$CX_TEST_ROOT/backend" switch -q dev
+
+    run cx_bin --yes git sync
+    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = main ] \
+        || _fail_with "主庫在 main，backend 卻在 $(git -C "$CX_TEST_ROOT/backend" branch --show-current)"
+}
+
+@test "sync 不動正在被使用的工作分支（feature/* 不會被拉回 dev）" {
+    git -C "$CX_TEST_ROOT" switch -q dev
+    git -C "$CX_TEST_ROOT/backend" switch -q -c feature/wip
+
+    run cx_bin --yes git sync
+    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = feature/wip ] \
+        || _fail_with "sync 把正在用的 feature/wip 拉走了"
+}
+
+@test "sync 在子模組髒的時候不切線（切過去會把改動帶走）" {
+    git -C "$CX_TEST_ROOT" switch -q dev
+    git -C "$CX_TEST_ROOT/backend" switch -q main
+    echo dirty > "$CX_TEST_ROOT/backend/dirty.txt"
+
+    run cx_bin --yes git sync
+    [ "$(git -C "$CX_TEST_ROOT/backend" branch --show-current)" = main ] \
+        || _fail_with "工作區不乾淨卻還是切線了"
+    [[ $output == *"不乾淨"* ]] || _fail_with "沒有說明為什麼不切：$output"
+}

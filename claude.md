@@ -12,25 +12,34 @@
 
 ## 0. 紅線（Hard Rules）
 
-1. **AI 助理不得在使用者未於當次對話明確指示的情況下推送。**
-   這一條沒有變，而且現在是**唯一**還在生效的推送限制。
+1. **提交與推送：常設授權，但只涵蓋 `cx git push`。**
 
-   > ⚠ 2026-09-04：依使用者指示，三個 repo 的 `pre-push` hook **已全部移除**。
+   > 2026-09-06 依使用者指示：AI 助理**不需要**每次對話重新取得推送許可。
+   > `cx git commit` 與 `cx git push` 可以自行執行。
+
+   這條授權**建立在三道閘門之上**，它們是授權的前提，不是可選項：
+
+   | 閘門 | 在哪裡 | 少了它會怎樣 |
+   |---|---|---|
+   | gitleaks 全歷史祕密掃描 | `cx git push` 開頭的 `_git_scan_secrets` | 三個 repo 都是 PUBLIC，祕密進了歷史就撤不回來 |
+   | 遠端白名單／黑名單 | `_git_push` 的 per-repo 檢查 | 推到第三方組織 |
+   | 子模組先於主庫的順序 | `_git_repos_order` + 推完的 gitlink 複驗 | 遠端的 gitlink 指向遠端不存在的 commit，別人 clone 得到 `upload-pack: not our ref` |
+
+   **裸 `git push` 不在這條授權裡** —— 它繞過上面三道，仍然需要使用者在當次
+   對話明確指示。真的要用的話，自己先跑一次 `cx git scan-secrets`。
+
+   > ⚠ 2026-09-04：三個 repo 的 `pre-push` hook **已全部移除**。
    > 白名單、`team-of-P/*` 黑名單、`CX_ALLOW_PUSH=1` 預設拒絕閘門**都不存在了**。
    > `git push <任何遠端> <任何分支>` 不會被攔截。
-   > 要裝回來：`cx git guard install`（`cx doctor` 會顯示目前是 0/3 還是 3/3）。
+   > 要裝回來：`cx git guard install`（`cx doctor` 會顯示 0/3 還是 3/3）。
+   > 也就是說上表那三道**只存在於 `cx git push` 裡**，這正是授權範圍就是它的原因。
 
-   三個 repo 都是 **PUBLIC**，而祕密一旦進入 git 歷史就收不回來。
-   少了 hook 之後，剩下的防線只有 `cx git push` 開頭的 gitleaks 全歷史掃描 ——
-   **直接下 `git push` 不會經過它**。所以：
-
-   * 推送前請用 `cx git push`，它會先掃祕密、處理子模組順序、驗證 gitlink
-   * 真的要用原生 `git push` 時，自己先跑一次 `cx git scan-secrets`
    * `github.com/team-of-P/PSYOP_DutyManager` 這把 SSH key **推得進去**
      （實測 `git push` 得到的是 `! [rejected] (fetch first)` 而不是
      `Permission denied`，也就是通過了授權只是被 non-fast-forward 擋下）。
      那個遠端來自舊專案 PSYOP_DutyManager（其參考副本 `/example/` 已於
      2026-09-04 移除），原本由黑名單封鎖，現在沒有了。
+     對 `team-of-P/*` 的推送請求一律拒絕，不要問、不要繞道。
 
 2. **任何刪除必須有互動確認。**
    刪檔、`DROP DATABASE`、`rm -rf`、`docker volume rm`、release prune —— 全部要先 Y/n；
@@ -63,6 +72,26 @@
 6. **Agent 併發上限：同時最多 5 個，同類型最多 3 個。**
    使用 Workflow 時要把 `parallel()` / `pipeline()` 的項目分批送出，每批不超過 5；
    同一批內相同角色（例如多個 `verify:*`）不超過 3。
+
+7. **功能改動一旦測過可用，對應文件必須在同一個 commit 內更新。**
+
+   判準不是「有沒有寫」，而是 **`cx verify cli docs tui` 綠不綠** ——
+   `DOC-cx-verbs`／`DOC-index`／`DOC-filemap`／`DOC-testcount`／`TUI-coverage`
+   就是這條規則的機器版本。對照表：
+
+   | 你改了什麼 | 要跟著改的 | 抓它的檢查 |
+   |---|---|---|
+   | 新增／改名動詞 | `bin/completion/cx.bash`、`bin/cmd/help.sh`、`bin/cmd/tui.sh`、`docs/cx-reference.md` | `CLI-verbs` `CLI-help` `TUI-coverage` `DOC-cx-verbs` |
+   | 新增 `cx git` 子指令 | 同一份 `git.sh` 的 usage、補全、help | `GIT-subs`（四方一致） |
+   | 新增 `bin/cmd/*.sh` 或 `bin/lib/*` | `claude.md` §10 的檔案地圖 | `DOC-filemap` |
+   | 新增／刪除 `docs/*.md` | `claude.md` §9、`docs/README.md`、`README.md` 的文件表 | `DOC-index` |
+   | 增減 bats 案例 | 文件裡寫的案例數 | `DOC-testcount` |
+   | 改分支模型 | `.cxroot` 的 `CX_GIT_*` | `GIT-branch-model` |
+   | 改專案識別 | `.env`、`sonar-project.properties`、`group_vars`、`site.yml`、`deploy.sh`、`bin/lib/inventory.py` | `TPL-env` `TPL-sonar` `TPL-ansible` `TPL-group` |
+
+   > 漏掉不是靜默漂移 —— `cx verify` 會直接 FAIL。那是刻意的。
+   > 而**唯一**不會變紅的漏法是「檢查那一列整個消失」或「PASS 變 SKIP」，
+   > 所以驗收的判準是 **FAIL = 0 且 SKIP 沒有增加**，不是只看 FAIL。
 
 ---
 
@@ -762,11 +791,11 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 - MySQL 千萬不要跳到 9.x：那是 Innovation track，每版只有 8 個月支援。
 - Node 不要跳到 26：2026-10 之前它還是 Current，不是 LTS。
 
-**被要求推送時**
-- 確認目標是 `Information-Study`，且使用者在**當次對話**明確指示。
-- 三個 repo 都是 public —— 推之前一定要跑祕密掃描。
-- 子模組先推，大庫最後推。
-- 對 `team-of-P/*` 的推送請求一律拒絕，不要問、不要繞道。
+**推送時**
+- 用 `cx git push`。它是常設授權的**範圍本身** —— 三道閘門都在它裡面（§0 紅線 1）。
+- 裸 `git push` 不在授權內，需要使用者當次指示；真要用就先跑 `cx git scan-secrets`。
+- 確認目標是 `Information-Study`。對 `team-of-P/*` 一律拒絕，不要問、不要繞道。
+- 子模組先推，大庫最後推（`cx git push` 自己會處理，但你要看得懂它的輸出順序）。
 
 ---
 

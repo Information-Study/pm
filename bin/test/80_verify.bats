@@ -98,3 +98,40 @@ PHP
         | awk -F'|' 'NF<3 {print \"BAD:\" \$0}' | head -3"
     assert_out_lacks "BAD:"
 }
+
+# ── 「檢查那一列消失」是唯一不會變紅的失效形態 ─────────────────────────────
+#
+# cx verify 的退出碼只看 FAIL 的數量。所以必填文件被搬走之後，
+# 如果檢查是寫成 `if read(...):` 就會整列從報告裡不見 —— 報告仍然全綠，
+# 而「每個動詞都有文件」這件事不再被驗證。少一列比多一列紅難發現得多。
+
+@test "必填文件被搬走時，DOC-cx-verbs 是 FAIL 而不是整列消失" {
+    mkdir -p "$CX_TEST_ROOT/docs/cx"
+    printf '# ref\n' > "$CX_TEST_ROOT/docs/cx-reference.md"
+    run cx_bin verify docs
+    assert_out_has "DOC-cx-verbs"
+
+    mv "$CX_TEST_ROOT/docs/cx-reference.md" "$CX_TEST_ROOT/docs/cx/cx-reference.md"
+    run cx_bin verify docs
+    # 關鍵：那一列必須還在，而且是失敗的
+    assert_out_has "DOC-cx-verbs"
+    [[ $output == *"✘"*"DOC-cx-verbs"* ]] \
+        || _fail_with "檔案搬走了，DOC-cx-verbs 卻沒有變紅：$output"
+    # 而且要指出同名檔搬到哪裡去了 —— 「不見了」不夠，要能接著修
+    [[ $output == *"docs/cx/cx-reference.md"* ]] \
+        || _fail_with "沒有指出同名檔的新位置：$output"
+}
+
+@test "TPL-group 抓得到 inventory.py 把群組名寫死（三方一致，不是兩方）" {
+    # cx rename 的改名清單裡沒有 inventory.py。它寫死 pm_servers 的話，
+    # 改名後產生的 hosts.yml 會對不上 site.yml，而 ansible 對「比對不到
+    # 任何主機」只印 warning 並回 0 —— cx deploy 靜默地什麼都不做卻成功。
+    run grep -c 'SERVERS_GROUP' "$CX_TEST_REAL_ROOT/bin/lib/inventory.py"
+    assert_rc 0
+    run grep -E '^SERVERS_GROUP\s*=\s*f"\{PROJECT\}_servers"' \
+        "$CX_TEST_REAL_ROOT/bin/lib/inventory.py"
+    assert_rc 0
+    # 反向：TPL-group 的訊息要提到 inventory.py，否則它沒有真的在看第三方
+    run grep -q 'inventory.py' "$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py"
+    assert_rc 0
+}

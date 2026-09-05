@@ -397,6 +397,10 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
    > pre-push hook（白名單 + `team-of-P/*` 黑名單 + 預設拒絕）在 2026-09-04
    > 依使用者指示**全部移除**，現在 `git push <任何遠端>` 都不會被攔截。
    > 要裝回來：`cx git guard install`；目前狀態看 `cx doctor` 的 push guard 那一行。
+   >
+   > 2026-09-06 起 AI 助理可以自行 `cx git commit` / `cx git push`，**不需要每次
+   > 重新取得許可**。但那條授權的範圍就是 `cx git push` 本身 —— 因為上面三道閘門
+   > 只存在於它裡面。裸 `git push` 不在授權內。細節見 [claude.md](claude.md) §0 紅線 1。
 2. **任何刪除都要互動確認**，不可逆的還要輸入確認字串。
 3. **不要繞過 `cx`。** 直接下 `docker compose` 幾乎一定會錯。
 4. **不要用 `--ignore-platform-reqs` 硬過相依衝突**（`cx composer` 會主動拒絕這個旗標）。
@@ -429,6 +433,8 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 | [`docs/reports.md`](docs/reports.md) | 測試與掃描的報告怎麼看 |
 | [`docs/template.md`](docs/template.md) | 拿這個 repo 當新專案範本 |
 | [`docs/progress.md`](docs/progress.md) | 進度追蹤與「還沒驗證什麼」 |
+| [`docs/acceptance.md`](docs/acceptance.md) | 需求追溯矩陣與人工驗收項目的實測證據 |
+| [`docs/docker-verification.md`](docs/docker-verification.md) | Phase 2 的驗收需求與實測結果（歷史紀錄，日期固定在 2026-09-04） |
 | [`claude.md`](claude.md) | 設計原理（`docs/` 是「怎麼用」，這份是「為什麼這樣設計」） |
 
 索引與閱讀順序見 [`docs/README.md`](docs/README.md)。

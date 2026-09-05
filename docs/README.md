@@ -57,3 +57,14 @@
 3. **根目錄的 `claude.md`** —— 設計原理與每個坑的來由。
 
 這裡的 `docs/` 是「怎麼用」，`claude.md` 是「為什麼這樣設計」。
+
+## 文件與實作必須一起走
+
+**功能改動一旦測過可用，對應文件必須在同一個 commit 內更新。**
+判準不是「有沒有寫」，而是 `cx verify cli docs tui` 綠不綠 ——
+`DOC-cx-verbs` / `DOC-index` / `DOC-filemap` / `DOC-testcount` / `TUI-coverage`
+就是這條規則的機器版本。逐項對照表在 [`claude.md`](../claude.md) §0 紅線 7。
+
+驗收的判準是 **FAIL = 0 且 SKIP 沒有增加**，不是只看 FAIL ——
+`cx verify` 的退出碼只看 FAIL，所以「檔案讀不到 → PASS 變 SKIP」
+是一種不會變紅的失敗。

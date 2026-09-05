@@ -48,6 +48,25 @@ CXR
     printf '%s' "$CX_TEST_ROOT"
 }
 
+# 在既有的 fixture 上補最小 compose 骨架。
+#
+# ⚠ 刻意**不**併進 make_root：那棵樹的合約是「最小」，而 .env 與
+#   docker-compose.yml 的存在會改變別的動詞的行為 —— 實測 2026-09-06：
+#   把 .env 加進 make_root 之後，`setup env 的身分只認 .cxroot` 這個案例
+#   靜默變成空輸出（_setup_env 在 .env 已存在時早退），而 docker-compose.yml
+#   的存在讓 verify 的 static 家族開始檢查一份假的 compose 然後 FAIL。
+#   要測 compose 的案例自己叫這個。
+add_compose_skeleton() {            # add_compose_skeleton（在 CX_TEST_ROOT 上）
+    mkdir -p "$CX_TEST_ROOT/docker/compose" "$CX_TEST_ROOT/docker/env"
+    printf 'services: {}\n' > "$CX_TEST_ROOT/docker-compose.yml"
+    local m
+    for m in dev test prod; do
+        printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$m.yml"
+        : > "$CX_TEST_ROOT/docker/env/$m.env"
+    done
+    : > "$CX_TEST_ROOT/.env"
+}
+
 # 完整 fixture：真的 git repo，給破壞性測試（fresh / archive）用。
 # 這個要用真的目錄而不是 symlink，因為 fresh 會刪它。
 make_repo() {                       # make_repo [專案名]
@@ -82,6 +101,11 @@ CXR
         > "$CX_TEST_ROOT/docker-compose.yml"
     local _m
     for _m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$_m.yml"; done
+    # 模式覆寫檔。cx_compose_init 對它是**硬要求**（缺了埠段會靜默落回
+    # compose 裡的 ${VAR:-預設}，三個模式搶同一組埠）—— 所以 fixture 也要有，
+    # 否則任何走 compose 的測試都會停在 EX_PRECOND 而不是測到它要測的東西。
+    mkdir -p "$CX_TEST_ROOT/docker/env"
+    for _m in dev test prod; do : > "$CX_TEST_ROOT/docker/env/$_m.env"; done
     #   templates/ 指到真的那一份：scaffold_patch.py 要從那裡把範本自己的接線
     #  （Filament 面板、routes/api.php、Sanctum migration、測試防護、ESLint）裝回去。
     #   自己 mkdir 一個空的等於那一整段不執行，重建後系統是否完整就驗不到。
@@ -148,6 +172,8 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
         > "$CX_TEST_ROOT/docker-compose.yml"
     local m
     for m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$m.yml"; done
+    mkdir -p "$CX_TEST_ROOT/docker/env"
+    for m in dev test prod; do : > "$CX_TEST_ROOT/docker/env/$m.env"; done
 
     local g=(-c user.email=b@b -c user.name=b) c
     # 子模組要先是完整的 repo（有 commit），submodule add 才加得上去 ——

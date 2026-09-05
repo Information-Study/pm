@@ -329,11 +329,21 @@ cx_compose_init() {
     [[ -f $overlay ]] || cx_die "$EX_PRECOND" "缺少 overlay compose：$overlay"
 
     CX_DC_ARGS=(--project-directory "$CX_ROOT" -p "$(cx_project_for "$mode")" -f "$base" -f "$overlay")
-    local f
     # 後面的 --env-file 優先：模式專屬值（埠、target）要能蓋掉根 .env 的通用值。
-    for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do
-        [[ -f $f ]] && CX_DC_ARGS+=(--env-file "$f")
-    done
+    #
+    # ⚠ 兩個檔的缺席語意**不一樣**，所以不可以寫成同一個迴圈：
+    #   * .env 在 cx setup env 之前合法不存在 → 寬容。
+    #   * <mode>.env 缺席是**設定錯誤**，而且是會靜默做錯事的那一種。
+    #     原本兩者共用 `[[ -f $f ]] && ...`，於是路徑寫錯一個字，compose 只是
+    #     少一個 --env-file 而不會失敗：EDGE_HTTP_PORT / PHPMYADMIN_PORT /
+    #     APP_TARGET / MODSEC_RULE_ENGINE 全部落回 compose 裡的 ${VAR:-預設}，
+    #     三個模式搶同一組埠（port is already allocated），
+    #     或更糟 —— test 模式的 WAF 引擎值變成別的而沒有人發現。
+    [[ -f $CX_ROOT/.env ]] && CX_DC_ARGS+=(--env-file "$CX_ROOT/.env")
+    local modeenv="$CX_ROOT/docker/env/${mode}.env"
+    [[ -f $modeenv ]] || cx_die "$EX_PRECOND" \
+        "缺少模式覆寫檔：$modeenv（少了它埠段會靜默落回預設值，三個模式會搶埠）"
+    CX_DC_ARGS+=(--env-file "$modeenv")
     CX_DC_MODE=$mode
     export CX_DC_MODE
 }
@@ -379,9 +389,12 @@ cx_compose_mount_sources() {
     local mode=${1:-${CX_DC_MODE:-dev}} f
     local -a a=(--project-directory "$CX_ROOT" -p "$(cx_project_for "$mode")"
                 -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/docker/compose/${mode}.yml")
-    for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do
-        [[ -f $f ]] && a+=(--env-file "$f")
-    done
+    # 同 cx_compose_init：.env 寬容、<mode>.env 硬要求。這裡是唯讀的探測路徑，
+    # 所以缺檔回非 0 而不是 cx_die —— 呼叫端（cx_assert_mount_sources）自己會報。
+    [[ -f $CX_ROOT/.env ]] && a+=(--env-file "$CX_ROOT/.env")
+    f="$CX_ROOT/docker/env/${mode}.env"
+    [[ -f $f ]] || { cx_error "缺少模式覆寫檔：$f"; return "$EX_PRECOND"; }
+    a+=(--env-file "$f")
     docker compose "${a[@]}" config --format json 2>/dev/null \
         | CX_ROOT="$CX_ROOT" python3 "$CX_ROOT/bin/lib/compose_mounts.py"
 }

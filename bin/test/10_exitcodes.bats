@@ -62,3 +62,28 @@ setup() {
     assert_rc "$EX_PRECOND"
     assert_out_has "另一個 cx"
 }
+
+# ── 模式覆寫檔缺席必須硬失敗，不可以靜默略過 ───────────────────────────────
+#
+# 原本 .env 與 <mode>.env 共用同一個 `[[ -f $f ]] && ...` 迴圈，於是路徑寫錯
+# 一個字，compose 只是少一個 --env-file 而不會失敗：EDGE_HTTP_PORT /
+# PHPMYADMIN_PORT / APP_TARGET / MODSEC_RULE_ENGINE 全部落回 compose 裡的
+# ${VAR:-預設}，三個模式搶同一組埠，或更糟 —— test 的 WAF 引擎值變成別的。
+# 兩個檔的缺席語意不一樣，所以不可以共用同一個判斷。
+
+@test "缺少 docker/env/<mode>.env 時 compose 動作硬失敗（EX_PRECOND）" {
+    add_compose_skeleton
+    rm -f "$CX_TEST_ROOT/docker/env/dev.env"
+    run cx_bin --dry-run ps
+    assert_rc "$EX_PRECOND"
+    assert_out_has "模式覆寫檔"
+    # 訊息要說明**為什麼**這是致命的，否則下一個人會以為補個空檔就好
+    assert_out_has "搶埠"
+}
+
+@test "缺少根 .env 不算錯（cx setup env 之前它合法不存在）" {
+    add_compose_skeleton
+    rm -f "$CX_TEST_ROOT/.env"
+    run cx_bin --dry-run ps
+    assert_rc 0
+}

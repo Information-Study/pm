@@ -45,6 +45,31 @@ _fresh_keep_dirs() {                # _fresh_keep_dirs <backend|frontend>
 # ── 刪除：確認後移除 ──────────────────────────────────────────
 FRESH_DELETE=( .git .gitmodules backend frontend init.sh refresh.sh README.md )
 
+# ── 本機暫存：分類為「已知」，但**不屬於範本** ────────────────────
+#
+# .gitignore 已經忽略 /.cx-*.sh|py|txt，所以它們不會進版控。但 cx fresh 是
+# 檔案系統層的操作，看不到 .gitignore —— PF-07 把未分類的頂層項目歸為
+# 「保留不動」，於是 14 個開發過程的驗證腳本會原封不動出現在新專案裡，
+# 而開新專案的人完全不知道那是什麼。
+#
+# 這裡只做**分類**，不刪任何東西（紅線 2：刪除要有互動確認，而 preflight
+# 是唯讀階段）。作用是讓 PF-07 不再把它們列為「未分類」，並讓確認閘門
+# 明確告訴操作者這些檔案不會被帶進新專案。
+FRESH_LOCAL_GLOBS=( '.cx-*.sh' '.cx-*.py' '.cx-*.txt' )
+# 開發工具自己的目錄。跟這個專案是什麼無關，所以不該被複製進新專案。
+FRESH_LOCAL_ITEMS=( .claude )
+
+# 這個頂層項目是不是本機的東西（不屬於範本內容）？
+_fresh_is_local_scratch() {         # _fresh_is_local_scratch <basename>
+    local b=$1 g
+    for g in "${FRESH_LOCAL_ITEMS[@]}"; do [[ $b == "$g" ]] && return 0; done
+    for g in "${FRESH_LOCAL_GLOBS[@]}"; do
+        # shellcheck disable=SC2053  # 右邊要當 glob 用，不能加引號
+        [[ $b == $g ]] && return 0
+    done
+    return 1
+}
+
 _fresh_usage() {
     cat >&2 <<'TXT'
 用法：cx fresh [--phase <名稱>] [--resume-from <名稱>] [--mode <模式>] [--rollback] [--from <目錄>]
@@ -222,8 +247,17 @@ _fresh_preflight() {
         b=${e##*/}
         local hit=0 k
         for k in "${known[@]}"; do [[ $b == "$k" ]] && { hit=1; break; }; done
+        (( hit )) || _fresh_is_local_scratch "$b" && hit=1
         (( hit )) || unknown+=("$b")
     done < <(find "$CX_ROOT" -mindepth 1 -maxdepth 1 -print0)
+    local -a scratch=()
+    while IFS= read -r -d '' e; do
+        b=${e##*/}; _fresh_is_local_scratch "$b" && scratch+=("$b")
+    done < <(find "$CX_ROOT" -mindepth 1 -maxdepth 1 -print0)
+    if (( ${#scratch[@]} )); then
+        cx_warn "PF-07 本機暫存腳本 ${#scratch[@]} 個（不屬於範本，不會被帶進新專案）：${scratch[*]}"
+        cx_dim "  要留著就自己搬到專案外；cx fresh 不會刪它們，只是不當成範本內容。"
+    fi
     if (( ${#unknown[@]} )); then
         cx_warn "PF-07 未分類的頂層項目（將被保留不動）：${unknown[*]}"
     else
@@ -769,7 +803,7 @@ _fresh_git_init() {
     if (( CX_DRY_RUN )); then
         cx_step "初始化三個 Git repo（dry-run：略過）"
         cx_dim "  [dry-run] backend 與 frontend 各 git init -b <CX_GIT_MAIN_BRANCH> + 首次 commit"
-        cx_dim "  [dry-run] 主庫 git init + submodule add（相對 URL，追蹤 <CX_GIT_DEV_BRANCH>）+ commit"
+        cx_dim "  [dry-run] 主庫 git init + submodule add（相對 URL，追蹤 <CX_GIT_MAIN_BRANCH>）+ commit"
         cx_dim "  [dry-run] 三個 repo 各建立 <CX_GIT_DEV_BRANCH>，主庫設 submodule.recurse"
         return 0
     fi
@@ -816,8 +850,13 @@ _fresh_git_init() {
             frontend) url="../${CX_REPO_FRONTEND:-$(cx_project)-frontend}.git" ;;
         esac
         # 先用本地路徑 add（此刻遠端還不存在），再把 URL 改寫成相對形式。
+        # ⚠ -b 用 main_br 而不是 dev_br。.gitmodules 的 branch 只能寫**一個**值，
+        #   而主庫有 main 與 dev 兩條線；子模組該站哪一條由 _git_sub_target_branch()
+        #   依主庫當前分支決定，這裡的值只是 fallback 與 git submodule update --remote
+        #   的目標。原本寫 dev_br，於是範本自己（main）與 cx init 產物（dev）
+        #   對同一個指令行為不同 —— 兩份會漂移的事實。
         cx_run git -C "$CX_ROOT" -c protocol.file.allow=always \
-            submodule add --force -b "$dev_br" "./$c" "$c" || return 1
+            submodule add --force -b "$main_br" "./$c" "$c" || return 1
         cx_run git -C "$CX_ROOT" config --file .gitmodules "submodule.$c.url" "$url" || return 1
         cx_ok "$c → $url"
     done

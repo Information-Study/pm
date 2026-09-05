@@ -52,6 +52,48 @@ def exists(rel):
     return (ROOT / rel).is_file()
 
 
+def read_required(rel, ident, title):
+    """必填文件。讀不到就印 **FAIL 那一列**，絕不讓它從報告裡消失。
+
+    ⚠ 這是本專案自己指認過、卻仍然存在的最惡劣失效形態。原本的寫法是
+
+        ref, comp = read("docs/cx-reference.md"), completion_verbs()
+        if ref and comp:
+            ... row(...) ...
+
+    檔案被搬走之後，那個 if 讓 DOC-cx-verbs **整列從報告裡不見** —— 而
+    cx verify 的退出碼只看 FAIL 的數量。於是「每個動詞都有文件」這件事
+    不再被驗證，報告卻仍然全綠。**少一列比多一列紅難發現得多。**
+
+    ⚠ 但「讀不到」有兩種，而它們的答案不一樣：
+
+      a) **檔案被搬走了** —— 全樹別的地方找得到同名檔。這是硬編路徑漏改，
+         是真正的缺陷 → FAIL，而且訊息直接指出它搬到哪裡去了。
+      b) **這棵樹根本沒有這份文件** —— 全樹都找不到同名檔。bats 的最小
+         fixture、或一棵還沒寫到那份文件的樹都是這樣 → SKIP。
+
+    分不清這兩種的代價已經付過一次：2026-09-05 有人把缺席一律當成 FAIL，
+    於是 cli/docs/tui 三個範圍在「全新 clone、還沒跑 cx setup」的樹上全部變紅，
+    而那三個範圍存在的全部理由就是「什麼都沒裝也要跑得完」（見 exists() 的說明）。
+    rglob 的結果剛好就是區分兩者的依據，所以順手做完。
+    """
+    txt = read(rel)
+    if txt:
+        return txt
+    name = pathlib.PurePath(rel).name
+    skip = {".git", "node_modules", "vendor", ".nuxt", ".output", "reports"}
+    hits = sorted(
+        str(q.relative_to(ROOT)) for q in ROOT.rglob(name)
+        if not skip & set(q.relative_to(ROOT).parts))
+    if hits:
+        row("FAIL", ident, title,
+            f"必填文件 {rel} 讀不到，但同名檔在：{' '.join(hits)}"
+            " —— 檔案搬過家，有硬編路徑沒跟著改")
+    else:
+        row("SKIP", ident, title, f"這棵樹沒有 {rel}")
+    return None
+
+
 # ══ 共用：從實際的東西推導出「動詞」這個集合 ═══════════════════════════════
 
 def completion_verbs():
@@ -296,7 +338,10 @@ def check_tui():
 def check_docs():
     # ── 反向警語。ansible/README.md 說「從未在真機執行過」，而 progress 與
     #    ansible-reference 都記著實跑結果。三份文件不可能都對。
-    ans = read("ansible/README.md")
+    ans = read_required("ansible/README.md", "DOC-ansible-run",
+                        "ansible/README 的執行狀態與實測一致")
+    if ans is None:
+        ans = ""                    # 已經 row() 過 FAIL，後面的比對照跑不會誤判
     evidence = ("failed=0" in read("docs/progress.md")
                 or "ok=49" in read("docs/ansible-reference.md"))
     stale = [p for p in ("從未在真實主機上執行過", "這套東西沒有在真機上跑過",
@@ -379,8 +424,13 @@ def check_docs():
         row("PASS", "DOC-livewire", "Livewire 排除規則用得到的前綴形狀")
 
     # ── cx-reference 要涵蓋每個動詞
-    ref, comp = read("docs/cx-reference.md"), completion_verbs()
-    if ref and comp:
+    ref = read_required("docs/cx-reference.md", "DOC-cx-verbs", "cx-reference 涵蓋每個動詞")
+    comp = completion_verbs()
+    if ref is None:
+        pass                        # read_required 已經 row() 過 FAIL
+    elif not comp:
+        row("SKIP", "DOC-cx-verbs", "cx-reference 涵蓋每個動詞", "剖析不到補全的 $verbs")
+    else:
         # compose 系（up/down/ps/…）在 cx-reference 是成組說明的一節，
         # 不是每個動詞各一節 —— 那一節在就算數。
         grouped = {v for v, f in alias_table().items() if f == "compose"}
@@ -638,20 +688,38 @@ def check_template_identity():
         else:
             row("PASS", "TPL-ansible", "group_vars 的 app_slug 與 .cxroot 一致", want)
 
+    # ── 作用群組名的三方一致 ──────────────────────────────────────────────
+    # site.yml 的 hosts: ←→ deploy.sh 的 --list-hosts ←→ inventory.py 產生的群組。
+    #
+    # ⚠ 第三方（inventory.py）是 2026-09-06 才加進來的。在那之前這條檢查只比對
+    #   前兩者，而 inventory.py 寫死 "pm_servers" 且 cx rename 的清單裡沒有它 ——
+    #   於是 cx rename shop 之後前兩者變成 shop_servers、產生出來的 hosts.yml
+    #   仍是 pm_servers，ansible 比對到 0 台主機卻只印 warning 並回 0。
+    #   兩方一致不代表三方一致，而漏掉的那一方正是產生檔案的那一個。
     site = read("ansible/site.yml") or ""
     dep = read("bin/cmd/deploy.sh") or ""
+    inv = read("bin/lib/inventory.py") or ""
     groups = set(re.findall(r"^\s*hosts:\s*(\S+)", site, re.M)) - {"localhost"}
     used = set(re.findall(r"--list-hosts\s+(\S+)", dep)) | set(re.findall(r"ansible\s+([a-z_]+_servers)", dep))
+    # inventory.py 必須用 CX_PROJECT_NAME 推導，不可以是字面值。
+    inv_literal = sorted(set(re.findall(r'["\']([a-z][a-z0-9_]*_servers)["\']', inv)))
+    inv_derived = bool(re.search(r'SERVERS_GROUP\s*=\s*f?["\']\{?PROJECT\}?_servers', inv)) \
+        or bool(re.search(r'SERVERS_GROUP\s*=\s*f["\']\{PROJECT\}_servers', inv))
     if not groups or not used:
-        row("SKIP", "TPL-group", "site.yml 的 hosts 群組與 deploy.sh 一致",
+        row("SKIP", "TPL-group", "site.yml／deploy.sh／inventory.py 的群組名一致",
             "抓不到群組名")
     elif groups != used:
-        row("FAIL", "TPL-group", "site.yml 的 hosts 群組與 deploy.sh 一致",
+        row("FAIL", "TPL-group", "site.yml／deploy.sh／inventory.py 的群組名一致",
             f"site.yml={sorted(groups)} vs deploy.sh={sorted(used)}"
-            "（不一致時 cx deploy ping 會找不到任何主機）")
+            "（不一致時 cx deploy ping 會找不到任何主機，而且只印 warning 並回 0）")
+    elif inv and not inv_derived:
+        row("FAIL", "TPL-group", "site.yml／deploy.sh／inventory.py 的群組名一致",
+            f"inventory.py 沒有從 CX_PROJECT_NAME 推導群組名"
+            + (f"（寫死了 {' '.join(inv_literal)}）" if inv_literal else "")
+            + " —— cx rename 不會改這個檔，改名後產生的 hosts.yml 會對不上 site.yml")
     else:
-        row("PASS", "TPL-group", "site.yml 的 hosts 群組與 deploy.sh 一致",
-            " ".join(sorted(groups)))
+        row("PASS", "TPL-group", "site.yml／deploy.sh／inventory.py 的群組名一致",
+            " ".join(sorted(groups)) + "；inventory.py 由 CX_PROJECT_NAME 推導")
 
 
 def check_php_prefix_parity():
@@ -865,7 +933,11 @@ def check_doc_index():
         row("SKIP", "DOC-index", "文件索引涵蓋 docs/ 全部", "找不到 docs/*.md")
         return
     problems = []
-    for src in ("claude.md", "docs/README.md"):
+    # ⚠ README.md 是 2026-09-06 才加進來的。在那之前這條檢查只看 claude.md 與
+    #   docs/README.md，於是根 README 的文件表可以無聲漂走 —— 而它漂了：
+    #   acceptance.md 與 docker-verification.md 兩份都不在裡面。
+    #   索引檢查漏掉一份索引，等於那份索引不受任何約束。
+    for src in ("claude.md", "docs/README.md", "README.md"):
         if not exists(src):
             continue
         txt = read(src)
@@ -885,10 +957,9 @@ def check_doc_filemap():
     而且它過期的時候看起來完全正常。實測 2026-09-05：地圖列 18 個 bin/cmd，
     實際有 24 個；bin/lib 的 .py 漏掉 4 個。
     """
-    cm = read("claude.md")
-    if not cm:
-        row("SKIP", "DOC-filemap", "claude.md 的檔案地圖與實際相符", "讀不到 claude.md")
-        return
+    cm = read_required("claude.md", "DOC-filemap", "claude.md 的檔案地圖與實際相符")
+    if cm is None:
+        return                      # read_required 已經 row() 過 FAIL
     problems = []
     for d, pat in (("bin/cmd", "*.sh"), ("bin/lib", "*.py"), ("bin/lib", "*.sh")):
         real = sorted(p.stem for p in (ROOT / d).glob(pat))
