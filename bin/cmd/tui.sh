@@ -25,35 +25,119 @@ _tui_need_tty() {
 _TUI_MODE=${CX_MODE:-dev}
 _TUI_RUNNER=${CX_RUNNER:-auto}
 
+# 退出碼 → 人看得懂的意思。
+# 這張表跟 bin/lib/common.sh 的 readonly EX_* 是同一組值；
+# 失敗對話框只印數字的話，使用者還是不知道 3 跟 1 差在哪。
+_tui_rc_meaning() {                 # _tui_rc_meaning <rc>
+    case ${1:-} in
+        1)  printf '一般失敗（EX_FAIL）—— 真的有問題' ;;
+        2)  printf '用法錯誤（EX_USAGE）—— 參數或子指令給錯了' ;;
+        3)  printf '前置條件不足（EX_PRECOND）—— 環境缺東西，不是程式有問題' ;;
+        4)  printf '使用者取消（EX_ABORT）' ;;
+        20) printf '① 品質防線有 finding（EX_SCAN_QUALITY）' ;;
+        21) printf '② SAST 有 finding（EX_SCAN_SAST）' ;;
+        22) printf '③ SCA 有 finding（EX_SCAN_SCA）' ;;
+        23) printf '④ DAST 有 finding（EX_SCAN_DAST）' ;;
+        130) printf '被 Ctrl-C 中斷' ;;
+        *)  printf '未分類的退出碼' ;;
+    esac
+}
+
+# 失敗時把結果**留在畫面上**。
+#
+# ⚠ 為什麼一定要用對話框，而不是只 printf：
+#   whiptail 用的是終端機的 alternate screen buffer（實測：進場送
+#   \033[?1049h、離場送 \033[?1049l）。_tui_run 把輸出印在**主畫面**，
+#   然後回到選單時 whiptail 又切進 alternate buffer 把它蓋掉 ——
+#   使用者的感受就是「執行失敗，但沒有任何錯誤訊息」。
+#   把錯誤放進 msgbox，它就跟選單在同一個 buffer 裡，蓋不掉。
+_tui_show_failure() {               # _tui_show_failure <指令> <rc> <log 檔>
+    local what=$1 rc=$2 log=$3 tail_txt=''
+    [[ -s $log ]] && tail_txt=$(tail -n 18 "$log" \
+        | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r$//')
+    local body
+    body="指令：cx $what
+
+結束於 exit $rc —— $(_tui_rc_meaning "$rc")
+"
+    if [[ -n $tail_txt ]]; then
+        body+="
+最後 18 行輸出：
+------------------------------------------------------------
+$tail_txt"
+    else
+        body+="
+（這個指令沒有任何輸出）"
+    fi
+    if cx_interactive; then
+        _cx_dlg --title "✘ 執行失敗（exit $rc）" --scrolltext \
+            --msgbox "$body" 24 92 1>&8 2>&9 || true
+    else
+        printf '%s\n' "$body" >&9
+    fi
+}
+
 # 以真正的子行程執行動詞 —— 這是本檔最重要的一行
 _tui_run() {
     local -a argv=("$@")
     (( ${#argv[@]} )) || return 0
     printf '\n\033[34m▸ cx --mode %s --runner %s %s\033[0m\n\n' \
         "$_TUI_MODE" "$_TUI_RUNNER" "$(cx_q "${argv[@]}")" >&8
-    local rc=0
-    "$CX_ROOT/cx" --ui plain --mode "$_TUI_MODE" --runner "$_TUI_RUNNER" \
-        "${argv[@]}" </dev/tty >&8 2>&9 || rc=$?
+    # 同時**串流到終端機**與存進 log：串流是為了長指令看得到進度，
+    # 存檔是為了失敗時還能把內容放進對話框（printf 到主畫面會被選單蓋掉）。
+    #
+    # ⚠ 不能用 `… 2>&1 | tee log`。管線會讓子行程的 stdout/stderr 都變成 pipe，
+    #   而 bin/lib/common.sh 的顏色是看 `[[ -t 2 ]]` 決定的 —— 於是選單裡跑出來的
+    #   每一個指令都會失去紅✘綠✔，反而更難看出哪裡失敗；composer / npm /
+    #   docker compose 也會切到「非互動」分支，長指令的進度輸出跟著不見。
+    #   （2026-09-05 實測：管線版拿到的是純文字，script 版仍帶 \033[34m。）
+    #   script 給子行程一個真的 pty，兩件事同時成立，而且 -e 會把子行程的
+    #   退出碼原樣帶回來（實測 rc=2 與 rc=0 都正確）。
+    local log rc=0
+    log=$(mktemp) || log=''
+    local -a child=("$CX_ROOT/cx" --ui plain --mode "$_TUI_MODE"
+                    --runner "$_TUI_RUNNER" "${argv[@]}")
+    if [[ -n $log ]] && cx_have script; then
+        script -qec "$(cx_q "${child[@]}")" "$log" </dev/tty >&8 2>&9 || rc=$?
+    else
+        # 沒有 script 就退回「直接接 tty」——顏色保住，失敗對話框少了輸出摘要。
+        "${child[@]}" </dev/tty >&8 2>&9 || rc=$?
+        log=''
+    fi
     if (( rc )); then
         printf '\n\033[31m✘ cx %s 結束於 exit %d\033[0m\n' "${argv[0]}" "$rc" >&9
+        _tui_show_failure "$(cx_q "${argv[@]}")" "$rc" "$log"
     else
         printf '\n\033[32m✔ 完成\033[0m\n' >&8
+        printf '\n按任意鍵回到選單…' >&8
+        read -rsn1 </dev/tty || true
+        printf '\n' >&8
     fi
-    printf '\n按任意鍵回到選單…' >&8
-    read -rsn1 </dev/tty || true
-    printf '\n' >&8
+    [[ -n $log ]] && rm -f "$log"
     return 0
 }
 
+# ⚠ 回傳值有三種，呼叫端一律用 `|| return` 是不夠的：
+#     0  使用者選了一項（值印到 stdout）
+#     1  使用者選了離開／按了 ESC   ← 正常結束
+#     2  **介面後端壞了**            ← 必須讓使用者知道，不能當成「離開」
+#   把 2 併進 1 的後果，就是 2026-09-05 回報的那個症狀：
+#   選單一片空白、exit 0、使用者以為功能不存在。
 _tui_menu() {                       # _tui_menu <title> <back-label> <tag> <desc> ...
     local title=$1 back=$2; shift 2
-    local f; f=$(mktemp)
+    local f rc=0; f=$(mktemp)
     local -a items=("$@") ; items+=("<" "$back")
-    if _cx_dlg --title "$title" --cancel-button "離開" \
-            --menu "\n選擇一項：" 22 76 12 "${items[@]}" 2>"$f" 1>&8; then
+    _cx_dlg --title "$title" --cancel-button "離開" \
+            --menu "\n選擇一項：" 22 76 12 "${items[@]}" 2>"$f" 1>&8 || rc=$?
+    if (( rc == 0 )); then
         cat "$f"; rm -f "$f"; return 0
     fi
-    rm -f "$f"; return 1
+    rm -f "$f"
+    if (( rc >= 2 )); then
+        cx_error "選單畫不出來 —— 上面是原因。這不是「你按了離開」。"
+        return 2
+    fi
+    return 1
 }
 
 # 取一行輸入。回傳 0 且把值印到 stdout；使用者取消則回傳 1。

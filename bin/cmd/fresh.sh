@@ -7,13 +7,27 @@
 #   在確認閘門通過之前，不刪除任何東西。
 
 # ── 保留：不動 ────────────────────────────────────────────────
+#
+# ⚠ docker-compose.yml 與 .dockerignore 在 2026-09-05 之前是列在 FRESH_MIGRATE
+#   裡的，而 _fresh_delete 會把 FRESH_DELETE **加上** FRESH_MIGRATE 一起刪掉。
+#   當時的註解寫「Phase 2 會重寫根目錄那兩份」—— 那句話在遷移進行中是對的，
+#   遷移完成之後就過期了：**根目錄的 docker-compose.yml 現在就是 Phase 2 的那一份**。
+#   後果是 cx fresh 跑完之後 docker/legacy/ 有一份 .orig 副本，而根目錄什麼都沒有，
+#   於是每一個 compose 動詞都死在「缺少 base compose」——
+#   一個「重建成可以直接跑的新專案」的動詞，交出來的樹是不能跑的。
+#   2026-09-05 實測確認（cx fresh --phase delete 之後 cx dev config → EX_PRECOND）。
 FRESH_PRESERVE=(
     bin cx .cxroot templates docs claude.md
     .vscode reports ansible .env .env.example .gitignore
     docker sonar-project.properties .semgrepignore
+    docker-compose.yml .dockerignore
 )
 # ── 遷移：搬到 docker/ 之後才刪除原處（使用者要求保留 docker 自定義設定）──
-FRESH_MIGRATE=( php nuxt docker-compose.yml .dockerignore )
+#
+# 只剩下真正屬於**舊版面**的那兩個目錄。它們在現在的樹上早就不存在了
+# （遷移在 Phase 2 就做完），保留這一段是為了讓還停在舊版面的 checkout
+# 也能一次升上來 —— 不存在時整段是 no-op。
+FRESH_MIGRATE=( php nuxt )
 # ── carryover 要疊回去的「應用層」目錄 ────────────────────────
 # 一行一個，不用空白分隔的字串 —— 後者只能靠字詞分割展開，目錄名含空白就裂開。
 # 骨架檔（config/、bootstrap/、package.json、nuxt.config）刻意**不在**這裡：
@@ -241,14 +255,9 @@ _fresh_migrate() {
         done
     done
 
-    # 舊 compose 與 dockerignore 留一份參考（Phase 2 會重寫根目錄那兩份）
-    local src dst
-    for src in docker-compose.yml:docker-compose.yml.orig .dockerignore:dockerignore.orig; do
-        dst=${src#*:}; src=${src%%:*}
-        [[ -f $CX_ROOT/$src ]] || continue
-        _fresh_step "$src → docker/legacy/" -- \
-            cp -a "$CX_ROOT/$src" "$CX_ROOT/docker/legacy/$dst" || return $?
-    done
+    # 這裡曾經把 docker-compose.yml 與 .dockerignore 複製到 docker/legacy/ ——
+    # 那是為了在「刪掉原處」之前留一份參考。現在那兩個檔改成保留（見
+    # FRESH_PRESERVE 的說明），所以複製一份 .orig 只會讓人以為根目錄那份會被換掉。
 
     # 舊腳本也留一份，方便對照
     for f in init.sh refresh.sh README.md; do
@@ -595,6 +604,22 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
         grep -q "\"$pkg\"" "$CX_ROOT/backend/composer.json" 2>/dev/null \
             && cx_ok "composer.json 含 $pkg" || { cx_error "composer.json 缺少 $pkg"; fail=1; }
     done
+
+    # ── 根目錄的基礎設施 ────────────────────────────────────────────────
+    # 少了這一段，「重建完成」可以在**沒有 docker-compose.yml** 的情況下宣告成功，
+    # 而使用者要到下一次 cx dev up 才發現整個 compose 都不能用。
+    # 這正是 2026-09-05 抓到的那個缺陷會走的路徑。
+    for f in docker-compose.yml .dockerignore docker/compose/dev.yml \
+             docker/compose/test.yml docker/compose/prod.yml; do
+        [[ -f $CX_ROOT/$f ]] && cx_ok "存在：$f" || { cx_error "缺少：$f"; fail=1; }
+    done
+    # 而且要是**現行**那一份（引用 docker/compose/），不是舊版面留下來的
+    if grep -q 'docker/compose/' "$CX_ROOT/docker-compose.yml" 2>/dev/null; then
+        cx_ok "docker-compose.yml 是現行版面（引用 docker/compose/）"
+    else
+        cx_error "docker-compose.yml 不是現行版面 —— 沒有引用 docker/compose/"
+        fail=1
+    fi
 
     # ── 不該有的殘留 ────────────────────────────────────────────────────
     # 前一次半途失敗留下的 .git 會讓 git submodule add 報

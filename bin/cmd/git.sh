@@ -33,8 +33,39 @@ TXT
 #   拉到 gitlink 所指的 commit，因而讓子模組進入 detached HEAD。
 #   實測：子模組先切到 feat/x、主庫再切到 feat/x → 子模組變成 DETACHED，分支丟失。
 #   所以子模組的 checkout 必須是最後一步才會生效。
-_git_repos_order()      { printf '%s\n' "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT"; }
-_git_repos_super_first() { printf '%s\n' "$CX_ROOT" "$CX_ROOT/backend" "$CX_ROOT/frontend"; }
+#
+# 兩者都吃一個選用的過濾器（main|backend|frontend|all，預設 all）。
+# 沒有它的話「只提交前端」這種再普通不過的需求就得離開 cx 用裸 git，
+# 而裸 git 會繞過 push guard 與祕密掃描。
+_git_repos_order() {                # _git_repos_order [main|backend|frontend|all]
+    local f=${1:-all}
+    case $f in
+        all)      printf '%s\n' "$CX_ROOT/backend" "$CX_ROOT/frontend" "$CX_ROOT" ;;
+        backend)  printf '%s\n' "$CX_ROOT/backend" ;;
+        frontend) printf '%s\n' "$CX_ROOT/frontend" ;;
+        main)     printf '%s\n' "$CX_ROOT" ;;
+        *) cx_die "$EX_USAGE" "--repo 只能是 main|backend|frontend|all，收到：$f" ;;
+    esac
+}
+_git_repos_super_first() {          # _git_repos_super_first [main|backend|frontend|all]
+    local f=${1:-all}
+    case $f in
+        all)      printf '%s\n' "$CX_ROOT" "$CX_ROOT/backend" "$CX_ROOT/frontend" ;;
+        backend)  printf '%s\n' "$CX_ROOT/backend" ;;
+        frontend) printf '%s\n' "$CX_ROOT/frontend" ;;
+        main)     printf '%s\n' "$CX_ROOT" ;;
+        *) cx_die "$EX_USAGE" "--repo 只能是 main|backend|frontend|all，收到：$f" ;;
+    esac
+}
+
+# 分支模型的單一來源（.cxroot）。給了預設值是為了讓舊的 .cxroot 也能跑。
+_git_main_branch() { printf '%s' "${CX_GIT_MAIN_BRANCH:-main}"; }
+_git_dev_branch()  { printf '%s' "${CX_GIT_DEV_BRANCH:-dev}"; }
+
+# 受保護的分支：不可刪除、不可直接當作 feature 的目標
+_git_is_protected_branch() {        # _git_is_protected_branch <名稱>
+    [[ $1 == "$(_git_main_branch)" || $1 == "$(_git_dev_branch)" ]]
+}
 
 _git_repo_slug() {
     case $1 in
@@ -53,6 +84,7 @@ cmd_git_main() {
         pull)          _git_pull "$@" ;;
         sync)          _git_sync ;;
         commit|save)   _git_commit "$@" ;;
+        config)        _git_config "$@" ;;
         branch)        _git_branch "$@" ;;
         guard)         case ${1:-status} in
                            install) cx_guard_install ;;
@@ -186,17 +218,177 @@ _git_sync() {
     done
 }
 
+# ── git 身分與編輯器 ────────────────────────────────────────────────────────
+#
+# 為什麼需要這一段：git 沒有 user.name/user.email 時 commit 會失敗，而本專案
+# 有三個 repo，逐個 `git -C … config` 是很容易漏掉一個的那種事。
+# fresh.sh 的 PF-08 只**檢查**、只看主庫，而且只印出建議指令；沒有任何動詞會設。
+
+# 三個 repo 都要有身分才算數。回傳 0/1，訊息寫得可以直接照做。
+_git_identity_ok() {
+    local r slug missing=()
+    while read -r r; do
+        [[ -d $r/.git || -f $r/.git ]] || continue
+        slug=$(_git_repo_slug "$r")
+        git -C "$r" config user.name  >/dev/null 2>&1 \
+            && git -C "$r" config user.email >/dev/null 2>&1 \
+            || missing+=("$slug")
+    done < <(_git_repos_order all)
+    (( ${#missing[@]} == 0 )) && return 0
+    cx_error "下列 repo 沒有 git 身分（user.name / user.email）：${missing[*]}"
+    cx_dim "  設定： cx git config identity --name \"你的名字\" --email you@example.com"
+    cx_dim "  （加 --global 寫進 ~/.gitconfig，不加就只寫這三個 repo）"
+    return 1
+}
+
+_git_config_identity() {
+    local name='' email='' global=0
+    while (( $# )); do
+        case $1 in
+            --name)   [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--name 需要值"; name=$2; shift 2 ;;
+            --email)  [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--email 需要值"; email=$2; shift 2 ;;
+            --global) global=1; shift ;;
+            *) cx_die "$EX_USAGE" "config identity: 未知參數 $1" ;;
+        esac
+    done
+    # 沒給就互動問；非互動又沒給就報用法錯誤（不要猜）
+    if [[ -z $name ]]; then
+        if cx_interactive; then name=$(cx_ask_line "git 身分" "user.name（顯示在每一個 commit 上）：" \
+            "$(git config --global user.name 2>/dev/null)") || return "$EX_ABORT"
+        else cx_die "$EX_USAGE" "非互動環境請給 --name"; fi
+    fi
+    if [[ -z $email ]]; then
+        if cx_interactive; then email=$(cx_ask_line "git 身分" "user.email：" \
+            "$(git config --global user.email 2>/dev/null)") || return "$EX_ABORT"
+        else cx_die "$EX_USAGE" "非互動環境請給 --email"; fi
+    fi
+    [[ $email == *@*.* ]] || cx_die "$EX_USAGE" "email 看起來不對：$email"
+
+    if (( global )); then
+        cx_run git config --global user.name  "$name" || return "$EX_FAIL"
+        cx_run git config --global user.email "$email" || return "$EX_FAIL"
+        cx_ok "已寫入 ~/.gitconfig：$name <$email>"
+        return "$EX_OK"
+    fi
+    local r slug
+    while read -r r; do
+        [[ -d $r/.git || -f $r/.git ]] || { cx_dim "$(_git_repo_slug "$r") 還不是 git repo，略過"; continue; }
+        slug=$(_git_repo_slug "$r")
+        cx_run git -C "$r" config user.name  "$name"  || { cx_error "$slug 設定失敗"; return "$EX_FAIL"; }
+        cx_run git -C "$r" config user.email "$email" || { cx_error "$slug 設定失敗"; return "$EX_FAIL"; }
+        cx_ok "$slug → $name <$email>"
+    done < <(_git_repos_order all)
+}
+
+# 預設編輯器候選：$GIT_EDITOR → $VISUAL → $EDITOR → code --wait → nano → vi
+# vi 一定存在，所以這個函式不會回傳空字串。
+#
+# ⚠ 會跳過「不是編輯器的編輯器」。CI、容器映像與各種 harness 常把 EDITOR
+#   設成 true / false / : / cat 之類的 no-op，讓需要編輯器的程式不要卡住。
+#   把那種值寫進 core.editor 的後果是**commit 訊息永遠是空的**，
+#   而 git 只會說 "Aborting commit due to empty commit message"，
+#   完全指不到是 core.editor 的問題。（2026-09-05 在本機實測到 EDITOR=true。）
+_git_editor_is_noop() {
+    case ${1%% *} in
+        true|false|:|cat|echo|/bin/true|/bin/false|/usr/bin/true|/usr/bin/false) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_git_editor_default() {
+    local c
+    for c in "${GIT_EDITOR:-}" "${VISUAL:-}" "${EDITOR:-}"; do
+        [[ -n $c ]] || continue
+        _git_editor_is_noop "$c" && continue
+        printf '%s' "$c"; return 0
+    done
+    cx_have code && { printf 'code --wait'; return 0; }
+    cx_have nano && { printf 'nano'; return 0; }
+    printf 'vi'
+}
+
+_git_config_editor() {
+    local ed='' global=0
+    while (( $# )); do
+        case $1 in
+            --global) global=1; shift ;;
+            -*) cx_die "$EX_USAGE" "config editor: 未知參數 $1" ;;
+            *)  ed=$1; shift ;;
+        esac
+    done
+    if [[ -z $ed ]]; then
+        local sug; sug=$(_git_editor_default)
+        if cx_interactive; then
+            ed=$(cx_ask_line "git 編輯器" \
+                "core.editor —— 寫 commit 訊息、互動式 rebase 時開的編輯器：" "$sug") \
+                || return "$EX_ABORT"
+        else
+            ed=$sug
+            cx_info "未指定編輯器，用推導出的預設值：$ed"
+        fi
+    fi
+    [[ -n $ed ]] || cx_die "$EX_USAGE" "編輯器不能是空的"
+    # 只驗第一個詞（"code --wait" 的第一個詞才是執行檔）
+    local bin=${ed%% *}
+    cx_have "$bin" || cx_warn "找不到 $bin —— 還是會寫進去，但用到時會失敗"
+    if _git_editor_is_noop "$ed"; then
+        cx_error "「$ed」不是編輯器 —— 用它當 core.editor 會讓 commit 訊息永遠是空的"
+        cx_dim "  真的要這樣設就直接下： git config core.editor \"$ed\""
+        return "$EX_USAGE"
+    fi
+
+    if (( global )); then
+        cx_run git config --global core.editor "$ed" || return "$EX_FAIL"
+        cx_ok "已寫入 ~/.gitconfig：core.editor = $ed"
+        return "$EX_OK"
+    fi
+    local r slug
+    while read -r r; do
+        [[ -d $r/.git || -f $r/.git ]] || { cx_dim "$(_git_repo_slug "$r") 還不是 git repo，略過"; continue; }
+        slug=$(_git_repo_slug "$r")
+        cx_run git -C "$r" config core.editor "$ed" || { cx_error "$slug 設定失敗"; return "$EX_FAIL"; }
+        cx_ok "$slug → core.editor = $ed"
+    done < <(_git_repos_order all)
+}
+
+_git_config() {
+    local sub=${1:-show}; shift || true
+    case $sub in
+        identity) _git_config_identity "$@" ;;
+        editor)   _git_config_editor "$@" ;;
+        show)     local r slug
+                  while read -r r; do
+                      [[ -d $r/.git || -f $r/.git ]] || continue
+                      slug=$(_git_repo_slug "$r")
+                      printf '\n%s%s%s\n' "$C_BLU" "$slug" "$C_RST"
+                      printf '  user.name   %s\n' "$(git -C "$r" config user.name   2>/dev/null || echo '（未設定）')"
+                      printf '  user.email  %s\n' "$(git -C "$r" config user.email  2>/dev/null || echo '（未設定）')"
+                      printf '  core.editor %s\n' "$(git -C "$r" config core.editor 2>/dev/null || echo '（未設定，git 會用 $EDITOR 或 vi）')"
+                  done < <(_git_repos_order all)
+                  printf '\n' ;;
+        -h|--help) _git_usage ;;
+        *) cx_die "$EX_USAGE" "config: 未知子指令 $sub（identity|editor|show）" ;;
+    esac
+}
+
 _git_commit() {
-    local msg='' amend=0 no_verify_scan=0
+    local msg='' amend=0 no_verify_scan=0 repo=all
     while (( $# )); do
         case $1 in
             -m|--message) [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "-m 需要訊息"
                           msg=$2; shift 2 ;;
+            --repo)       [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--repo 需要值"
+                          repo=$2; shift 2 ;;
             --amend)      amend=1; shift ;;
             --skip-scan)  no_verify_scan=1; shift ;;
             *)            cx_die "$EX_USAGE" "commit: 未知參數 $1" ;;
         esac
     done
+    _git_repos_order "$repo" >/dev/null    # 提早驗證 --repo 的值
+
+    # git 沒有身分就 commit 會失敗，而下面每一步原本都不檢查退出碼 ——
+    # 於是「Please tell me who you are」會被印成「✔ 已提交」。先擋在這裡。
+    _git_identity_ok || return "$EX_PRECOND"
 
     # 沒給訊息就引導產生（Conventional Commits）
     if [[ -z $msg && $amend -eq 0 ]]; then
@@ -212,45 +404,55 @@ _git_commit() {
         _git_scan_secrets
     fi
 
-    cx_step "提交"
-    local c changed=0 n
+    cx_step "提交${_repo_note:-}"
+    local r slug changed=0 n super_n=0 saw_super=0
+    # ⚠ 每一步都要檢查退出碼。
+    #   2026-09-05 實測：pre-commit hook 失敗時，原本的程式碼照樣印
+    #   「✔ 主庫已提交（4 項，含 gitlink）」並回傳 0，而 repo 裡一個 commit 都沒有。
+    #   cx_run 會回傳指令的退出碼，但沒有人接 —— 而本專案整條呼叫鏈的 errexit
+    #   都被 dispatcher 的 `|| rc=$?` 關掉了，所以「不接就等於吞掉」。
+    #
     # 子模組必須先提交：主庫的 gitlink 指向子模組的 commit，
     # 反過來會讓 gitlink 指向一個尚不存在的 commit。
-    for c in backend frontend; do
-        [[ -d $CX_ROOT/$c ]] || continue
-        n=$(git -C "$CX_ROOT/$c" status --porcelain | wc -l)
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        [[ -d $r ]] || continue
+        n=$(git -C "$r" status --porcelain | wc -l)
+        if [[ $r == "$CX_ROOT" ]]; then saw_super=1; super_n=$n; fi
         if (( n > 0 )); then
-            git -C "$CX_ROOT/$c" status --short | sed 's/^/      /' >&2
-            cx_run git -C "$CX_ROOT/$c" add -A
+            git -C "$r" status --short | sed 's/^/      /' >&2
+            cx_run git -C "$r" add -A \
+                || { cx_error "$slug：git add 失敗"; return "$EX_FAIL"; }
             if (( amend )); then
-                cx_run git -C "$CX_ROOT/$c" commit -q --amend --no-edit
+                cx_run git -C "$r" commit -q --amend --no-edit \
+                    || { cx_error "$slug：git commit --amend 失敗（上面是 git 的訊息）"; return "$EX_FAIL"; }
             else
-                cx_run git -C "$CX_ROOT/$c" commit -q -m "$msg"
+                cx_run git -C "$r" commit -q -m "$msg" \
+                    || { cx_error "$slug：git commit 失敗（上面是 git 的訊息）"; return "$EX_FAIL"; }
             fi
-            cx_ok "$c 已提交（$n 項）"
+            if [[ $r == "$CX_ROOT" ]]; then
+                cx_ok "$slug 已提交（$n 項，含 gitlink）"
+            else
+                cx_ok "$slug 已提交（$n 項）"
+            fi
             changed=1
         else
-            cx_dim "$c 無變更"
+            cx_dim "$slug 無變更"
         fi
-    done
+    done < <(_git_repos_order "$repo")
 
-    # 主庫：自身變更 + 子模組 gitlink 更新
-    n=$(git -C "$CX_ROOT" status --porcelain | wc -l)
-    if (( n > 0 )); then
-        git -C "$CX_ROOT" status --short | sed 's/^/      /' >&2
-        cx_run git -C "$CX_ROOT" add -A
-        if (( amend )); then
-            cx_run git -C "$CX_ROOT" commit -q --amend --no-edit
-        else
-            cx_run git -C "$CX_ROOT" commit -q -m "$msg"
-        fi
-        cx_ok "主庫已提交（$n 項，含 gitlink）"
-    elif (( changed )); then
+    if (( saw_super )) && (( super_n == 0 )) && (( changed )); then
         cx_warn "子模組已提交但主庫的 gitlink 沒有變化 —— 請確認 submodule 指標是否正確"
-    else
-        cx_dim "主庫無變更"
     fi
-    (( changed )) || [[ $n -gt 0 ]] || cx_warn "沒有任何東西需要提交"
+    if ! (( changed )); then
+        cx_warn "沒有任何東西需要提交"
+        return "$EX_OK"
+    fi
+    # 只提交單一子模組時，主庫的 gitlink 會停在舊的 commit —— 講清楚，不要讓人以為做完了
+    if [[ $repo == backend || $repo == frontend ]]; then
+        cx_warn "只提交了 $repo —— 主庫的 gitlink 仍指向舊的 commit"
+        cx_dim "  要讓主庫跟上： cx git commit --repo main -m \"chore: 更新 $repo 指標\""
+    fi
 }
 
 # 引導式產生 Conventional Commits 訊息（無 TTY 時退回純文字提問）
