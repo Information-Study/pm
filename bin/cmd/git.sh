@@ -13,14 +13,18 @@ _git_usage() {
                         提交（子模組先、主庫 gitlink 後）；未給 -m 會引導產生
   save [-m <訊息>]      commit 的別名
   config identity|editor|show   git 身分與編輯器（三個 repo 一起設，或 --global）
-  feature start <名稱>  從 dev 開 feature/<名稱>（gitflow）
-  feature finish [名稱] 合回 dev（不推送、不刪分支）
-  feature list          列出各 repo 的 feature/*
+  flow-init             補齊 gitflow 的分支拓撲（三個 repo 的 dev、submodule.recurse）
+  feature start <名稱> --repo backend|frontend
+                        在該子模組從 dev 開 feature/<名稱>（主庫不動）
+  feature finish [名稱] --repo backend|frontend
+                        合回該子模組的 dev，並讓主庫的 dev 跟上 gitlink
+                        （不推送、不刪分支）
+  feature list          列出兩個子模組的 feature/*
   branch list           列出三個 repo 的分支與同步狀態
   branch new <名稱> [--repo …] [--from <ref>]
                         建立並切換到同名分支（預設從 dev 開）
-  branch switch <名稱>  切換三個 repo 到指定分支
-  branch delete <名稱>  刪除分支（需確認；拒絕刪除當前分支與 main）
+  branch switch <名稱> [--repo …]  切換到指定分支
+  branch delete <名稱> [--repo …]  刪除分支（需確認；拒絕當前分支與 main/dev）
   guard install|status|remove
   remote-set <URL...>       指到現成的 remote（不經過 gh）
   remote-init               用 gh 建立三個 public repo
@@ -94,6 +98,7 @@ cmd_git_main() {
         config)        _git_config "$@" ;;
         branch)        _git_branch "$@" ;;
         feature)       _git_feature "$@" ;;
+        flow-init)     _git_flow_init ;;
         guard)         case ${1:-status} in
                            install) cx_guard_install ;;
                            status)  cx_guard_status ;;
@@ -213,15 +218,50 @@ _git_sync() {
         #
         # 正確做法是 -B：把分支移到目前的 HEAD（等於 fast-forward），
         # 這樣「切回分支」與「保住 commit」兩件事同時成立。
+        # ⚠ 但 -B 有相反方向的危險：分支**領先** HEAD 時（gitlink 落後，
+        #   例如你正站在別條線記錄的舊指標上），`checkout -B $b $head` 會把
+        #   分支**倒退**到那個舊 commit，中間的 commit 只剩 reflog 找得到。
+        #   實測 git 2.53：完全沒有警告，輸出還說 "Your branch is ahead of
+        #   'origin/dev' by 2 commits" —— 那是它剛剛丟掉的那兩個。
+        #
+        #   所以要四向判斷，不是無條件 -B：
+        #     相同        → 純接回（checkout）
+        #     HEAD 領先   → -B 快轉（保住 detached 期間的 commit）
+        #     分支領先    → **保持 detached**，請使用者自己決定
+        #     分岔        → 保持 detached，報錯
         head=$(git -C "$CX_ROOT/$c" rev-parse HEAD)
-        if git -C "$CX_ROOT/$c" rev-parse --verify --quiet "$b" >/dev/null \
-           && ! git -C "$CX_ROOT/$c" merge-base --is-ancestor "$head" "$b" 2>/dev/null; then
-            cx_warn "$c 的 detached HEAD（${head:0:7}）領先 $b —— 用 -B 把分支帶過來，不丟 commit"
+        if ! git -C "$CX_ROOT/$c" rev-parse --verify --quiet "refs/heads/$b" >/dev/null; then
+            # 分支還不存在：直接以目前的 HEAD 建出來，不可能丟東西
+            if cx_run git -C "$CX_ROOT/$c" checkout -q -B "$b" "$head"; then
+                cx_ok "$c → $b（新建，原本是 detached HEAD）"
+            else
+                cx_error "$c 建立 $b 失敗"; return "$EX_FAIL"
+            fi
+            continue
         fi
-        if cx_run git -C "$CX_ROOT/$c" checkout -q -B "$b" "$head"; then
-            cx_ok "$c → $b（原本是 detached HEAD）"
+        local btip; btip=$(git -C "$CX_ROOT/$c" rev-parse "refs/heads/$b")
+        if [[ $head == "$btip" ]]; then
+            if cx_run git -C "$CX_ROOT/$c" checkout -q "$b"; then
+                cx_ok "$c → $b（原本是 detached HEAD，內容相同）"
+            else
+                cx_error "$c 切換到 $b 失敗"; return "$EX_FAIL"
+            fi
+        elif git -C "$CX_ROOT/$c" merge-base --is-ancestor "$btip" "$head" 2>/dev/null; then
+            cx_warn "$c 的 detached HEAD（${head:0:7}）領先 $b —— 用 -B 把分支帶過來，不丟 commit"
+            if cx_run git -C "$CX_ROOT/$c" checkout -q -B "$b" "$head"; then
+                cx_ok "$c → $b（快轉）"
+            else
+                cx_error "$c 切換到 $b 失敗"; return "$EX_FAIL"
+            fi
+        elif git -C "$CX_ROOT/$c" merge-base --is-ancestor "$head" "$btip" 2>/dev/null; then
+            cx_warn "$c 保持 detached —— $b（${btip:0:7}）比目前的 gitlink（${head:0:7}）新"
+            cx_dim "  硬切過去會**倒退** $b，中間的 commit 只剩 reflog 找得到。"
+            cx_dim "  你大概是想要其中一個："
+            cx_dim "    讓主庫跟上子模組： cx git commit --repo main -m \"chore($c): 更新 gitlink\""
+            cx_dim "    讓子模組回到 gitlink： git -C $c checkout $b   （確定要放棄那些 commit 才做）"
         else
-            cx_error "$c 切換到 $b 失敗"
+            cx_error "$c 的 detached HEAD 與 $b 已經分岔 —— 保持 detached，請自己決定怎麼合"
+            cx_dim "  git -C $c log --oneline --graph HEAD $b"
             return "$EX_FAIL"
         fi
     done
@@ -549,6 +589,11 @@ _git_branch() {
         -h|--help) _git_usage; return 0 ;;
         new|switch|delete)
                 _git_branch_parse_opts "$@"
+                # --from 只對 new 有意義。switch/delete 原本「收得下然後丟掉」——
+                # 被解析器接受卻毫無作用的旗標，比直接報錯更糟：
+                # 使用者以為自己指定了起點，實際上什麼都沒發生。
+                [[ $sub == new || -z ${_GIT_BRANCH_FROM:-} ]] \
+                    || cx_die "$EX_USAGE" "branch $sub 不吃 --from（只有 branch new 有起點的概念）"
                 [[ -n ${_GIT_BRANCH_ARGS[0]:-} ]] \
                     || cx_die "$EX_USAGE" "branch $sub 需要名稱"
                 "_git_branch_$sub" "${_GIT_BRANCH_ARGS[0]}" ;;
@@ -563,73 +608,284 @@ _git_branch() {
 #
 # feature 一律從 dev 開、合回 dev。main 只由 release/hotfix 碰，
 # 所以這裡完全不動 main。
+# ── gitflow 的分支拓撲 ──────────────────────────────────────────────────────
+#
+# 冪等，只補缺的。cx git flow-init 與 _fresh_git_init 共用它，
+# 免得「新專案長什麼樣」與「舊專案補成什麼樣」變成兩份會漂移的定義。
+#
+#   主庫       main ← dev
+#   backend    main ← dev
+#   frontend   main ← dev
+#
+# 主庫**不建** feature/*，那只在子模組裡開（見 _git_feature 的說明）。
+_git_flow_ensure_branches() {       # _git_flow_ensure_branches [--dry]
+    local dry=0; [[ ${1:-} == --dry ]] && dry=1
+    local main_br dev_br r slug made=0
+    main_br=$(_git_main_branch); dev_br=$(_git_dev_branch)
+
+    while read -r r; do
+        [[ -e $r/.git ]] || continue
+        slug=$(_git_repo_slug "$r")
+        if git -C "$r" show-ref --verify --quiet "refs/heads/$dev_br"; then
+            (( dry )) && cx_dim "  $slug：已有 $dev_br"
+            continue
+        fi
+        # 起點該用哪一個，不能直接假設 main。
+        #
+        # 子模組被 gitlink 釘住時常常是 detached，而本地的 main 可能是**舊的**
+        #（實測本專案：backend 的 HEAD 比本地 main 多 2 個 commit，origin/main
+        #  才等於 gitlink）。從那個 main 開 dev，等於讓開發線一出生就落後兩步。
+        #
+        # 規則：main 不存在 → 用 HEAD；HEAD 是 main 的後代 → 用 HEAD（比較新）；
+        #       其餘（HEAD 是 main 的祖先或兩者分岔）→ 用 main。
+        local base=$main_br
+        if ! git -C "$r" show-ref --verify --quiet "refs/heads/$main_br"; then
+            base=''
+        elif git -C "$r" rev-parse --verify --quiet HEAD >/dev/null \
+             && git -C "$r" merge-base --is-ancestor "$main_br" HEAD 2>/dev/null \
+             && [[ $(git -C "$r" rev-parse HEAD) != $(git -C "$r" rev-parse "$main_br") ]]; then
+            base=HEAD
+            cx_warn "$slug 的 $main_br 落後目前的 HEAD —— $dev_br 從 HEAD 開（gitlink 所在）"
+        fi
+        if (( dry )); then
+            cx_dim "  $slug：建立 $dev_br${base:+（從 $base）}"
+            made=1; continue
+        fi
+        # ⚠ 用 git branch 不是 switch -c：branch 只寫 ref、不動工作區，
+        #   所以不會觸發 submodule.recurse 把子模組打成 detached（實測確認）。
+        if [[ -n $base ]]; then
+            cx_run git -C "$r" branch "$dev_br" "$base" || return 1
+        else
+            cx_run git -C "$r" branch "$dev_br" || return 1
+        fi
+        cx_ok "$slug：建立 $dev_br${base:+（從 $base）}"
+        made=1
+    done < <(_git_repos_super_first all)
+
+    # submodule.recurse 不可以只靠環境。git.sh 有五處、文件有三處拿
+    # 「本專案設了 submodule.recurse=true」當作排序理由，而實測
+    # git config --show-origin --get-all submodule.recurse → rc=1（根本沒設）。
+    # cx 自己一律明確帶 --recurse-submodules，這裡設定是為了讓**裸 git**
+    # 的行為跟 cx 一致 —— 否則手動 git switch 會留下與 gitlink 不符的子模組。
+    if [[ $(git -C "$CX_ROOT" config --get submodule.recurse 2>/dev/null || echo '') != true ]]; then
+        if (( dry )); then
+            cx_dim "  主庫：設定 submodule.recurse=true"
+        else
+            cx_run git -C "$CX_ROOT" config submodule.recurse true \
+                && cx_ok "主庫：submodule.recurse=true"
+        fi
+        made=1
+    fi
+    (( made )) || cx_ok "分支拓撲已經是完整的，沒有要補的"
+    return 0
+}
+
+_git_flow_init() {
+    cx_step "gitflow 分支拓撲"
+    cx_dim "  主庫      $(_git_main_branch) ← $(_git_dev_branch)          （不開 feature/*）"
+    cx_dim "  backend   $(_git_main_branch) ← $(_git_dev_branch) ← feature/*"
+    cx_dim "  frontend  $(_git_main_branch) ← $(_git_dev_branch) ← feature/*"
+    cx_dim ""
+    cx_dim "將補上下列缺的東西："
+    _git_flow_ensure_branches --dry
+    cx_confirm "建立缺少的分支與設定" \
+"只會**新增**缺少的分支，不會刪除、不會合併、不會切換目前所在的分支。
+可以重複執行。
+
+繼續嗎？" || return "$EX_ABORT"
+    _git_flow_ensure_branches || return "$EX_FAIL"
+    cx_info "接著： cx git feature start <名稱> --repo backend|frontend"
+}
+
+# 側別解析：feature 只存在於子模組，所以一定要知道是哪一邊。
+# 順序：明確 --repo > 呼叫時的 cwd 落在哪個子模組 > 要求指名。
+# 不用「猜主庫目前在哪條分支」—— 主庫根本沒有 feature 分支可以猜。
+_git_feature_side() {               # _git_feature_side <明確指定或空>
+    local want=$1
+    if [[ -n $want ]]; then
+        case $want in
+            backend|frontend) printf '%s' "$want"; return 0 ;;
+            *) cx_die "$EX_USAGE" "--repo 只能是 backend 或 frontend（feature 分支只開在子模組裡），收到：$want" ;;
+        esac
+    fi
+    local pwd_real; pwd_real=$(cd "${CX_INVOKE_PWD:-$PWD}" 2>/dev/null && pwd -P || printf '%s' "$PWD")
+    local c
+    for c in backend frontend; do
+        [[ $pwd_real == "$CX_ROOT/$c" || $pwd_real == "$CX_ROOT/$c"/* ]] && { printf '%s' "$c"; return 0; }
+    done
+    cx_die "$EX_USAGE" "$(printf '%s\n' \
+        "要指定哪一邊： cx git feature start <名稱> --repo backend|frontend" \
+        "" \
+        "  功能分支只開在子模組裡（backend / frontend）。" \
+        "  主庫是基礎設施倉庫，只有 $(_git_main_branch) 與 $(_git_dev_branch) 兩條線，" \
+        "  它的 $(_git_dev_branch) 會在 feature finish 時同步跟上子模組的 gitlink。" \
+        "" \
+        "  或者 cd 進 backend/ 或 frontend/ 再下指令，就不用打 --repo。")"
+}
+
+# ── gitflow ─────────────────────────────────────────────────────────────────
+#
+# 分支模型（2026-09-05 依實測定案）：
+#
+#   主庫       main ← dev                    **沒有 feature/***
+#   backend    main ← dev ← feature/*        gitflow
+#   frontend   main ← dev ← feature/*        gitflow
+#
+# 為什麼主庫不開 feature：實測過「前端與後端各自推進自己那一顆 gitlink，
+# 再合回同一條 dev」—— 兩次合併都 rc=0，零衝突，因為那是**不同路徑**。
+# 真正會衝突的是共用基礎設施（bin/ docker/ ansible/ docs/，實測 CONFLICT）。
+# 在主庫也開 feature、或把 dev 拆成兩條長期線，都只會讓後者更難合，
+# 卻對前者毫無幫助 —— 那本來就不會衝突。
+#
+# 只做 feature 這一條線。release/hotfix 牽涉到版本號與 tag，那是另一個決定，
+# 而且本專案目前沒有版本號策略 —— 做一半的 release 流程比沒有更糟。
 _git_feature() {
     local sub=${1:-}; shift || true
     local dev; dev=$(_git_dev_branch)
+
+    # 先把 --repo 從參數裡撈出來（feature 的旗標只有這一個）
+    local want=''
+    local -a rest=()
+    while (( $# )); do
+        case $1 in
+            --repo) [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--repo 需要值"
+                    want=$2; shift 2 ;;
+            *)      rest+=("$1"); shift ;;
+        esac
+    done
+    set -- "${rest[@]+"${rest[@]}"}"
+
     case $sub in
         start)
-            [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "feature start 需要名稱（例：cx git feature start login）"
-            local n=$1; shift
+            [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "feature start 需要名稱（例：cx git feature start login --repo backend）"
+            local n=$1
             [[ $n == feature/* ]] || n="feature/$n"
-            cx_info "從 $dev 開新的 feature：$n"
-            _GIT_BRANCH_REPO=all _GIT_BRANCH_FROM=$dev _git_branch_new "$n" ;;
+            local side; side=$(_git_feature_side "$want") || return "$EX_USAGE"
+            _git_feature_start "$n" "$side" "$dev" ;;
         finish)
-            local cur; cur=$(git -C "$CX_ROOT" branch --show-current 2>/dev/null || echo '')
+            local side; side=$(_git_feature_side "$want") || return "$EX_USAGE"
+            # 沒給名稱就用該子模組目前所在的分支（不是主庫的 —— 主庫沒有 feature）
+            local cur; cur=$(git -C "$CX_ROOT/$side" branch --show-current 2>/dev/null || echo '')
             local n=${1:-$cur}
-            [[ -n $n ]] || cx_die "$EX_USAGE" "feature finish 需要名稱，或先切到那個分支上"
+            [[ -n $n ]] || cx_die "$EX_USAGE" "feature finish 需要名稱，或先把 $side 切到那個分支上"
             [[ $n == feature/* ]] || n="feature/$n"
-            _git_feature_finish "$n" "$dev" ;;
+            _git_feature_finish "$n" "$side" "$dev" ;;
         list)
-            local r slug
-            while read -r r; do
-                slug=$(_git_repo_slug "$r")
-                printf '\n%s%s%s\n' "$C_BLU" "$slug" "$C_RST"
-                git -C "$r" for-each-ref --format='  %(refname:short)' 'refs/heads/feature/*' 2>/dev/null \
-                    || true
-            done < <(_git_repos_order all)
+            local c
+            for c in backend frontend; do
+                [[ -e $CX_ROOT/$c/.git ]] || continue
+                printf '\n%s%s%s\n' "$C_BLU" "$(_git_repo_slug "$CX_ROOT/$c")" "$C_RST"
+                git -C "$CX_ROOT/$c" for-each-ref \
+                    --format='  %(refname:short)  %(committerdate:relative)' \
+                    'refs/heads/feature/*' 2>/dev/null || true
+            done
             printf '\n' ;;
-        -h|--help|'') cx_dim "cx git feature start <名稱> | finish [名稱] | list" ;;
+        -h|--help|'')
+            cx_dim "cx git feature start <名稱> --repo backend|frontend"
+            cx_dim "cx git feature finish [名稱] --repo backend|frontend"
+            cx_dim "cx git feature list"
+            cx_dim ""
+            cx_dim "功能分支只開在子模組裡；主庫的 $(_git_dev_branch) 會在 finish 時同步 gitlink。" ;;
         *) cx_die "$EX_USAGE" "feature: 未知子指令 $sub（start|finish|list）" ;;
     esac
 }
 
-# 合回 dev。**不推送**、也不刪分支 —— 那兩件事各自有自己的閘門，
-# 混進來會讓 finish 變成一個「做了三件不可逆的事」的動詞。
-_git_feature_finish() {             # _git_feature_finish <分支> <dev>
-    local n=$1 dev=$2 r slug
-    while read -r r; do
-        slug=$(_git_repo_slug "$r")
-        git -C "$r" show-ref --verify --quiet "refs/heads/$n" \
-            || cx_die "$EX_PRECOND" "$slug 沒有分支 $n"
-        [[ -z $(git -C "$r" status --porcelain) ]] \
-            || cx_die "$EX_PRECOND" "$slug 有未提交變更 —— 先 cx git commit"
-        git -C "$r" show-ref --verify --quiet "refs/heads/$dev" \
-            || cx_die "$EX_PRECOND" "$slug 沒有 $dev 分支（先 cx git branch new $dev）"
-    done < <(_git_repos_order all)
+_git_feature_start() {              # _git_feature_start <分支> <側別> <dev>
+    local n=$1 side=$2 dev=$3
+    local d="$CX_ROOT/$side" slug; slug=$(_git_repo_slug "$d")
+    [[ -e $d/.git ]] || cx_die "$EX_PRECOND" "$side 還不是 git repo"
+    git -C "$d" show-ref --verify --quiet "refs/heads/$n" \
+        && cx_die "$EX_PRECOND" "$slug 已經有分支 $n"
+    [[ -z $(git -C "$d" status --porcelain) ]] \
+        || cx_die "$EX_PRECOND" "$slug 有未提交變更 —— 先 cx git commit --repo $side"
 
-    cx_confirm "把 $n 合併回 $dev" \
-"三個 repo 都會：切到 $dev → merge --no-ff $n
+    local base=$dev
+    if ! git -C "$d" show-ref --verify --quiet "refs/heads/$dev"; then
+        cx_warn "$slug 沒有 $dev 分支 —— 從目前的 HEAD 開"
+        cx_dim "  要走完整的 gitflow： cx git flow-init"
+        base=''
+    fi
+    cx_step "在 $slug 建立 $n${base:+（從 $base）}"
+    if [[ -n $base ]]; then
+        cx_run git -C "$d" switch -c "$n" "$base" || return "$EX_FAIL"
+    else
+        cx_run git -C "$d" switch -c "$n" || return "$EX_FAIL"
+    fi
+    cx_ok "$slug → $n"
+    cx_info "主庫沒有動 —— 它的 $dev 會在 cx git feature finish 時跟上 gitlink"
+}
+
+# 合回該子模組的 dev，然後讓主庫的 dev 同步指向新的 commit。
+# **不推送**、也不刪分支 —— 那兩件事各自有自己的閘門，
+# 混進來會讓 finish 變成一個「做了三件不可逆的事」的動詞。
+_git_feature_finish() {             # _git_feature_finish <分支> <側別> <dev>
+    local n=$1 side=$2 dev=$3
+    local d="$CX_ROOT/$side" slug; slug=$(_git_repo_slug "$d")
+
+    git -C "$d" show-ref --verify --quiet "refs/heads/$n" \
+        || cx_die "$EX_PRECOND" "$slug 沒有分支 $n"
+    git -C "$d" show-ref --verify --quiet "refs/heads/$dev" \
+        || cx_die "$EX_PRECOND" "$slug 沒有 $dev 分支（先 cx git flow-init）"
+    [[ -z $(git -C "$d" status --porcelain) ]] \
+        || cx_die "$EX_PRECOND" "$slug 有未提交變更 —— 先 cx git commit --repo $side"
+    # ⚠ 主庫**本來就會**有髒的 gitlink —— 子模組剛剛提交了 feature 的工作，
+    #   那正是這個動詞要記錄的東西。所以只能要求「除了兩顆 gitlink 以外都乾淨」，
+    #   不能要求整個主庫乾淨（第一版寫成後者，於是 finish 永遠過不了自己的前置檢查）。
+    [[ -z $(git -C "$CX_ROOT" status --porcelain -- . ':(exclude)backend' ':(exclude)frontend') ]] \
+        || { cx_error "主庫有 gitlink 以外的未提交變更 —— 先處理掉，finish 之後要提交 gitlink"
+             git -C "$CX_ROOT" status --short -- . ':(exclude)backend' ':(exclude)frontend' \
+                 | sed 's/^/      /' >&2
+             return "$EX_PRECOND"; }
+    git -C "$CX_ROOT" show-ref --verify --quiet "refs/heads/$dev" \
+        || cx_die "$EX_PRECOND" "主庫沒有 $dev 分支（先 cx git flow-init）"
+
+    cx_confirm "把 $n 合併回 $side 的 $dev" \
+"$slug：切到 $dev → merge --no-ff $n
+主庫：切到 $dev → 只更新 $side 這一顆 gitlink 並提交
 
 **不會**推送，也**不會**刪掉 $n。
-推送請用 cx git push；刪分支請用 cx git branch delete $n。
+推送請用 cx git push；刪分支請用 cx git branch delete $n --repo $side。
 
 繼續嗎？" || return "$EX_ABORT"
 
+    # ⚠ 順序：主庫要**先**站到 dev 上，再去動子模組。
+    # 反過來的話，主庫帶 --recurse-submodules 切分支時會把剛合併好的子模組
+    # 重設回 dev 記錄的舊 gitlink（實測：只有 gitlink 真的不同的那個會被 detach），
+    # 於是後面 git add 記進去的是**舊的** sha。
     cx_step "合併 $n → $dev"
-    # 主庫先切（submodule.recurse 會順便動子模組，子模組必須最後才生效）
-    while read -r r; do
-        slug=$(_git_repo_slug "$r")
-        cx_run git -C "$r" switch "$dev" || { cx_error "$slug 切到 $dev 失敗"; return "$EX_FAIL"; }
-    done < <(_git_repos_super_first all)
-    while read -r r; do
-        slug=$(_git_repo_slug "$r")
-        cx_run git -C "$r" merge --no-ff -m "Merge $n into $dev" "$n" \
-            || { cx_error "$slug 合併失敗 —— 解完衝突後自己 git commit，不要再跑一次 finish"
-                 return "$EX_FAIL"; }
-        cx_ok "$slug：$n → $dev"
-    done < <(_git_repos_order all)
-    _git_assert_no_detached || return "$EX_FAIL"
-    cx_info "已合併。推送： cx git push；刪掉 feature： cx git branch delete $n"
+    local cur_super; cur_super=$(git -C "$CX_ROOT" branch --show-current 2>/dev/null || echo '')
+    if [[ $cur_super != "$dev" ]]; then
+        # ⚠ 只有在主庫還沒站在 dev 上時才切，而且**不帶** --recurse-submodules。
+        # 帶了的話會把子模組重設回 dev 記錄的舊 gitlink —— 而此刻子模組上正是
+        # 我們要保住的 feature 工作。這裡只需要主庫的 HEAD 移動，工作區不必動。
+        cx_run git -C "$CX_ROOT" switch "$dev" \
+            || { cx_error "主庫切到 $dev 失敗（有 gitlink 以外的變更？）"; return "$EX_FAIL"; }
+    fi
+
+    cx_run git -C "$d" switch "$dev" || { cx_error "$slug 切到 $dev 失敗"; return "$EX_FAIL"; }
+    cx_run git -C "$d" merge --no-ff -m "Merge $n into $dev" "$n" \
+        || { cx_error "$slug 合併失敗 —— 解完衝突後自己 git commit，不要再跑一次 finish"
+             return "$EX_FAIL"; }
+    cx_ok "$slug：$n → $dev"
+
+    # 主庫只記這一顆 gitlink。用明確的 pathspec 而不是 add -A ——
+    # 另一邊的 gitlink 可能是髒的（例如同事正在推進），不該被順手掃進這個 commit。
+    cx_step "主庫同步 $side 的 gitlink"
+    if [[ -z $(git -C "$CX_ROOT" status --porcelain -- "$side") ]]; then
+        cx_ok "主庫的 $side gitlink 已經是最新的，不需要提交"
+    else
+        cx_run git -C "$CX_ROOT" add -- "$side" || return "$EX_FAIL"
+        cx_run git -C "$CX_ROOT" commit -q -m "chore($side): 更新 gitlink 至 $dev（$n）" \
+            || { cx_error "主庫提交 gitlink 失敗"; return "$EX_FAIL"; }
+        cx_ok "主庫：$side → $(git -C "$d" rev-parse --short HEAD)"
+    fi
+
+    local other; other=$([[ $side == backend ]] && printf frontend || printf backend)
+    [[ -n $(git -C "$CX_ROOT" status --porcelain -- "$other") ]] \
+        && cx_warn "$other 的 gitlink 也有變化，但不屬於這次 finish —— 已排除，沒有進這個 commit"
+
+    _git_assert_no_detached main || return "$EX_FAIL"
+    cx_info "已合併。推送： cx git push；刪掉 feature： cx git branch delete $n --repo $side"
 }
 
 _git_branch_list() {
@@ -664,6 +920,19 @@ _git_branch_check_name() {
 _git_branch_new() {
     local n=$1; _git_branch_check_name "$n"
     local repo=${_GIT_BRANCH_REPO:-all}
+    # 主庫沒有 feature/* —— 那是子模組的東西（見 _git_feature 的說明）。
+    # 從 branch new 繞過去會建出一條沒有任何動詞認得的分支：
+    # feature finish 只看子模組，於是它永遠合不回去，也不會有人發現。
+    if [[ $n == feature/* && ( $repo == all || $repo == main ) ]]; then
+        cx_die "$EX_USAGE" "$(printf '%s\n' \
+            "主庫不開 feature 分支（$n）" \
+            "" \
+            "  功能分支只開在子模組裡：" \
+            "    cx git feature start ${n#feature/} --repo backend|frontend" \
+            "" \
+            "  主庫只有 $(_git_main_branch) 與 $(_git_dev_branch)，它的 $(_git_dev_branch)" \
+            "  會在 feature finish 時自動跟上子模組的 gitlink。")"
+    fi
     # 起點：--from > dev > 目前所在的 commit。
     # 原本是 `switch -c "$n"`（沒有起點），也就是「從你現在剛好在的地方開」——
     # gitflow 之下 feature 必須從 dev 開，而「現在剛好在哪」不是可重現的東西。
@@ -727,20 +996,24 @@ _git_branch_new() {
         fi
         cx_ok "$slug → $n${base:+（從 $base）}"
     done < <(_git_repos_super_first "$repo")
-    _git_assert_no_detached || return "$EX_FAIL"
+    _git_assert_no_detached "$repo" || return "$EX_FAIL"
     cx_info "已在 $n。提交請用： cx git commit"
 }
 
 _git_branch_switch() {
     local n=$1; _git_branch_check_name "$n"
+    # --repo 原本被解析、驗證，然後**丟掉** —— 三個 repo 一律一起切。
+    # 於是「只有子模組有這個分支」的情況（gitflow 之下的常態）根本切不動。
+    local repo=${_GIT_BRANCH_REPO:-all}
     local r slug missing=()
     while read -r r; do
         slug=$(_git_repo_slug "$r")
         git -C "$r" show-ref --verify --quiet "refs/heads/$n" || missing+=("$slug")
-    done < <(_git_repos_order)
+    done < <(_git_repos_order "$repo")
     if (( ${#missing[@]} )); then
         cx_error "下列 repo 沒有分支 $n：${missing[*]}"
-        cx_dim "  要一起建立請用： cx git branch new $n"
+        cx_dim "  只切某一個： cx git branch switch $n --repo backend|frontend|main"
+        cx_dim "  一起建立：   cx git branch new $n"
         return "$EX_PRECOND"
     fi
 
@@ -752,27 +1025,41 @@ _git_branch_switch() {
             git -C "$r" status --short | sed 's/^/      /' >&2
             return "$EX_PRECOND"
         fi
-    done < <(_git_repos_order)
+    done < <(_git_repos_order "$repo")
     while read -r r; do
         slug=$(_git_repo_slug "$r")
-        cx_run git -C "$r" switch "$n"
+        if [[ $r == "$CX_ROOT" ]]; then
+            # ⚠ 明確帶 --recurse-submodules，不要依賴環境。
+            # git.sh 有五處註解寫著「本專案設了 submodule.recurse=true」，
+            # 而實測 git config --show-origin --get-all submodule.recurse → rc=1
+            #（全域與本地都沒有設）。整個排序的立論建立在一個不成立的前提上。
+            # 帶了旗標之後行為才是確定的：實測它**只** detach gitlink 真的有變的
+            # 那個子模組，另一個仍然留在自己的分支上。
+            cx_run git -C "$r" switch --recurse-submodules "$n"
+        else
+            cx_run git -C "$r" switch "$n"
+        fi
         cx_ok "$slug → $n"
-    done < <(_git_repos_super_first)
-    _git_assert_no_detached || return "$EX_FAIL"
+    done < <(_git_repos_super_first "$repo")
+    _git_assert_no_detached "$repo" || return "$EX_FAIL"
 }
 
 # 切換之後一定要驗：submodule.recurse 的副作用是靜默的，
 # 只看 switch 的 exit code 看不出子模組被打成 detached。
-_git_assert_no_detached() {
-    local r slug bad=0
+# ⚠ 一定要吃過濾器。原本無條件走三個 repo，於是
+#   cx git branch new x --repo main 會**先把分支建好**、然後回 EX_FAIL ——
+#   因為兩個子模組本來就是 detached（那是它們被 gitlink 釘住的正常狀態）。
+#   操作成功了卻回報失敗，是最難查的那一種。
+_git_assert_no_detached() {         # _git_assert_no_detached [過濾器]
+    local f=${1:-all} r slug bad=0
     while read -r r; do
         slug=$(_git_repo_slug "$r")
         if ! git -C "$r" symbolic-ref -q HEAD >/dev/null 2>&1; then
-            cx_error "$slug 處於 detached HEAD（submodule.recurse 的副作用）"
-            cx_dim "  修復： git -C $r switch <分支>"
+            cx_error "$slug 處於 detached HEAD"
+            cx_dim "  修復： git -C $r switch <分支>   或   cx git sync"
             bad=1
         fi
-    done < <(_git_repos_order)
+    done < <(_git_repos_order "$f")
     (( bad == 0 ))
 }
 
@@ -781,12 +1068,15 @@ _git_branch_delete() {
     [[ $n == master ]] && cx_die "$EX_USAGE" "拒絕刪除 $n"
     _git_is_protected_branch "$n" \
         && cx_die "$EX_USAGE" "拒絕刪除受保護的分支 $n（gitflow 的 $(_git_main_branch) / $(_git_dev_branch)）"
+    # --repo 原本同樣被丟掉。feature 分支只存在於單一子模組，
+    # 「三個 repo 都沒有分支 x」對它來說是常態而不是錯誤。
+    local repo=${_GIT_BRANCH_REPO:-all}
     local r slug cur
     while read -r r; do
         slug=$(_git_repo_slug "$r")
         cur=$(git -C "$r" branch --show-current 2>/dev/null || echo '')
         [[ $cur == "$n" ]] && cx_die "$EX_PRECOND" "$slug 目前就在 $n 上，請先切走"
-    done < <(_git_repos_order)
+    done < <(_git_repos_order "$repo")
 
     # 先確認至少有一個 repo 真的有這個分支，否則不該拿確認閘門去煩人
     local found=0 have=()
@@ -794,8 +1084,8 @@ _git_branch_delete() {
         if git -C "$r" show-ref --verify --quiet "refs/heads/$n"; then
             found=1; have+=("$(_git_repo_slug "$r")")
         fi
-    done < <(_git_repos_order)
-    (( found )) || cx_die "$EX_PRECOND" "三個 repo 都沒有分支 $n"
+    done < <(_git_repos_order "$repo")
+    (( found )) || cx_die "$EX_PRECOND" "$repo 範圍內沒有任何 repo 有分支 $n"
 
     cx_confirm --danger "刪除分支 $n" \
         "將在下列 repo 刪除分支 $n：\n\n  ${have[*]}\n\n未合併的 commit 不會被刪除（git 會擋下）。\n\n確定嗎？" \
@@ -814,7 +1104,7 @@ _git_branch_delete() {
         else
             cx_error "$slug 刪除 $n 失敗：$out"
         fi
-    done < <(_git_repos_order)
+    done < <(_git_repos_order "$repo")
 }
 
 # ---------------------------------------------------------------------------

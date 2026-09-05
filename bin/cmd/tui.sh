@@ -212,7 +212,8 @@ _tui_git() {
         pull     "三個 repo 一起更新（主庫先、子模組後）" \
         sync     "子模組 checkout 追蹤分支" \
         branch   "分支：列出／建立／切換／刪除" \
-        feature  "gitflow：從 dev 開 feature／合回 dev" \
+        feature  "gitflow：在子模組開 feature／合回 dev" \
+        flow-init "補齊 gitflow 分支拓撲（三個 repo 的 dev）" \
         commit   "提交（可指定單一 repo）" \
         config   "git 身分與編輯器（三個 repo 一起設）" \
         push     "⚠ 推送（白名單 + 祕密掃描 + 子模組順序）" \
@@ -224,6 +225,7 @@ _tui_git() {
             scan)   _tui_run git scan-secrets ;;
             branch) _tui_git_branch ;;
             feature) _tui_git_feature ;;
+            flow-init) _tui_run git flow-init ;;
             config) _tui_git_config ;;
             commit) _tui_git_commit ;;
             push)   cx_confirm "推送" \
@@ -269,20 +271,33 @@ _tui_deploy_hosts() {
 }
 
 # gitflow：feature 一律從 dev 開、合回 dev。
+# 側別選擇。feature 分支只開在子模組裡，所以每一個動作都要先問是哪一邊 ——
+# 主庫沒有 feature/*（理由見 bin/cmd/git.sh 的 _git_feature 說明）。
+_tui_feature_side() {
+    _tui_menu "哪一邊？" "取消" \
+        backend  "後端（Laravel + Filament）" \
+        frontend "前端（Nuxt + Vue）"
+}
+
 _tui_git_feature() {
-    local c
-    while c=$(_tui_menu "gitflow — feature" "返回" \
-        list   "列出各 repo 的 feature/*" \
-        start  "從 dev 開一個新的 feature" \
-        finish "把目前的 feature 合回 dev（不推送、不刪分支）"); do
+    local c side
+    while c=$(_tui_menu "gitflow — feature（只在子模組）" "返回" \
+        list   "列出兩個子模組的 feature/*" \
+        start  "在某個子模組從 dev 開一個新的 feature" \
+        finish "合回該子模組的 dev，主庫的 dev 同步 gitlink"); do
         case $c in
             '<') return 0 ;;
+            list) _tui_run git feature list ;;
             start)
+                side=$(_tui_feature_side) || continue
+                [[ $side == '<' ]] && continue
                 local n; n=$(_tui_ask "新 feature" "名稱（會變成 feature/<名稱>）：") || continue
                 [[ -n $n ]] || continue
-                _tui_run git feature start "$n" ;;
-            finish) _tui_run git feature finish ;;
-            *)      _tui_run git feature "$c" ;;
+                _tui_run git feature start "$n" --repo "$side" ;;
+            finish)
+                side=$(_tui_feature_side) || continue
+                [[ $side == '<' ]] && continue
+                _tui_run git feature finish --repo "$side" ;;
         esac
     done
 }

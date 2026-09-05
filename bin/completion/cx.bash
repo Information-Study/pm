@@ -117,13 +117,13 @@ _cx_completion() {
             ;;
         git)
             if [[ -z $sub ]]; then
-                COMPREPLY=($(compgen -W 'status fetch pull sync commit save branch feature config guard remote-init remote-set scan-secrets push' -- "$cur"))
+                COMPREPLY=($(compgen -W 'status fetch pull sync commit save branch feature flow-init config guard remote-init remote-set scan-secrets push' -- "$cur"))
                 return
             fi
             case $sub in
                 branch)
                     if (( argn == 1 )); then
-                        COMPREPLY=($(compgen -W 'list new switch delete' -- "$cur"))
+                        COMPREPLY=($(compgen -W 'list new switch delete --repo --from' -- "$cur"))
                     elif (( argn == 2 )) && [[ ${words[*]} == *' switch '* || ${words[*]} == *' delete '* ]]; then
                         local root; root=$(_cx_find_root)
                         [[ -n $root ]] && COMPREPLY=($(compgen -W \
@@ -131,9 +131,16 @@ _cx_completion() {
                             -- "$cur"))
                     fi
                     ;;
+                feature)
+                    if (( argn == 1 )); then
+                        COMPREPLY=($(compgen -W 'start finish list' -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W '--repo' -- "$cur"))
+                    fi
+                    ;;
                 guard)  (( argn == 1 )) && COMPREPLY=($(compgen -W 'install status remove' -- "$cur")) ;;
                 commit|save)
-                    COMPREPLY=($(compgen -W '-m --message --amend --skip-scan' -- "$cur")) ;;
+                    COMPREPLY=($(compgen -W '-m --message --amend --skip-scan --repo' -- "$cur")) ;;
                 pull)
                     COMPREPLY=($(compgen -W '--ff-only --allow-merge' -- "$cur")) ;;
                 push)

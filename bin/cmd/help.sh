@@ -99,8 +99,13 @@ cmd_help_main() {
   git commit [-m <訊息>]      提交（子模組先、主庫 gitlink 後）
   git save [-m <訊息>]        commit 的別名
   git scan-secrets            推送前的祕密掃描（gitleaks，push 會自動先跑）
-  git branch list|new|switch|delete <名稱>
-  git remote-init             用 gh 建立 Information-Study 的三個 public repo
+  git branch list|new|switch|delete <名稱> [--repo main|backend|frontend]
+  git flow-init               補齊 gitflow 拓撲（三個 repo 的 dev、submodule.recurse）
+  git feature start|finish|list --repo backend|frontend
+                              功能分支只開在子模組；主庫的 dev 在 finish 時跟上 gitlink
+  git config identity|editor|show   git 身分與編輯器（三個 repo 一起設，或 --global）
+  git remote-set <URL...>     指到現成的 remote（不經過 gh）
+  git remote-init             用 gh 在 .cxroot 的 CX_GH_ORG 底下建三個 public repo
   git push                    推送（白名單 + 祕密掃描 + 子模組順序）
   git guard install|status|remove   pre-push 白名單 hook（**選用**，預設未安裝）
 

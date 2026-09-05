@@ -768,11 +768,18 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
 _fresh_git_init() {
     if (( CX_DRY_RUN )); then
         cx_step "初始化三個 Git repo（dry-run：略過）"
-        cx_dim "  [dry-run] backend 與 frontend 各 git init -b main + 首次 commit"
-        cx_dim "  [dry-run] 主庫 git init -b main + submodule add（相對 URL）+ commit"
+        cx_dim "  [dry-run] backend 與 frontend 各 git init -b <CX_GIT_MAIN_BRANCH> + 首次 commit"
+        cx_dim "  [dry-run] 主庫 git init + submodule add（相對 URL，追蹤 <CX_GIT_DEV_BRANCH>）+ commit"
+        cx_dim "  [dry-run] 三個 repo 各建立 <CX_GIT_DEV_BRANCH>，主庫設 submodule.recurse"
         return 0
     fi
     cx_step "初始化三個 Git repo"
+    # 分支名一律從 .cxroot 推導。原本三處寫死 -b main，於是 .cxroot 的
+    # CX_GIT_MAIN_BRANCH 只是裝飾 —— 改了它，cx init 產出的專案還是 main。
+    # git.sh 的存取器是唯一來源；fresh 只是它的另一個使用者。
+    declare -F _git_main_branch >/dev/null || . "$CX_ROOT/bin/cmd/git.sh"
+    local main_br dev_br
+    main_br=$(_git_main_branch); dev_br=$(_git_dev_branch)
     local c
     for c in backend frontend; do
         [[ -d $CX_ROOT/$c ]] || { cx_error "$c 不存在，無法初始化"; return 1; }
@@ -780,7 +787,7 @@ _fresh_git_init() {
             cx_ok "$c 已經是 git repo，略過"
             continue
         fi
-        cx_run git -C "$CX_ROOT/$c" init -b main || return 1
+        cx_run git -C "$CX_ROOT/$c" init -b "$main_br" || return 1
         # .gitignore 從 templates/ 拿 —— 那是本專案維護的版本，
         # 比框架自帶的更貼近這裡的目錄佈局（vendor 的 volume、reports/ 等）。
         [[ -f $CX_ROOT/templates/gitignore/$c ]] \
@@ -791,7 +798,7 @@ _fresh_git_init() {
     done
 
     if [[ ! -e $CX_ROOT/.git ]]; then
-        cx_run git -C "$CX_ROOT" init -b main || return 1
+        cx_run git -C "$CX_ROOT" init -b "$main_br" || return 1
         [[ -f $CX_ROOT/templates/gitignore/main ]] \
             && cx_run cp "$CX_ROOT/templates/gitignore/main" "$CX_ROOT/.gitignore"
     fi
@@ -810,7 +817,7 @@ _fresh_git_init() {
         esac
         # 先用本地路徑 add（此刻遠端還不存在），再把 URL 改寫成相對形式。
         cx_run git -C "$CX_ROOT" -c protocol.file.allow=always \
-            submodule add --force -b main "./$c" "$c" || return 1
+            submodule add --force -b "$dev_br" "./$c" "$c" || return 1
         cx_run git -C "$CX_ROOT" config --file .gitmodules "submodule.$c.url" "$url" || return 1
         cx_ok "$c → $url"
     done
@@ -834,6 +841,11 @@ _fresh_git_init() {
             || return 1
         cx_ok "主庫：$(git -C "$CX_ROOT" rev-parse --short HEAD 2>/dev/null)"
     fi
+    # gitflow 的分支拓撲。原本完全沒有這一步 —— 新專案三個 repo 只有 main，
+    # 於是 cx git feature start 第一次就 EX_PRECOND。與 cx git flow-init 共用
+    # 同一個函式，免得「新專案長什麼樣」與「舊專案補成什麼樣」變成兩份定義。
+    _git_flow_ensure_branches || cx_warn "分支拓撲沒有補完 —— 之後可以跑 cx git flow-init"
+
     cx_dim "  遠端還沒建。要建： cx git remote-init（需要 gh 已登入）"
 }
 
