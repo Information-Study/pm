@@ -12,10 +12,14 @@
 services:
 
   mysql:
+    pids_limit: 512
+    mem_limit: 1g
     ports:
       - "${MYSQL_BIND:-127.0.0.1}:${MYSQL_PORT:-13306}:3306"
 
   app:
+    pids_limit: 512
+    mem_limit: 1g
     # 原始碼在 image 裡，只有 storage 需要可寫 → 具名 volume。
     # 掛在 image 已存在的路徑上，所以會被 image 的 storage 骨架種子化
     # （framework/cache、framework/sessions、framework/views、logs）。
@@ -23,10 +27,14 @@ services:
       - app-storage:/var/www/html/storage
 
   nuxt:
+    pids_limit: 256
+    mem_limit: 512m
     ports:
       - "${NUXT_PORT:-13000}:3000"
 
   edge:
+    pids_limit: 256
+    mem_limit: 128m
     ports:
       # edge 仍然發布，方便對照「有沒有經過 WAF」的差異。
       - "${EDGE_HTTP_PORT:-18080}:8080"
@@ -40,8 +48,17 @@ services:
   # prod 仍然完全沒有這個 service（D13），verify_checks 的 check_prod_closed
   # 會繼續盯著。
   phpmyadmin:
+    pids_limit: 256
+    mem_limit: 256m
     image: ${PHPMYADMIN_IMAGE:-phpmyadmin:5}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # 官方 phpmyadmin 映像以 root 起 apache 再降權。綁的是 80（容器內），
+    # 但那是**容器內**的埠，host 端由 docker-proxy 發布，所以不需要
+    # NET_BIND_SERVICE —— 容器內的 80 < 1024，這裡確實需要。
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, NET_BIND_SERVICE]
+    stop_grace_period: 15s
     environment:
       PMA_HOST: mysql
       PMA_PORT: "3306"
@@ -68,8 +85,18 @@ services:
 
   # ── ModSecurity + OWASP CRS 反向代理 ──────────────────────────────────────
   waf:
+    # ModSecurity 的請求 body 緩衝是 MODSEC_REQ_BODY_LIMIT（約 12.5MB）/請求
+    pids_limit: 256
+    mem_limit: 512m
     image: ${WAF_IMAGE:-owasp/modsecurity-crs:nginx-alpine}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # 映像的 entrypoint 會重寫 /etc/nginx 與 /etc/modsecurity.d 的樣板，
+    # 然後把 worker 降權。綁的是 8080。
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    stop_signal: SIGQUIT
+    stop_grace_period: 30s
     environment:
       # CRS 的 nginx 形態是反向代理，必須給 BACKEND。
       BACKEND: http://edge:8080

@@ -22,4 +22,9 @@ fi
 # 於是 FRONTEND_MODE=spa 在 dev 模式會被靜默忽略 —— 這是驗收項目 3.5。
 log "NUXT_SSR=${NUXT_SSR:-true} FRONTEND_MODE=${FRONTEND_MODE:-ssr}"
 
-exec npm run dev -- --host 0.0.0.0 --port 3000
+# 直接 exec nuxt，不要 exec npm。
+#
+# `npm run dev` 會讓 **npm** 成為 PID 1，而 npm 不可靠地轉發 SIGTERM ——
+# 於是 dev 容器每次都是被 SIGKILL 的（Docker 預設 10 秒後）。
+# 少一層行程比在 compose 加 init: true 更根本，兩者都做。
+exec npx nuxt dev --host 0.0.0.0 --port 3000

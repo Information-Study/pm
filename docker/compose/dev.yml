@@ -10,11 +10,16 @@
 services:
 
   mysql:
+    pids_limit: 512
     ports:
       # 只綁 loopback。0.0.0.0 會把資料庫曝在區網上。
       - "${MYSQL_BIND:-127.0.0.1}:${MYSQL_PORT:-3306}:3306"
 
   app:
+    # dev 會跑 composer install / npm ci / xdebug，fork 數與記憶體都會尖峰。
+    # 所以只設 pids 且給寬，**不設 mem_limit** —— dev 的 OOM kill 表現是
+    # 「容器隨機重啟」，那會浪費好幾小時去查錯的方向。
+    pids_limit: 1024
     volumes:
       - ./backend:/var/www/html
       - app-vendor:/var/www/html/vendor
@@ -23,6 +28,12 @@ services:
       - "host.docker.internal:host-gateway"
 
   nuxt:
+    # node 不會回收孤兒行程（PID 1 的責任）。entrypoint 已經改成直接 exec nuxt
+    # 而不是 exec npm（npm 不轉發 SIGTERM），init: true 是第二道保險。
+    # **不加在 app** —— supervisord 本身就是一個正經的 init，多一層 tini
+    # 只會讓 supervisorctl 對 PID 的預期錯亂。
+    init: true
+    pids_limit: 1024
     ports:
       # dev 額外把 Nuxt 直接曝出來，方便繞過 edge debug HMR。
       - "${NUXT_PORT:-3000}:3000"
@@ -35,13 +46,22 @@ services:
       CHOKIDAR_USEPOLLING: "true"
 
   edge:
+    pids_limit: 256
     ports:
       - "${EDGE_HTTP_PORT:-8080}:8080"
 
   # dev 專屬。test/prod 沒有這個 service（D13：正式環境不發布管理工具）。
   phpmyadmin:
+    pids_limit: 256
     image: ${PHPMYADMIN_IMAGE:-phpmyadmin:5}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # 官方 phpmyadmin 映像以 root 起 apache 再降權。綁的是 80（容器內），
+    # 但那是**容器內**的埠，host 端由 docker-proxy 發布，所以不需要
+    # NET_BIND_SERVICE —— 容器內的 80 < 1024，這裡確實需要。
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, NET_BIND_SERVICE]
+    stop_grace_period: 15s
     environment:
       PMA_HOST: mysql
       PMA_PORT: "3306"

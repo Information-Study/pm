@@ -200,11 +200,23 @@ print(n)
             else
                 cx_info "SonarQube scanner …"
                 rc=0
+                # ⚠ 註解一律寫在 cx_run **之前**，不要夾在 `\` 續行中間。
+                # 續行會把下一行接上來，而 `#` 之後直到行尾都被丟掉、且該行
+                # 沒有結尾的 `\` —— 於是指令會在那裡結束（映像名稱整個消失），
+                # 後面的 `-e ...` 反而變成一條新指令。bash -n 不會抓到，
+                # 因為那是合法語法，只是變成另一支程式。shellcheck SC2215 會抓。
+                #
+                # 原始碼樹用 :ro。這個容器同時拿到 SONAR_TOKEN，
+                # 而它原本是**可寫**掛載（-v "$CX_ROOT:/usr/src"）——
+                # semgrep 與 trivy 都是 :ro，只有這一個不是。
+                # scanner 只需要一個可寫的工作目錄，用 tmp 掛一個給它。
                 cx_run docker run --rm -u "$(id -u):$(id -g)" \
                     --network "$(cx_sonar_net)" \
                     -e SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}" \
                     -e SONAR_TOKEN="$sonar_token" \
-                    -v "$CX_ROOT:/usr/src" \
+                    -v "$CX_ROOT:/usr/src:ro" \
+                    -v "$CX_CACHE_DIR/sonar-work:/tmp/scannerwork" \
+                    -e SONAR_SCANNER_OPTS="-Dsonar.working.directory=/tmp/scannerwork" \
                     "${CX_IMG_SONAR_SCANNER:-sonarsource/sonar-scanner-cli:latest}" || rc=$?
                 # 這裡曾經寫 worst=$(...)。檔頭的註解正在講這個坑，而這一行自己犯了：
                 # worst 不是本函式的 local，寫進去的是呼叫者的變數，

@@ -320,7 +320,90 @@ build context 送進 daemon 的東西越少越好，但真正的理由是**祕�
 
 ---
 
-## 9. 除錯
+## 9. 執行期硬化與優雅停機
+
+2026-09-05 加上。之前 `security_opt` / `cap_drop` / `pids_limit` / `mem_limit` /
+`stop_grace_period` / `stop_signal` **全庫零出現**。
+
+### 9.1 capability
+
+每個 service 都是 `security_opt: ["no-new-privileges:true"]` + `cap_drop: [ALL]`，
+再按需要加回去。實測 `pm_prod-app-1` 的 `/proc/1/status`：
+
+```
+CapBnd:  00000000000000cb        # CHOWN|DAC_OVERRIDE|FOWNER|SETGID|SETUID，就這五個
+NoNewPrivs:      1
+```
+
+**`NET_BIND_SERVICE` 一律不給** —— 逐一確認過容器內沒有任何服務綁 <1024 的埠
+（app nginx 8080、php-fpm 127.0.0.1:9000、edge 8080、nuxt 3000、waf 8080）。
+prod 的 `:80` 是 **host 端**發布，走 docker-proxy，與容器內的 capability 無關。
+
+唯一的例外是 `phpmyadmin`：官方映像的 apache 在**容器內**就綁 80，所以它拿得到
+`NET_BIND_SERVICE`。這個例外寫在 `bin/lib/verify_checks.py` 的 `_CAP_ALLOW` 表裡，
+要多給任何一個 capability 都必須改那張表 —— 也就是必須產生一個能被 review 的 diff。
+
+### 9.2 停機語意
+
+`supervisord.conf` 原本給 laravel-queue `stopwaitsecs = 100`，而 compose 沒有設
+`stop_grace_period`（Docker 預設 **10 秒**）。兩者**直接矛盾**：supervisord 打算等
+100 秒，Docker 10 秒就 SIGKILL 整個容器。處理中的 job 一律被砍，而兩個檔案各自看
+起來都很合理 —— 這正是跨檔一致性檢查存在的理由。
+
+現在是 `stopwaitsecs = 30` 配 `stop_grace_period: 45s`。
+
+**為什麼不是把 grace 拉到 120s**：那會讓 `cx dev down` 與 `cx test up -d --build`
+慢到讓人改用 `docker kill`，那嚴格更糟。超過 30 秒的 job 會被重試 ——
+`queue:work --tries=3` 本來就處理這件事。
+
+實測（2026-09-05，prod，20 秒的 job 送進 database queue 後 `docker stop`）：
+
+| grace | 耗時 | 退出碼 | job |
+|---|---|---|---|
+| 10s（修改前的預設） | 11s | **137**（SIGKILL） | ✘ 被砍 |
+| 45s（現在） | 12s | **0** | ✔ 跑完 |
+
+nginx（`edge`、`waf`）用 `stop_signal: SIGQUIT` —— nginx 收 SIGTERM 是**快速**關閉、
+丟棄處理中的請求，SIGQUIT 才是優雅。`mysql` 給 60s：10 秒預設會 SIGKILL mysqld，
+每次 `cx down` 都逼 InnoDB 做 crash recovery。
+
+`init: true` 只加在 `nuxt`。同時把 `docker/entrypoint/nuxt.sh` 的
+`exec npm run dev` 改成直接 `exec npx nuxt dev` —— npm 不轉發 SIGTERM，
+少一層行程比多一個 init 更根本。**不要**加在 `app`：supervisord 自己就是 init，
+多一層會讓 `supervisorctl` 的 PID 預期混亂。
+
+### 9.3 資源上限
+
+`pids_limit` 三個模式都加，但給寬（app dev 1024 / test-prod 512、mysql 512、其餘 256）。
+太緊的值會以 `fork: Resource temporarily unavailable` 出現在 composer/npm 深處，
+極難歸因。
+
+`mem_limit` **只加 test/prod，刻意不加 dev**。dev 的 `composer install`、`nuxt dev`、
+xdebug 都會尖峰，而 OOM kill 在 dev 的表現是「容器隨機重啟」，會浪費好幾小時。
+用**頂層** `mem_limit`，不是 `deploy.resources.limits`（非 swarm 的 compose 會忽略後者）。
+
+### 9.4 刻意沒做的兩件事
+
+- **`read_only: true`** —— 需要 `/tmp`、`/var/run`、`/var/lib/nginx/tmp`、`/var/log`
+  四個 tmpfs，外加 `bootstrap/cache` 的可寫掛載（test/prod 目前沒有 volume）。
+  前置條件已經完成（APP_KEY 改由環境注入之後，entrypoint 不再寫 `.env`），
+  但 tmpfs 的範圍需要逐一實測，留待下一輪。
+- **`app` 改跑非 root `user:`** —— 技術上可行（拿掉 `supervisord.conf` 三行 `user =`、
+  搬移 `/var/run` 的 pid/socket），但 `cap_drop: ALL` + `no-new-privileges` 已取得
+  大部分的縮減效果，而改動觸及 PID 1 的啟動路徑，風險不成比例。
+
+### 9.5 這些設定由什麼守著
+
+`cx verify static` 的兩個檢查（`bin/lib/verify_checks.py`）：
+
+| id | 檢查 |
+|---|---|
+| `hard-caps` | 三個模式的每個 service 都要有 `no-new-privileges` 與 `cap_drop: [ALL]`，且 `cap_add` 必須是 `_CAP_ALLOW` 的子集 |
+| `hard-stop` | `app` 的 `stop_grace_period` **大於** `supervisord.conf` 的 `stopwaitsecs`（跨檔比對）；`edge`/`waf` 必須是 SIGQUIT |
+
+---
+
+## 10. 除錯
 
 | 想知道 | 指令 |
 |---|---|

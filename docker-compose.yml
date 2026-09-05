@@ -32,6 +32,23 @@ services:
   mysql:
     image: ${MYSQL_IMAGE:-mysql:8.4}
     restart: unless-stopped
+    # ── 執行期硬化 ───────────────────────────────────────────────────────
+    # no-new-privileges 擋的是「透過 setuid 執行檔取得更高權限」，
+    # 不影響 supervisord / php-fpm / nginx 在行程內 setuid() **降**權。
+    # mysql 官方映像用的 gosu 刻意不是 setuid 的，所以也不受影響。
+    #
+    # cap_drop: [ALL] 之後只加回真正需要的。**一律不加 NET_BIND_SERVICE**：
+    # 容器內沒有任何服務綁 <1024 的埠（app nginx 8080、php-fpm 127.0.0.1:9000、
+    # edge 8080、nuxt 3000、waf 8080）。prod 的 :80 是 host 端發布，走 docker-proxy。
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # CHOWN/FOWNER/DAC_OVERRIDE：資料目錄初始化。SETUID/SETGID：entrypoint 以
+    # root 起、再降權成 mysql 使用者。SYS_NICE 刻意不給 —— 少了它 mysqld 只會
+    # 記一行 setpriority 的警告，那是雜訊不是錯誤。
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    # InnoDB 在有負載時關機常超過 10 秒。Docker 的預設 10 秒會 SIGKILL，
+    # 於是每一次 cx down 都逼 InnoDB 在下次開機做 crash recovery。
+    stop_grace_period: 60s
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -47,7 +64,11 @@ services:
     # app 的 depends_on 用 service_healthy 等這個。沒有 healthcheck 的話
     # Laravel 會在 MySQL 還在初始化時就跑 migrate 並炸掉（舊 compose 的 D7）。
     healthcheck:
-      test: ["CMD-SHELL", 'mysqladmin ping -h 127.0.0.1 -uroot -p"$$MYSQL_ROOT_PASSWORD" --silent']
+      # ⚠ 不要帶憑證。原本的寫法把 root 密碼放在命令列上，於是它出現在
+      # `docker inspect` 的 Config.Healthcheck.Test，以及容器內每 5 秒一次的
+      # ps 輸出裡。liveness 要問的是「伺服器答不答話」——
+      # mysqladmin ping 在「access denied」時**也會回 0**，因為伺服器答了。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -69,6 +90,17 @@ services:
     # -p 隔離容器與網路，但**不隔離映像 tag**。
     image: ${IMAGE_PREFIX:-pm}/app:${APP_MODE:-dev}-${APP_TARGET:-dev}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # PID 1 是 supervisord（root），它 setuid 出 www-data 的 queue/schedule；
+    # php-fpm 與 nginx 的 master 同樣 fork 出 www-data 的 worker。
+    # entrypoint 還要 chown storage/bootstrap.cache（dev 是 bind mount）。
+    # CAP_KILL 不需要：supervisord 是 root，對同 uid 的子行程送訊號不用它。
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    # supervisord.conf 給 laravel-queue 的 stopwaitsecs 是 30，
+    # 這裡必須**大於**它，否則處理中的 job 會被 Docker SIGKILL 掉。
+    # 兩個數字的關係由 cx verify static 的 check_stop_semantics 盯著。
+    stop_grace_period: 45s
     environment:
       APP_ENV: ${APP_ENV:-local}
       # :? 而不是 :- —— 金鑰缺席要大聲失敗，不能靜默讓 entrypoint 產一把新的。
@@ -129,6 +161,11 @@ services:
         NUXT_PUBLIC_API_BASE_URL: ${NUXT_PUBLIC_API_BASE_URL-}
     image: ${IMAGE_PREFIX:-pm}/nuxt:${APP_MODE:-dev}-${NUXT_TARGET:-dev}-${FRONTEND_MODE:-ssr}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    # dev 與 prod 兩個 target 都已經是 USER node（Dockerfile），
+    # static target 用官方 nginx。所以這裡不需要加回任何 capability。
+    cap_drop: [ALL]
+    stop_grace_period: 15s
     environment:
       # ⚠ NUXT_SSR 走 runtime environment，不是 build arg —— build arg 進不了 nuxt dev，
       # 於是 FRONTEND_MODE=spa 在 dev 會被靜默忽略。
@@ -152,6 +189,14 @@ services:
   edge:
     image: ${NGINX_IMAGE:-nginx:1.30-alpine}
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # 官方 nginx 映像的 master 以 root 起、把 worker 降權成 nginx 使用者。
+    # 綁的是 8080，所以不需要 NET_BIND_SERVICE。
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
+    # nginx 收到 SIGTERM 是**快速**關閉（丟棄處理中的請求）；SIGQUIT 才是優雅。
+    stop_signal: SIGQUIT
+    stop_grace_period: 30s
     volumes:
       - ./docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./docker/edge/conf.d:/etc/nginx/conf.d:ro

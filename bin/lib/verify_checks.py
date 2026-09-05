@@ -394,6 +394,100 @@ def check_app_key_injected(cfgs):
         out("PASS", "sec-appkey", "APP_KEY 由 compose 注入且非空")
 
 
+# 每個 service 允許的 capability。**寫在檢查裡**是刻意的：
+# 要多給一個 capability 就必須改這張表，也就是必須產生一個可以被 review 的 diff。
+_CAP_ALLOW = {
+    "mysql":      {"CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID"},
+    "app":        {"CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID"},
+    "edge":       {"CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID"},
+    "waf":        {"CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID"},
+    # phpmyadmin 是唯一需要 NET_BIND_SERVICE 的：官方映像的 apache 在
+    # **容器內**綁 80（<1024）。其餘服務容器內綁的都是 8080/9000/3000。
+    "phpmyadmin": {"CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "NET_BIND_SERVICE"},
+    "nuxt":       set(),          # dev 與 prod target 都已經是 USER node
+}
+
+
+def check_hardening_baseline(cfgs):
+    """每個 service 都要有 no-new-privileges 與 cap_drop: [ALL]，
+    而 cap_add 必須是允許清單的子集。"""
+    bad = []
+    for mode, cfg in sorted(cfgs.items()):
+        for name, svc in sorted((cfg.get("services") or {}).items()):
+            so = [str(x) for x in (svc.get("security_opt") or [])]
+            if not any("no-new-privileges" in x for x in so):
+                bad.append(f"{mode}/{name}(無 no-new-privileges)")
+            drop = {str(x).upper() for x in (svc.get("cap_drop") or [])}
+            if "ALL" not in drop:
+                bad.append(f"{mode}/{name}(cap_drop 不含 ALL)")
+            add = {str(x).upper() for x in (svc.get("cap_add") or [])}
+            allowed = _CAP_ALLOW.get(name)
+            if allowed is None:
+                bad.append(f"{mode}/{name}(不在 capability 允許表中)")
+            elif not add <= allowed:
+                bad.append(f"{mode}/{name}(多給了 {' '.join(sorted(add - allowed))})")
+    if bad:
+        out("FAIL", "hard-caps", "執行期硬化基線（no-new-privileges + cap_drop）",
+            " ".join(bad))
+    else:
+        n = sum(len(c.get("services") or {}) for c in cfgs.values())
+        out("PASS", "hard-caps", "執行期硬化基線（no-new-privileges + cap_drop）",
+            f"{n} 個 service（跨 {len(cfgs)} 個模式）")
+
+
+def check_stop_semantics(cfgs, root):
+    """app 的 stop_grace_period 必須大於 supervisord 的 stopwaitsecs。
+
+    這是跨檔的一致性檢查。原本兩者是**直接矛盾**的：supervisord 等 100 秒，
+    Docker 10 秒就 SIGKILL —— 於是處理中的 queue job 一律被砍，而兩個檔案
+    各自看起來都很合理。
+    """
+    conf = Path(root, "docker/php/supervisord.conf")
+    if not conf.exists():
+        out("SKIP", "hard-stop", "stop_grace_period 大於 supervisord 的 stopwaitsecs",
+            "找不到 supervisord.conf")
+        return
+    m = re.search(r"^\s*stopwaitsecs\s*=\s*(\d+)", conf.read_text(encoding="utf-8"), re.M)
+    if not m:
+        out("SKIP", "hard-stop", "stop_grace_period 大於 supervisord 的 stopwaitsecs",
+            "supervisord.conf 沒有 stopwaitsecs")
+        return
+    want = int(m.group(1))
+
+    def secs(v):
+        if v is None:
+            return None
+        t = str(v).strip()
+        if t.endswith("s"):
+            return int(float(t[:-1]))
+        if t.endswith("m"):
+            return int(float(t[:-1]) * 60)
+        try:
+            return int(float(t))
+        except ValueError:
+            return None
+
+    bad = []
+    for mode, cfg in sorted(cfgs.items()):
+        app = (cfg.get("services") or {}).get("app") or {}
+        g = secs(app.get("stop_grace_period"))
+        if g is None:
+            bad.append(f"{mode}(app 沒有 stop_grace_period)")
+        elif g <= want:
+            bad.append(f"{mode}(grace {g}s ≤ stopwaitsecs {want}s)")
+    # edge 與 waf 的 nginx 要用 SIGQUIT 才是優雅關閉
+    for mode, cfg in sorted(cfgs.items()):
+        for name in ("edge", "waf"):
+            svc = (cfg.get("services") or {}).get(name)
+            if svc and str(svc.get("stop_signal") or "").upper() != "SIGQUIT":
+                bad.append(f"{mode}/{name}(nginx 需要 stop_signal: SIGQUIT)")
+    if bad:
+        out("FAIL", "hard-stop", "停機語意跨檔一致", " ".join(bad))
+    else:
+        out("PASS", "hard-stop", "停機語意跨檔一致",
+            f"app grace > supervisord stopwaitsecs({want}s)；nginx 用 SIGQUIT")
+
+
 def main():
     root = sys.argv[1]
     cfgs = {}
@@ -427,6 +521,8 @@ def main():
     check_prod_closed(cfgs)
     check_db_mysql(cfgs)
     check_app_key_injected(cfgs)
+    check_hardening_baseline(cfgs)
+    check_stop_semantics(cfgs, root)
     check_mysql_health_dep(cfgs)
     check_mount_sources(root, cfgs)
     check_version_pins(cfgs)

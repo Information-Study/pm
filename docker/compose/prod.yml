@@ -10,18 +10,26 @@ services:
 
   # prod 不發布資料庫埠 —— 這裡沒有 ports:，且 base 也沒有（base 禁 ports）。
   mysql:
+    pids_limit: 512
+    mem_limit: 1g
     restart: always
 
   app:
+    pids_limit: 512
+    mem_limit: 1g
     restart: always
     volumes:
       - app-storage:/var/www/html/storage
 
   nuxt:
+    pids_limit: 256
+    mem_limit: 512m
     restart: always
     # 不發布 3000。對外只有 edge 的 80。
 
   edge:
+    pids_limit: 256
+    mem_limit: 128m
     restart: always
     ports:
       - "${EDGE_HTTP_PORT:-80}:8080"

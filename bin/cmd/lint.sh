@@ -75,10 +75,37 @@ _lint_sh() {
     #           前綴是冗餘但無害的
     #   SC2178  同名區域變數在不同函式裡的型別不同，shellcheck 跨函式追丟了
     # -x：追蹤 source 進來的檔案。-P：讓 source 找得到 bin/lib/。
+    #
+    # 但有一小撮 shellcheck 歸類為 warning 的東西，其實是**正確性缺陷**而不是風格。
+    # 它們一律當作 error 擋下來 —— 清單刻意保持很短，而且加入前都確認過
+    # 目前的樹上是 0 命中，所以這道閘門是綠的，不是一開就紅的裝飾品。
+    #
+    #   SC2215  旗標被當成指令名 —— 幾乎一定是「註解夾在 `\` 續行中間」。
+    #           bash 會把續行接上來、`#` 吃掉整行、而那行沒有結尾的 `\`，
+    #           於是指令提早結束（例如 docker run 的映像名整個消失），
+    #           後面的 `-e …` 變成一條新指令。`bash -n` 過得了 ——
+    #           那是合法語法，只是變成另一支程式。2026-09-05 真的踩到過。
+    #   SC2216/7 管給不讀 stdin 的指令 —— 資料默默掉進黑洞
+    #   SC2218  函式在定義之前就被呼叫
+    #   SC2069  `2>&1 >file` 順序寫反 —— stderr 沒有進檔案
+    #   SC2064  trap 用雙引號 → 變數在**設 trap 當下**就展開。
+    #           這正是 fresh.sh 的 C-1 缺陷（`rm -rf` 拿到烘死的路徑）。
+    #   SC2140  字串意外相接，通常是漏了逗號或引號寫錯
+    #   SC2145  把陣列接在字串上 —— 只有第一個元素是你想的那樣
+    local -a fatal_warn=(SC2215 SC2216 SC2217 SC2218 SC2069 SC2064 SC2140 SC2145)
+    local all_warn='' fatal_hits=''
+    all_warn=$(shellcheck -x -P "$CX_ROOT/bin/lib" -S warning -f gcc "${files[@]}" 2>/dev/null || true)
     local warn=0
-    warn=$(shellcheck -x -P "$CX_ROOT/bin/lib" -S warning -f gcc "${files[@]}" 2>/dev/null \
-           | grep -c ': warning:' || true)
+    warn=$(printf '%s\n' "$all_warn" | grep -c ': warning:' || true)
+    local re
+    re=$(IFS='|'; printf '%s' "${fatal_warn[*]}")
+    fatal_hits=$(printf '%s\n' "$all_warn" | grep -E "\[($re)\]" || true)
     cx_run shellcheck -x -P "$CX_ROOT/bin/lib" -S error "${files[@]}" || return $?
+    if [[ -n $fatal_hits ]]; then
+        cx_error "shellcheck：以下 warning 屬於正確性缺陷，視同 error"
+        printf '%s\n' "$fatal_hits" | while IFS= read -r l; do cx_dim "    $l"; done
+        return "$EX_FAIL"
+    fi
     if (( warn )); then
         cx_warn "shellcheck：0 error，$warn 個 warning（不擋，細節： cx lint sh 之後跑"
         cx_dim "    shellcheck -x -P bin/lib -S warning cx bin/**/*.sh"
