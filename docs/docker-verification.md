@@ -11,16 +11,16 @@
 本專案的 Docker 設定經過一輪 10-agent 的設計與對抗驗證。**設計被判定為 `has_blocking_flaws`**，
 下列項目是驗證者實際追出失敗路徑後提出的修正。**本文件不是建議清單，是必須逐項確認的驗收條件。**
 
-舊的設定檔已保留在 `docker/legacy/`：
+舊的設定檔已保留在 `env/docker/legacy/`：
 
 | 檔案 | 說明 |
 |---|---|
-| `docker/legacy/docker-compose.yml.orig` | 原始 compose（8 個 service，無模式區分） |
-| `docker/legacy/dockerignore.orig` | 原始 .dockerignore |
-| `docker/legacy/init.sh.orig` / `refresh.sh.orig` | 原始初始化腳本（已知壞掉） |
-| `docker/legacy/README.md.orig` | 原始 README |
-| `docker/php/*` | 原始 PHP 容器設定（nginx.conf、supervisord.conf、xdebug.ini 等） |
-| `docker/nuxt/dockerfile` | 原始 Nuxt Dockerfile |
+| `env/docker/legacy/docker-compose.yml.orig` | 原始 compose（8 個 service，無模式區分） |
+| `env/docker/legacy/dockerignore.orig` | 原始 .dockerignore |
+| `env/docker/legacy/init.sh.orig` / `refresh.sh.orig` | 原始初始化腳本（已知壞掉） |
+| `env/docker/legacy/README.md.orig` | 原始 README |
+| `env/docker/php/*` | 原始 PHP 容器設定（nginx.conf、supervisord.conf、xdebug.ini 等） |
+| `env/docker/nuxt/dockerfile` | 原始 Nuxt Dockerfile |
 
 ---
 
@@ -91,8 +91,8 @@ Error response from daemon: Ports are not available: bind for 0.0.0.0:8080 faile
 ### 2.3 相對路徑解析
 
 Compose v2 把 project directory 設為**第一個 `-f` 檔案所在的目錄**。
-`docker/compose/test.yml` 裡寫 `./docker/waf/rules/xxx.conf` 會被展開成
-`<root>/docker/compose/docker/waf/rules/xxx.conf`。
+`env/docker/compose/test.yml` 裡寫 `./env/docker/waf/rules/xxx.conf` 會被展開成
+`<root>/env/docker/compose/env/docker/waf/rules/xxx.conf`。
 
 **失敗表現**：路徑不存在 → Docker 可能**靜默建立一個空目錄**並掛載上去，
 於是 CRS 排除規則從未載入，Livewire/Filament 流量被 941xxx/942xxx 擋掉且毫無線索。
@@ -100,7 +100,7 @@ Compose v2 把 project directory 設為**第一個 `-f` 檔案所在的目錄**�
 **驗收**：`cx` 必須一律傳 `--project-directory "$CX_ROOT"`。
 ```bash
 docker compose --project-directory "$CX_ROOT" -p pm_test \
-  -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/docker/compose/test.yml" config --quiet
+  -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/env/docker/compose/test.yml" config --quiet
 ```
 並確認每個 bind mount 來源都真的存在（`cx doctor` 應該做這件事）。
 
@@ -187,7 +187,7 @@ curl -fsS http://localhost:18081/                # 經過 ModSecurity WAF（test
 
 # D5 專項：supervisord 真的在管 queue worker
 docker compose --project-directory "$PWD" -p pm_dev \
-  -f docker-compose.yml -f docker/compose/dev.yml exec app supervisorctl status
+  -f docker-compose.yml -f env/docker/compose/dev.yml exec app supervisorctl status
 
 # D6 專項：vendor 沒被 bind mount 蓋掉
 docker compose ... exec app test -f vendor/autoload.php && echo "D6 OK"
@@ -214,7 +214,7 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 
 | 項目 | 結果 | 備註 |
 |---|---|---|
-| D1 Dockerfile 大小寫 | ✅ | 舊的小寫 `docker/nuxt/dockerfile` 已移至 `docker/legacy/`。**它原本與新的 `Dockerfile` 並存**，正是 D1 陷阱本身 |
+| D1 Dockerfile 大小寫 | ✅ | 舊的小寫 `env/docker/nuxt/dockerfile` 已移至 `env/docker/legacy/`。**它原本與新的 `Dockerfile` 並存**，正是 D1 陷阱本身 |
 | D2 `.env` 與 `APP_KEY` | ✅ | entrypoint 產生並 `chown www-data`，三個模式都驗過 |
 | D3 幽靈 service | ✅ | 不再有 `vue` / `npm-php`。後端的 npm 由 `cx npm --backend` 提供 |
 | D4 Nova 殘留 | ✅ | 全庫無 Nova 字樣；管理員改用 `cx db admin`（`make:filament-user`） |
@@ -243,7 +243,7 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 | 3.7 PM2 用 fork | ✅ | `ecosystem.config.cjs.j2` 寫死 `exec_mode: fork`（Ansible 側；容器側用 Nitro，無 PM2） |
 | 3.8 掃描容器不固定 name | ✅ | `scan.sh` 全庫無 `--name` |
 | 3.9 目錄由 cx 預建 | ✅ | `cx setup dirs` 與 `cx up` 都會建；**另外修掉 dev 的具名 volume 掛在 bind mount 底下會被建成 root:root 的問題** |
-| 3.10 Sonar healthcheck 用 curl | ✅ | `docker/compose/sonar.yml` 用 curl（該映像沒有 wget） |
+| 3.10 Sonar healthcheck 用 curl | ✅ | `env/docker/compose/sonar.yml` 用 curl（該映像沒有 wget） |
 | 3.11 ModSec audit 從 stdout | ✅ | `MODSEC_AUDIT_LOG=/dev/stdout` + JSON，實測 `cx --mode test logs waf \| grep '^{'` 取得到 |
 | 3.12 CRS 排除順序 | ✅ | 走映像的 plugins 機制，`94-activate-plugins.sh` 實測把兩行 Include 取消註解 |
 | 4. 版本鎖定 | ✅ | php 8.5 / node 24.20 / mysql 8.4 / nginx 1.30 / sonarqube 2026-lta |
@@ -298,7 +298,7 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 | A11 | **Semgrep 靜靜地失敗（exit 7）** | `p/laravel` 與 `p/vue` 在 registry 上已經是 HTTP 404。而 `--sarif --output` 把 stdout 全導進檔案，終端機上看不到任何錯誤 | 移除失效的規則集並換上等效的；`cx scan sast` 對 exit ≥2 給出可行動訊息 |
 | A12 | **SAST 閘門與文件不符** | `--error` 是「有任何 finding 就失敗」，包含 warning。而 claude.md §5 寫的是「無 ERROR 等級 finding」。用 `--error` 當閘門的結果是這條 lane 永遠紅燈，於是沒有人會再看它 | 改由 `bin/lib/sarif_gate.py` 依嚴重度判定，warning 仍然完整顯示 |
 | A13 | **`.trivyignore.yaml` 從未被引用** | 檔案存在、內容也寫好了，但 `trivy.yaml` 沒有 `ignorefile:` —— 於是「無 HIGH/CRITICAL 除非有到期日的例外」這個閘門其實不成立 | 接上 `ignorefile:`，並補上兩筆有 `expired_at` 的例外 |
-| A14 | **`.semgrepignore` 放錯位置** | Semgrep 只在「掃描目標的根目錄」找它。原本放在 `docker/security/semgrep/` 底下，從來沒被讀到 | 移到專案根目錄 |
+| A14 | **`.semgrepignore` 放錯位置** | Semgrep 只在「掃描目標的根目錄」找它。原本放在 `env/docker/security/semgrep/` 底下，從來沒被讀到 | 移到專案根目錄 |
 | A15 | **Trivy 掃到 `ansible/collections/`** | 那是 ansible-galaxy 下載的上游程式碼，回報的是別人測試夾具裡的問題 | 加入 `skip-dirs` |
 | A16 | **ZAP 的 `baseline.conf` 路徑指向未掛載的位置** | `-c /zap/wrk/../../../docker/...` 在容器內解析成 `/docker/...`，而只有 `reports/dast/<mode>` 被掛到 `/zap/wrk` | 多掛一個唯讀 volume 並改用容器內絕對路徑 |
 | A17 | **`scan.sh` 的兩個累加器缺陷** | `_scan_code` 把 SonarQube 的 rc 寫進呼叫者的 `worst` 但 return 的是 `_lane_worst`；`_scan_secrets` return 一個在該函式裡不存在的變數 | 兩處都改成回傳自己的 lane 累加器 |
@@ -334,7 +334,7 @@ claude.md §12.5 原本寫「連 `ansible-playbook --syntax-check` 都跑不了�
 
 起點是 739 個 finding。其中 673 個是 `var-naming[no-role-prefix]`，
 與本專案「用 `group_vars/all/main.yml` 當單一事實來源」的架構直接衝突，已在
-`ansible/.ansible-lint` 中附理由關閉。其餘逐一修正或以 inline `noqa` 加註理由。
+`env/ansible/.ansible-lint` 中附理由關閉。其餘逐一修正或以 inline `noqa` 加註理由。
 
 **仍然沒有驗證的**：任何需要真實目標主機的東西 —— MyGuard 套件解析、
 MySQL 8.4 from Oracle repo、certbot 的 snakeoil bootstrap、release prune 的

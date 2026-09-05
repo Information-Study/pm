@@ -8,8 +8,8 @@
   * usage 說 cx scan 吃 --fail-on-findings，parser 直接拒絕
   * 補全的 $verbs 有 acl，case 沒有 acl 分支
   * TUI 的 galaxy 指到 `cx setup galaxy`，那個子指令不存在
-  * ansible/README.md 說「從未在真機跑過」，另外兩份文件記著兩次完整部署
-  * ansible/README.md 教人設 waf_mode，沒有任何 role 讀那個變數
+  * env/ansible/README.md 說「從未在真機跑過」，另外兩份文件記著兩次完整部署
+  * env/ansible/README.md 教人設 waf_mode，沒有任何 role 讀那個變數
   * CX_SETUP_SYSTEM_TOOLS 有 acl，_setup_system_have 沒有 acl 分支
 
 這類缺陷的共通點是：單看任何一個檔案都完全正確。所以檢查一定要**跨檔比對**，
@@ -415,9 +415,9 @@ def check_tui():
 # ══ DOCS：文件與實作是否一致 ═══════════════════════════════════════════════
 
 def check_docs():
-    # ── 反向警語。ansible/README.md 說「從未在真機執行過」，而 progress 與
+    # ── 反向警語。env/ansible/README.md 說「從未在真機執行過」，而 progress 與
     #    ansible-reference 都記著實跑結果。三份文件不可能都對。
-    ans = read_required("ansible/README.md", "DOC-ansible-run",
+    ans = read_required("env/ansible/README.md", "DOC-ansible-run",
                         "ansible/README 的執行狀態與實測一致")
     if ans is None:
         ans = ""                    # 已經 row() 過 FAIL，後面的比對照跑不會誤判
@@ -446,9 +446,9 @@ def check_docs():
     # ── 文件教的變數要真的被讀。waf_mode 是這一類的原型。
     prescribed = set(re.findall(r"`(waf_[a-z_]+)`\s*\|", ans))
     code = "".join(read(str(p.relative_to(ROOT)))
-                   for p in list((ROOT / "ansible/roles").rglob("*.yml"))
-                   + list((ROOT / "ansible/roles").rglob("*.j2"))
-                   + list((ROOT / "ansible/inventory").rglob("*.yml")))
+                   for p in list((ROOT / "env/ansible/roles").rglob("*.yml"))
+                   + list((ROOT / "env/ansible/roles").rglob("*.j2"))
+                   + list((ROOT / "env/ansible/inventory").rglob("*.yml")))
     dead = sorted(v for v in prescribed if v not in code)
     if dead:
         row("FAIL", "DOC-ansible-vars", "README 教的變數都真的被 role 讀取",
@@ -459,7 +459,7 @@ def check_docs():
 
     # ── group_vars/all 是目錄不是檔。指錯路徑的人會編輯一個不被載入的檔。
     wrong = []
-    for rel in ("ansible/README.md", "docs/ansible-reference.md",
+    for rel in ("env/ansible/README.md", "docs/ansible-reference.md",
                 "docs/docker-verification.md", "claude.md"):
         for line in read(rel).splitlines():
             if "group_vars/all.yml" not in line:
@@ -487,9 +487,9 @@ def check_docs():
     # .conf 看 SecRule 行；.yml 看 condition: 欄位。
     hits = []
     for rel, keep in (
-            ("docker/waf/exclusions-before/pm-exclusions-before.conf",
+            ("env/docker/waf/exclusions-before/pm-exclusions-before.conf",
              lambda l: l.lstrip().startswith("SecRule")),
-            ("ansible/roles/nginx_myguard/defaults/main.yml",
+            ("env/ansible/roles/nginx_myguard/defaults/main.yml",
              lambda l: l.lstrip().startswith("condition:")),
     ):
         for line in read(rel).splitlines():
@@ -755,8 +755,8 @@ def check_template_identity():
         else:
             row("PASS", "TPL-sonar", "sonar-project.properties 與 .cxroot 一致", want)
 
-    gv = read("ansible/inventory/group_vars/all/main.yml")
-    if not exists("ansible/inventory/group_vars/all/main.yml"):
+    gv = read("env/ansible/inventory/group_vars/all/main.yml")
+    if not exists("env/ansible/inventory/group_vars/all/main.yml"):
         row("SKIP", "TPL-ansible", "group_vars 的 app_slug 與 .cxroot 一致", "讀不到 group_vars")
     else:
         m = re.search(r'^app_slug:\s*"?([^"\s]+)"?', gv, re.M)
@@ -775,7 +775,7 @@ def check_template_identity():
     #   於是 cx rename shop 之後前兩者變成 shop_servers、產生出來的 hosts.yml
     #   仍是 pm_servers，ansible 比對到 0 台主機卻只印 warning 並回 0。
     #   兩方一致不代表三方一致，而漏掉的那一方正是產生檔案的那一個。
-    site = read("ansible/site.yml") or ""
+    site = read("env/ansible/site.yml") or ""
     dep = read("bin/cmd/deploy.sh") or ""
     inv = read("bin/lib/inventory.py") or ""
     groups = set(re.findall(r"^\s*hosts:\s*(\S+)", site, re.M)) - {"localhost"}
@@ -805,15 +805,15 @@ def check_php_prefix_parity():
     """Docker 的 edge 與原生的 nginx 必須把**同一組前綴**交給 PHP。
 
     這一族差異的症狀都一樣：某個路徑在一邊正常、在另一邊 404，而且看起來
-    像「應用壞了」而不是「路由設錯了」。docker/edge/conf.d/default.conf 自己
+    像「應用壞了」而不是「路由設錯了」。env/docker/edge/conf.d/default.conf 自己
     第 55 行的註解就記過同一種故障（Filament 的資產被前端吃掉 → 後台沒樣式）。
 
     2026-09-05 實測的分岔：/filament /login /logout /broadcasting 四個前綴在
     Docker 側會掉進 catch-all 交給 Nuxt（回 Nitro 的 404），原生側則交給 PHP。
     """
-    gv = read("ansible/inventory/group_vars/all/main.yml")
-    conf = read("docker/edge/conf.d/default.conf")
-    if not exists("ansible/inventory/group_vars/all/main.yml") or not exists("docker/edge/conf.d/default.conf"):
+    gv = read("env/ansible/inventory/group_vars/all/main.yml")
+    conf = read("env/docker/edge/conf.d/default.conf")
+    if not exists("env/ansible/inventory/group_vars/all/main.yml") or not exists("env/docker/edge/conf.d/default.conf"):
         row("SKIP", "A13-parity", "Docker 與原生的 PHP 前綴一致", "少了其中一份設定")
         return
 
@@ -1000,6 +1000,142 @@ def check_git_branch_model():
             + f"；讀取端 {len(used)} 個")
 
 
+# ══ LAY：版面契約 ═════════════════════════════════════════════════════════
+#
+# 本專案的目錄版面是**編譯期常數，不是設定項**。
+# `src/` 與 `env/` 這兩個名字寫死在 shell、Python、Dockerfile、.dockerignore、
+# sonar-project.properties 與 .vscode/launch.json 裡。
+#
+# 為什麼不引入 CX_DIR_* 常數：那只能覆蓋一半的系統。bin/lib/*.py 是子行程
+# （只看得到 export 的變數），而 Dockerfile / .dockerignore /
+# sonar-project.properties / ansible YAML **完全讀不到 shell 變數**。
+# 結果會是「130 處變成可設定，40 處仍是死的字面值」—— 有人改了變數，
+# shell 那半跟著走、Dockerfile 那半不動，於是 .dockerignore 不再排除
+# backend/.env，而 Dockerfile 是 COPY src/backend/ ./。
+# 更糟的是那種半套抽象會**通過**「定義了沒人讀」那一類檢查（shell 確實讀了）。
+#
+# 所以是字面替換 + 底下這三條檢查。它們是這個決定的安全網，不是加分項。
+
+# ⚠ 這些字串是**刻意的舊字面**，不可以「順手」加上 env/ 前綴。
+#   2026-09-06 的遷移腳本就是這樣把這張表自己改掉的 —— 於是檢查開始尋找
+#   **新**路徑，全樹到處都是，數字從 409 變成 414 而看起來像是改壞了。
+#   用 "docker" "/compose/" 這種拼接寫法，讓任何以「整段路徑」為單位的
+#   批次替換都比對不到它。
+_D, _A = "docker", "ansible"
+LEGACY_LITERALS = tuple(
+    _D + x for x in ("/compose/", "/env/", "/php/", "/nuxt/", "/edge/", "/waf/",
+                     "/entrypoint/", "/security/", "/legacy/", "/ansible-target/")
+) + tuple(
+    _A + x for x in ("/site.yml", "/inventory/", "/roles/", "/playbooks/",
+                     "/README.md", "/ansible.cfg", "/requirements.yml")
+)
+# 這些前綴之後出現「舊字面」是因為它是**新路徑的後綴**，不算違規。
+LEGACY_ALLOW_PREFIX = ("env/", "$CX_ROOT/env/", "./env/", "/env/", "'env/", '"env/')
+
+
+def check_layout_legacy():
+    """全樹掃舊版面的字面路徑。
+
+    字面替換的代價就是「漏改一處不會有人告訴你」—— 這條檢查把那個代價買回來。
+    掃描範圍**包含 .md**：文件裡的舊路徑不會讓程式壞掉，但會讓下一個人
+    cd 到一個不存在的目錄，然後懷疑自己而不是懷疑文件。
+    """
+    exts = {".sh", ".py", ".bash", ".bats", ".yml", ".yaml", ".md",
+            ".json", ".properties", ".conf", ".j2", ".example"}
+    skip = {".git", "node_modules", "vendor", ".nuxt", ".output",
+            "collections", "reports", ".cx", "legacy", "pm_archive"}
+    hits = []
+    for q in ROOT.rglob("*"):
+        if not q.is_file():
+            continue
+        rel_parts = q.relative_to(ROOT).parts
+        if skip & set(rel_parts):
+            continue
+        if q.suffix not in exts and q.name not in (".dockerignore", ".semgrepignore",
+                                                   ".gitignore", "cx", "Dockerfile"):
+            continue
+        rel = str(q.relative_to(ROOT))
+        try:
+            txt = q.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for ln, line in enumerate(txt.splitlines(), 1):
+            for old in LEGACY_LITERALS:
+                idx = line.find(old)
+                while idx != -1:
+                    if not any(line[:idx].endswith(a) for a in LEGACY_ALLOW_PREFIX):
+                        hits.append(f"{rel}:{ln}:{old}")
+                        break
+                    idx = line.find(old, idx + 1)
+    if hits:
+        by_file = {}
+        for h in hits:
+            by_file.setdefault(h.split(":")[0], 0)
+            by_file[h.split(":")[0]] += 1
+        top = sorted(by_file.items(), key=lambda kv: -kv[1])[:6]
+        row("FAIL", "LAY-legacy", "全樹沒有殘留的舊版面路徑",
+            f"{len(hits)} 處於 {len(by_file)} 個檔；最多的："
+            + " ".join(f"{f}({n})" for f, n in top))
+    else:
+        row("PASS", "LAY-legacy", "全樹沒有殘留的舊版面路徑",
+            f"{len(LEGACY_LITERALS)} 個字面值都不再出現")
+
+
+def check_layout_ignore():
+    """src/ 不可被 ignore；祕密檔必須被 ignore。
+
+    這是整個版面遷移裡唯一「一次失誤不可撤回」的面向：
+      * src/ 被 ignore → git submodule add 失敗（重建流程會壞）
+      * env/docker/ansible-target/authorized_keys 沒被 ignore → 進 PUBLIC 歷史，
+        而 gitleaks 掃不到 SSH 公鑰（它不是 gitleaks 的 pattern）
+    所以這條檢查是那個檔案唯一的防線。
+    """
+    import subprocess
+    if not (ROOT / ".git").exists():
+        row("SKIP", "LAY-ignore", "版面路徑的忽略規則正確", "不是 git 工作區")
+        return
+
+    def ignored(rel):
+        r = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "--no-index", "-q", rel],
+                           capture_output=True)
+        return r.returncode == 0
+
+    bad = []
+    for rel in ("src", "src/backend", "src/frontend"):
+        if ignored(rel):
+            bad.append(f"{rel} 被 ignore —— git submodule add 會失敗")
+    for rel in ("env/docker/ansible-target/authorized_keys",
+                "env/ansible/inventory/hosts.yml"):
+        if not ignored(rel):
+            bad.append(f"{rel} 沒有被 ignore —— PUBLIC repo，而 gitleaks 掃不到這一類")
+    if bad:
+        row("FAIL", "LAY-ignore", "版面路徑的忽略規則正確", "；".join(bad))
+    else:
+        row("PASS", "LAY-ignore", "版面路徑的忽略規則正確", "src/ 可加、祕密檔已排除")
+
+
+def check_layout_version():
+    """.cxroot 的 CX_LAYOUT_VERSION 必須等於 common.sh 的 CX_LAYOUT_REQUIRED。
+
+    2026-09 之前這個變數只在 doctor.sh 被印出來，從來沒有被比較過 ——
+    也就是一個裝飾。這條檢查同時防止它再度退化成裝飾：
+    common.sh 拿掉 CX_LAYOUT_REQUIRED 的話這裡會 FAIL。
+    """
+    cxroot = read(".cxroot")
+    common = read("bin/lib/common.sh")
+    m1 = re.search(r"^CX_LAYOUT_VERSION=(\d+)", cxroot, re.M)
+    m2 = re.search(r"CX_LAYOUT_REQUIRED=(\d+)", common)
+    if not m1 or not m2:
+        row("FAIL", "LAY-version", "版面版號雙向一致",
+            f".cxroot={'有' if m1 else '無'}、common.sh 的 CX_LAYOUT_REQUIRED="
+            f"{'有' if m2 else '無'} —— 少了任一邊，版號就退回裝飾")
+    elif m1.group(1) != m2.group(1):
+        row("FAIL", "LAY-version", "版面版號雙向一致",
+            f".cxroot 是 v{m1.group(1)}，但這一版 cx 需要 v{m2.group(1)}")
+    else:
+        row("PASS", "LAY-version", "版面版號雙向一致", f"v{m1.group(1)}")
+
+
 def check_ansible_split():
     """A15：migration 的 gate 與 deploy_backend 的 gate 必須是同一個群組。
 
@@ -1014,7 +1150,7 @@ def check_ansible_split():
     web_backend 時，如果只改了 role 的 gate 而忘了改斷言，那條斷言會**通過**，
     然後 migration 一次都不跑。這條檢查盯的就是那個「忘了一起改」。
     """
-    site = read("ansible/site.yml")
+    site = read("env/ansible/site.yml")
     if not site:
         row("SKIP", "ANS-split", "A15 斷言與 deploy_backend 的 gate 同群組", "讀不到 site.yml")
         return
@@ -1185,7 +1321,7 @@ def check_pma_auth():
     bin/cmd/pma.sh 一直是照「cookie 認證」寫的（它叫使用者去看 .env 的
     DB_USERNAME / DB_PASSWORD），所以這是設定與自己的說明不一致，不是取捨。
     """
-    files = [f"docker/compose/{m}.yml" for m in ("dev", "test", "prod")]
+    files = [f"env/docker/compose/{m}.yml" for m in ("dev", "test", "prod")]
     present = [f for f in files if exists(f)]
     if not present:
         row("SKIP", "SEC-pma-auth", "phpMyAdmin 保留登入認證", "找不到任何 compose overlay")
@@ -1223,8 +1359,8 @@ def check_log_dir_mode():
     每次部署互相翻對方的 mode，永遠 changed —— 所以順便比對它們有沒有漂移。
     """
     srcs = {
-        "common": ("ansible/roles/common/defaults/main.yml", r"^common_log_dir_mode:\s*\"?([0-7]{3,4})\"?"),
-        "php": ("ansible/roles/php/defaults/main.yml", r"^php_log_dir_mode:\s*\"?([0-7]{3,4})\"?"),
+        "common": ("env/ansible/roles/common/defaults/main.yml", r"^common_log_dir_mode:\s*\"?([0-7]{3,4})\"?"),
+        "php": ("env/ansible/roles/php/defaults/main.yml", r"^php_log_dir_mode:\s*\"?([0-7]{3,4})\"?"),
     }
     modes = {}
     for name, (f, pat) in srcs.items():
@@ -1238,7 +1374,7 @@ def check_log_dir_mode():
         modes[name] = m.group(1)
 
     # nodejs_pm2 的 app_log_dir 是清單裡的一項，抓它自己那一段
-    f = "ansible/roles/nodejs_pm2/tasks/pm2.yml"
+    f = "env/ansible/roles/nodejs_pm2/tasks/pm2.yml"
     if exists(f):
         m = re.search(r'-\s*path:\s*"\{\{\s*app_log_dir\s*\}\}"\n(?:\s+\w+:.*\n)*?\s+mode:\s*"([0-7]{3,4})"',
                       read(f))
@@ -1278,6 +1414,9 @@ def main():
         check_log_dir_mode()
         check_git_subcommands()
         check_git_branch_model()
+        check_layout_legacy()
+        check_layout_ignore()
+        check_layout_version()
     if "tui" in families:
         check_tui()
     if "docs" in families:

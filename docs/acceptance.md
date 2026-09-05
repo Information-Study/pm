@@ -20,7 +20,7 @@
 | R3 | DevSecOps 四道防線（Quality → SAST → SCA → DAST）＋ ModSecurity WAF | `cx scan all`、`cx verify waf`（§4） | ✅ |
 | R4 | Ansible 原生部署（PM2 + Nginx + MyGuard APT） | `cx deploy syntax/lint/check/apply`（§5） | ✅ 對 systemd 容器；雲端機仍未驗 |
 | R5 | 統一入口 `cx`（TUI + CLI，全域可用，涵蓋 git／ansible／npm／php／artisan／composer） | `cx verify cli tui`、§3 的動詞矩陣 | ✅ |
-| R6 | 文件（`claude.md`／`README.md`／`ansible/README.md`） | `cx verify docs` | ✅ |
+| R6 | 文件（`claude.md`／`README.md`／`env/ansible/README.md`） | `cx verify docs` | ✅ |
 | R7 | facl 檔案權限 | `cx verify acl`、`cx acl check`（§7） | ✅ |
 | R8 | 完整測試清單並跑完 | 本文件 + `reports/verify/<時間戳>.md` | ✅ |
 
@@ -48,9 +48,9 @@ cx test all            # 後端 PHPUnit + 前端型別檢查
 | MySQL | 127.0.0.1:3306 | 127.0.0.1:13306 | **不發布** | `D13`、`D7` |
 | phpMyAdmin | 8891 | **18891** | **無** | `check_prod_closed` |
 | ModSecurity WAF | — | 18081 | — | `waf-*` |
-| xdebug | 有（`debug`） | 裝了但預設 `off`（`docker/env/test.env` 的 `XDEBUG_MODE=off`；`cx test coverage` 會臨時打開） | **無**（build 斷言） | `D12`、`rt-*` |
+| xdebug | 有（`debug`） | 裝了但預設 `off`（`env/docker/compose/test.env` 的 `XDEBUG_MODE=off`；`cx test coverage` 會臨時打開） | **無**（build 斷言） | `D12`、`rt-*` |
 | `display_errors` | On | **Off** | **Off** | `zz-mode-*.ini` |
-| `APP_DEBUG` | true | false | false | `docker/env/*.env` |
+| `APP_DEBUG` | true | false | false | `env/docker/compose/*.env` |
 | 原始碼掛載 | bind mount | 烘進映像 | 烘進映像 | `D14` |
 | supervisord（5 個程序） | ✔ | ✔ | ✔ | `D5-*` |
 | 一次性掃描容器 | — | ✔ | — | `3.8` |
@@ -194,7 +194,7 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 > 2026-09-05 的安全審查實測：`curl http://127.0.0.1:8891/` 不帶任何 cookie，
 > 回的是 140,814 bytes 的**已登入**頁面（`<title>127.0.0.1:8891 / mysql |
 > phpMyAdmin 5.2.3</title>`、內文有 `root@172.18.0.4` 與 logout 連結），
-> 不是登入表單。原因是 `docker/compose/{dev,test}.yml` 設了 `PMA_USER: root`，
+> 不是登入表單。原因是 `env/docker/compose/{dev,test}.yml` 設了 `PMA_USER: root`，
 > 而官方映像一看到 PMA_USER 就把 `auth_type` 從 cookie 換成 config ——
 > 登入畫面整個消失，任何連得到那個埠的人都自動以 **MySQL root** 登入。
 >
@@ -267,7 +267,7 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 | ④ DAST — 主動探測 | ✅ 攻擊 6/6 全擋（100%）、正常請求 **0 誤擋**（含 Livewire POST） |
 | 祕密掃描 — gitleaks | ✅ 三個 repo 全歷史乾淨，檔名 `gitleaks-{pm,backend,frontend}.json` |
 
-引擎在探測後**自動還原**成 `docker/env/test.env` 宣告的 `DetectionOnly`（實測確認）。
+引擎在探測後**自動還原**成 `env/docker/compose/test.env` 宣告的 `DetectionOnly`（實測確認）。
 
 ### WAF（引擎切成 `On` 單獨驗）
 

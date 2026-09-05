@@ -25,7 +25,7 @@ def warn(code, f, msg): warns.append((code, f, msg))
 # 八百多筆「別人的 command 沒有 changed_when」，訊號被雜訊完全淹沒，
 # 而那些違規我們既不該修也修不了。
 #
-# 與 ansible/.ansible-lint 的 exclude_paths 保持一致。
+# 與 env/ansible/.ansible-lint 的 exclude_paths 保持一致。
 EXCLUDE_PARTS = {'collections', '.cache', '.ansible', '.git', '__pycache__'}
 
 

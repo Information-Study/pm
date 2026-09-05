@@ -176,7 +176,7 @@ _acl_need_fs() {
 # 身分解析
 # ---------------------------------------------------------------------------
 # 網頁伺服器的身分。本機開發時容器裡的 www-data 已經被對齊成 APP_UID
-#（見 docker/php/Dockerfile 的 groupmod/usermod），所以預設讀 .env 的 APP_UID。
+#（見 env/docker/php/Dockerfile 的 groupmod/usermod），所以預設讀 .env 的 APP_UID。
 # 讀不到就退回目前使用者 —— 那代表容器與 host 同 uid，本來就不需要 ACL，
 # 但仍然把規則寫上去，這樣之後 APP_UID 改了也不會突然壞掉。
 _acl_web_id() {

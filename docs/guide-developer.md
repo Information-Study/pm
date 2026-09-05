@@ -323,8 +323,8 @@ echo $PATH | tr : '\n' | grep '\.local/bin' # 確認
 
 模式由全域旗標 `--mode` 決定（預設 `dev`），也可以用前綴動詞 `cx dev …` / `cx test …` /
 `cx prod …`。`cx_compose_init`（`bin/lib/common.sh`）據此決定三件事：compose 的
-`-p <專案>_<模式>`、疊在 `docker-compose.yml` 上的 `docker/compose/<模式>.yml`，
-以及接在根 `.env` 之後的 `--env-file docker/env/<模式>.env`（後面的優先，模式專屬的埠
+`-p <專案>_<模式>`、疊在 `docker-compose.yml` 上的 `env/docker/compose/<模式>.yml`，
+以及接在根 `.env` 之後的 `--env-file env/docker/compose/<模式>.env`（後面的優先，模式專屬的埠
 才蓋得掉通用值）。
 
 ### 2.1 什麼時候用哪一個
@@ -352,7 +352,7 @@ IDE 端監聽 `XDEBUG_CLIENT_PORT`（預設 `9003`）。
 
 ### 2.2 埠段對照表
 
-來源是 `docker/env/<模式>.env`（可以改），實際的 `ports:` 在 `docker/compose/<模式>.yml`。
+來源是 `env/docker/compose/<模式>.env`（可以改），實際的 `ports:` 在 `env/docker/compose/<模式>.yml`。
 
 | 服務 | dev | test | prod | 變數 |
 |---|---|---|---|---|
@@ -611,7 +611,7 @@ dev 與 test 都有 phpMyAdmin；**prod 刻意沒有**（管理介面是額外�
 MySQL 根本不發布埠）。在 prod 模式下這個動詞會回 `EX_USAGE`(2) 並告訴你改用
 `cx --mode prod db shell`。
 
-埠是從**合併後的 compose 設定**讀出來的，不是寫死 8891 —— `docker/env/dev.env`
+埠是從**合併後的 compose 設定**讀出來的，不是寫死 8891 —— `env/docker/compose/dev.env`
 可以覆寫，寫死就會給出錯的網址。密碼不會印出來（終端機 scrollback 與 tmux buffer 會留），
 只告訴你長度與去哪裡看。
 
@@ -1075,7 +1075,7 @@ cx acl drop                       # 移除 ACL，回到純 chmod
 
 xdebug：dev 模式已經開（`XDEBUG_MODE=debug`、`start_with_request=trigger`），
 IDE 端監聽 `9003`，容器連回 host 用 `host.docker.internal`（compose 的 `extra_hosts`
-已經處理）。連不上時把 `docker/env/dev.env` 的 `XDEBUG_LOG_LEVEL` 調高（1~7）才有線索，
+已經處理）。連不上時把 `env/docker/compose/dev.env` 的 `XDEBUG_LOG_LEVEL` 調高（1~7）才有線索，
 **查完記得調回 0**。
 
 ### 8.2 最常見的幾個症狀
@@ -1084,7 +1084,7 @@ IDE 端監聽 `9003`，容器連回 host 用 `host.docker.internal`（compose �
 |---|---|---|
 | `./cx: Permission denied` | 執行位元掉了（通常是 git index 記成 100644） | `cx doctor` 的「可執行位元」區段會指出來 |
 | `cx: 找不到 .cxroot` | 不在專案內，或 `.cxroot` 被刪 | `cx --root <路徑> …` |
-| `Bind for 0.0.0.0:8080 failed: port is already allocated` | 別的東西先佔了埠（主機的 nginx、另一個專案、Windows 那邊的服務） | `ss -ltnp "sport = :8080"`；或改 `docker/env/<模式>.env` 的埠 |
+| `Bind for 0.0.0.0:8080 failed: port is already allocated` | 別的東西先佔了埠（主機的 nginx、另一個專案、Windows 那邊的服務） | `ss -ltnp "sport = :8080"`；或改 `env/docker/compose/<模式>.env` 的埠 |
 | `env file ... not found` | 缺 `.env` | `cx setup env` |
 | entrypoint 在 migrate 炸 `Access denied for user` | `.env` 比 MySQL volume 新 —— MySQL 只在資料目錄是空的時候建帳號 | 保留資料就把密碼改回舊值；丟掉資料就 `cx <模式> down -v` |
 | `EACCES` / `permission denied`，訊息指向 nuxt 或 composer | 具名 volume 的內容被種成 `root:root` | `cx <模式> down && docker volume rm <專案>_<volume>`；`cx up` 會偵測並指路 |

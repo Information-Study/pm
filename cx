@@ -45,7 +45,7 @@ case $CX_UI in
     auto|whiptail|dialog|plain) : ;;
     *) printf 'cx: --ui 只接受 whiptail|dialog|plain（收到 %s）\n' "$CX_UI" >&2; exit 2 ;;
 esac
-# CX_MODE 會被拿去組 -p pm_${CX_MODE} 與 -f docker/compose/${CX_MODE}.yml，
+# CX_MODE 會被拿去組 -p pm_${CX_MODE} 與 -f env/docker/compose/${CX_MODE}.yml，
 # 不驗證等於留一個檔名／專案名注入面給 Phase 2。
 case $CX_MODE_OVERRIDE in
     ''|dev|test|prod) : ;;
@@ -140,6 +140,11 @@ export CX_VERB=$verb
 case $verb in
     help|-h|--help) verb=help ;;
 esac
+
+# 版面閘門。必須排在 CX_VERB export 之後（豁免清單要看動詞），
+# 而且在解析指令檔之前 —— 舊版面的樹會在 . "$file" 之後用一堆
+# 看不出關聯的方式壞掉，每個訊息都指向不同的方向。
+cx_assert_layout
 
 file="$CX_ROOT/bin/cmd/${CX_CMD_FILE_OF[$verb]:-$verb}.sh"
 [[ -f $file ]] || cx_die "$EX_USAGE" "未知的指令：'$verb'（試試 cx help）"

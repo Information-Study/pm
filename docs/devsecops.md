@@ -125,7 +125,7 @@ SARIF 也是 GitHub Code Scanning 吃的格式，同一份輸出兩用。
 ### `.semgrepignore` 必須在專案根目錄
 
 Semgrep 只在**掃描目標的根目錄**找 `.semgrepignore`。
-放在 `docker/security/` 底下完全不會被讀到，而且**不會有任何警告** ——
+放在 `env/docker/security/` 底下完全不會被讀到，而且**不會有任何警告** ——
 你只會看到掃描時間變長、finding 變多，然後以為那是正常的。
 
 ---
@@ -229,7 +229,7 @@ ModSecurity + OWASP CRS，只在 test 模式的 `waf` 服務裡。
 自訂的 nginx 設定要掛成 **template**：
 
 ```yaml
-- ./docker/waf/proxy_backend.conf:/etc/nginx/templates/includes/proxy_backend.conf:ro
+- ./env/docker/waf/proxy_backend.conf:/etc/nginx/templates/includes/proxy_backend.conf:ro
 ```
 
 掛進 `/etc/nginx/includes/` 會跳過 envsubst，設定裡的變數不會被展開。

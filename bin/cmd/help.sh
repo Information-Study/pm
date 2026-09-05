@@ -58,7 +58,7 @@ cmd_help_main() {
   db status|shell|migrate|fresh|seed|dump|restore|admin|wait
   pma [--url]       開啟 phpMyAdmin（dev 與 test 有；prod 刻意沒有）
   open [目標]       開啟服務網址：front / back / api / pma / sonar / list
-                    埠段跟著 --mode 走（docker/env/<模式>.env）。--url 只印不開
+                    埠段跟著 --mode 走（env/docker/compose/<模式>.env）。--url 只印不開
   style [範圍]      程式碼風格，**會改檔案**：PHP 用 Pint、前端用 Prettier
                     範圍：php / js / all（預設 all）；--check 只檢查不改
                     兩個工具都已隨既有相依裝好，不需要另外安裝
@@ -94,7 +94,7 @@ cmd_help_main() {
 ── 第三階段：部署 ───────────────────────────────────────────────────────────
   prod up -d --build   起正式環境的容器（只發布 80）
   deploy hosts init|add|rm|show|check|edit
-                    產生與驗證 ansible/inventory/hosts.yml（唯一沒有工具幫忙的必要檔案）
+                    產生與驗證 env/ansible/inventory/hosts.yml（唯一沒有工具幫忙的必要檔案）
   deploy syntax     ansible-playbook --syntax-check（三個 playbook）
   deploy lint       ansible-lint（production profile）+ yamllint
   deploy check [限制]  --check --diff 乾跑
@@ -155,7 +155,7 @@ cmd_help_main() {
   uninstall         移除（需確認）
 
 三個模式可以同時運行：不同的 compose project（-p <專案>_dev|_test|_prod）隔離
-容器／網路／volume，不同的 host 埠段（docker/env/<mode>.env）隔離埠。
+容器／網路／volume，不同的 host 埠段（env/docker/compose/<mode>.env）隔離埠。
 -p 不隔離 host 埠 —— 只做前者不做後者，第二個模式會 port is already allocated。
 
 驗收狀態見 docs/docker-verification.md 與 reports/verify/。

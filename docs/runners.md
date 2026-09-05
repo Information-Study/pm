@@ -57,7 +57,7 @@ runner: native（指定） — composer 2.10.3
 ### docker runner
 
 - Docker daemon 可用
-- `docker-compose.yml` + `docker/compose/<mode>.yml` + Dockerfile
+- `docker-compose.yml` + `env/docker/compose/<mode>.yml` + Dockerfile
 
 不需要 host 上有 php / composer / node —— 全部在映像裡。
 

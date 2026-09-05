@@ -114,9 +114,9 @@ cx dev restart nuxt                   容器當時在跑，一定要重啟
 | 檔案 | 說明 |
 |---|---|
 | `.env` | `cx setup env` 會產生**新的隨機密碼**。新專案應該讓它重新產生，不要複製 |
-| `ansible/inventory/hosts.yml` | 真實主機清單，不進版控 |
-| `ansible/inventory/group_vars/all/vault.yml` | 加密的祕密 |
-| `ansible/inventory/group_vars/<env>.yml` | 環境別設定 |
+| `env/ansible/inventory/hosts.yml` | 真實主機清單，不進版控 |
+| `env/ansible/inventory/group_vars/all/vault.yml` | 加密的祕密 |
+| `env/ansible/inventory/group_vars/<env>.yml` | 環境別設定 |
 | `.cx/sonar-token` | SonarQube token |
 | `reports/db/` | 資料庫備份（是資料，不是產出物） |
 
@@ -163,8 +163,8 @@ cx dev restart nuxt                   容器當時在跑，一定要重啟
 | 位置 | 內容 |
 |---|---|
 | `README.md` / `claude.md` / `docs/` | 說明文字 |
-| `ansible/inventory/group_vars/all/main.yml` | `app_name` / `app_slug` / `app_domain`（Ansible 那邊的單一來源） |
-| `docker/env/*.env` | 埠段（想跟舊專案同時跑就一定要換 —— `-p` 只隔離容器，不隔離 host 埠） |
+| `env/ansible/inventory/group_vars/all/main.yml` | `app_name` / `app_slug` / `app_domain`（Ansible 那邊的單一來源） |
+| `env/docker/compose/*.env` | 埠段（想跟舊專案同時跑就一定要換 —— `-p` 只隔離容器，不隔離 host 埠） |
 | `sonar-project.properties` | `sonar.projectKey` / `sonar.projectName` |
 | `.gitmodules` | 子模組的 URL |
 
@@ -204,8 +204,8 @@ cx init shop [--org <組織>] [--gh | --remote <URL>] [--mode carryover|scaffold
 rsync -a --exclude .git --exclude node_modules --exclude vendor \
         --exclude .cx --exclude reports --exclude .env \
         --exclude ansible/collections \
-        --exclude 'ansible/inventory/hosts.yml' \
-        --exclude 'ansible/inventory/group_vars/all/vault.yml' \
+        --exclude 'env/ansible/inventory/hosts.yml' \
+        --exclude 'env/ansible/inventory/group_vars/all/vault.yml' \
         pm/ newproj/
 
 cd newproj
@@ -252,4 +252,4 @@ $EDITOR .cxroot          # 改專案名、GitHub 組織、repo 名
 | 39 項驗收清單 | `cx verify` |
 
 換掉名字之後這些全部可以直接用 —— 它們依賴的是 `.cxroot` 與
-`docker/env/*.env` 的變數，不是寫死的字串。
+`env/docker/compose/*.env` 的變數，不是寫死的字串。

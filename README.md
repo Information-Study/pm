@@ -97,10 +97,10 @@ node_modules）。**cx 絕不偷偷跑 sudo** —— sudo 不可用時它只把 
 `vendor/` 與 `node_modules/` 用具名 volume 蓋回去，所以容器內用的是 Alpine 上編譯的版本，
 不會跟 host 的混在一起。
 
-**Xdebug 的五個旋鈕**。⚠ 改的地方是 **`docker/env/<模式>.env`**，不是根目錄的 `.env` ——
-`cx` 給 compose 的 `--env-file` 順序是「根 `.env` → `docker/env/<模式>.env`」，
+**Xdebug 的五個旋鈕**。⚠ 改的地方是 **`env/docker/compose/<模式>.env`**，不是根目錄的 `.env` ——
+`cx` 給 compose 的 `--env-file` 順序是「根 `.env` → `env/docker/compose/<模式>.env`」，
 **後面的會覆蓋前面的**。所以在 `.env` 設 `XDEBUG_MODE=off` 對 dev 沒有效果，
-`docker/env/dev.env` 的 `debug` 會贏：
+`env/docker/compose/dev.env` 的 `debug` 會贏：
 
 | 變數 | 預設 | 說明 |
 |---|---|---|
@@ -206,12 +206,12 @@ xdebug 有裝但預設關閉（常開會讓 ZAP 的時間量測失真）。
 第一次用要先準備 inventory（不進版控）：
 
 ```bash
-cp ansible/inventory/hosts.yml.example              ansible/inventory/hosts.yml
-cp ansible/inventory/group_vars/staging.yml.example ansible/inventory/group_vars/staging.yml
-ansible-vault create ansible/inventory/group_vars/all/vault.yml
+cp env/ansible/inventory/hosts.yml.example              env/ansible/inventory/hosts.yml
+cp env/ansible/inventory/group_vars/staging.yml.example env/ansible/inventory/group_vars/staging.yml
+ansible-vault create env/ansible/inventory/group_vars/all/vault.yml
 ```
 
-完整步驟與變數表見 [`ansible/README.md`](ansible/README.md)。
+完整步驟與變數表見 [`env/ansible/README.md`](env/ansible/README.md)。
 
 ---
 
@@ -225,7 +225,7 @@ docker ps        # 三個模式共 15 個容器（dev 5 / test 6 / prod 4），�
 靠的是**兩件事同時成立**：
 
 1. 不同的 compose project（`-p pm_dev|pm_test|pm_prod`）→ 隔離容器、網路、volume
-2. 不同的 host 埠段（`docker/env/<mode>.env`）→ 隔離埠
+2. 不同的 host 埠段（`env/docker/compose/<mode>.env`）→ 隔離埠
 
 > `-p` **不隔離 host 埠**。只做第 1 件不做第 2 件，第二個模式會直接
 > `Bind for 0.0.0.0:8080 failed: port is already allocated`。
@@ -349,8 +349,8 @@ cx init shop --remote git@github.com:me/shop.git # 或接到現成的遠端
 rsync -a --exclude .git --exclude node_modules --exclude vendor \
         --exclude .cx --exclude reports --exclude .env \
         --exclude ansible/collections \
-        --exclude 'ansible/inventory/hosts.yml' \
-        --exclude 'ansible/inventory/group_vars/all/vault.yml' \
+        --exclude 'env/ansible/inventory/hosts.yml' \
+        --exclude 'env/ansible/inventory/group_vars/all/vault.yml' \
         pm/ newproj/
 
 cd newproj
@@ -365,7 +365,7 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 `.env.example` 會被複製過去（那是要的，`cx setup env` 拿它當範本），
 但如果你另外有 `.env.local`、`.env.production` 之類放了真值的檔案，要自己加上去。
 
-不改 `docker/env/*.env` 的埠段的話，新專案沒辦法跟本專案**同時**跑
+不改 `env/docker/compose/*.env` 的埠段的話，新專案沒辦法跟本專案**同時**跑
 （`-p` 隔離容器與網路，但不隔離 host 埠）。
 
 哪些目錄可以刪掉重建、哪些不可重建、換名字還要手動改什麼，見

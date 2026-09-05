@@ -276,7 +276,7 @@ _tui_git() {
 # 選單這一項存在的理由，就是讓「從全新 clone 走到部署」不需要離開 cx。
 _tui_deploy_hosts() {
     local c
-    while c=$(_tui_menu "主機設定（ansible/inventory/hosts.yml）" "返回" \
+    while c=$(_tui_menu "主機設定（env/ansible/inventory/hosts.yml）" "返回" \
         show  "列出目前的主機與群組" \
         add   "新增一台主機" \
         rm    "移除一台主機" \

@@ -12,9 +12,9 @@
 *.p12
 *.pfx
 auth.json
-/ansible/inventory/hosts.yml
-/ansible/**/vault_pass*
-/ansible/collections/
+/env/ansible/inventory/hosts.yml
+/env/ansible/**/vault_pass*
+/env/ansible/collections/
 
 # 掃描報告：排除「內容」而非目錄本身。
 # 寫成 /reports/ 會讓 git 連進去讀巢狀 .gitignore 都不做，
@@ -48,4 +48,11 @@ __pycache__/
 *.py[cod]
 
 # 本機 Ansible 目標容器的公鑰（每台機器不同，不進版控）
-/docker/ansible-target/authorized_keys
+#
+# ⚠ 這一條是**根錨定**的，而 env/docker/ 底下沒有任何巢狀 .gitignore 保護它
+#   （ansible/ 底下有自己的一份，所以那三條有雙重保險，這一條沒有）。
+#   搬目錄時漏改這一行 → git add -A 會把它掃進索引 → 推上 PUBLIC repo。
+#   cx git push 的 gitleaks **擋不住**：SSH 公鑰不是 gitleaks 的 pattern。
+#   這是整個版面遷移裡唯一「一次失誤 = 不可撤回」的路徑。
+#   cx verify cli 的 LAY-ignore 檢查專門盯這一行與 src/ 那幾條。
+/env/docker/ansible-target/authorized_keys

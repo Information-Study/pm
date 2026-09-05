@@ -35,7 +35,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | 3 | 前後端重建 + 三 Git 初始化 | ✅ 完成 | migration / 測試 / 端點皆已實跑 |
 | 4 | DevSecOps 四道防線 + `cx scan` | ✅ **四道全部跑得動** | 見下表 |
 | 5 | Ansible 12 role + playbook | ✅ **對真實 systemd 目標完整跑通**（475 task、failed=0） | `cx deploy apply`（見下方「Ansible 真機進度」） |
-| 6 | `README.md`、`ansible/README.md`、本文件 | ✅ 完成 | — |
+| 6 | `README.md`、`env/ansible/README.md`、本文件 | ✅ 完成 | — |
 
 ---
 
@@ -232,7 +232,7 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 | # | 缺陷 | 為什麼之前沒被發現 |
 |---|---|---|
 | 1 | **原生部署的 Filament 後台是全壞的** | `nginx_php_prefixes` 只有字面 `/livewire`，而 Livewire v4 的端點前綴由 `APP_KEY` 推導（`/livewire-<hash>/`）。比對不到就掉進 `location /` 被轉給 Nuxt。24.04／26.04 兩次 `failed=0` 的部署都帶著這個缺陷 —— 因為驗證只斷言「攻擊被擋成 403」，從來沒有斷言「正常的 Livewire 請求過得去」 |
-| 2 | **test 模式缺 phpMyAdmin** | 規格明文要求，`docker/env/test.env` 也預留了 `PHPMYADMIN_PORT=18891`，但 service 從來沒被寫出來 |
+| 2 | **test 模式缺 phpMyAdmin** | 規格明文要求，`env/docker/compose/test.env` 也預留了 `PHPMYADMIN_PORT=18891`，但 service 從來沒被寫出來 |
 | 3 | **`cx setup system` 一路把成功報成失敗** | `_setup_system_have` 少一個 `acl)` 分支，於是 apt 完全成功之後複驗仍判定「裝完還是不可用」 |
 
 新增的機制（讓同一類缺陷下次會被自動抓到）：
@@ -258,7 +258,7 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 | 原生（Ansible） | **4.30.0** | MyGuard 的 apt repo |
 
 也就是說 **Docker 側量到的 WAF 行為，跟實際上線的那一套不是同一個大版本**，
-而 `docker/waf/.../main.conf` 從一開始就是照 CRS 4 寫的
+而 `env/docker/waf/.../main.conf` 從一開始就是照 CRS 4 寫的
 （裡面那條 `setvar:tx.crs_setup_version=400` 與 901001 的註解）。
 
 把 Docker 釘到 `4.28.0-nginx-alpine-202608131208` 之後，主動探測立刻紅了：
@@ -459,7 +459,7 @@ migrate 前的 mysqldump、`config:cache` / `view:cache` / `event:cache` /
 流程：
 
 ```bash
-cp ansible/inventory/hosts.yml.example ansible/inventory/hosts.yml   # 填真實主機
+cp env/ansible/inventory/hosts.yml.example env/ansible/inventory/hosts.yml   # 填真實主機
 cx deploy ping staging          # 先確認 SSH 與 become
 cx deploy check staging         # --check --diff 乾跑
 cx deploy apply staging         # 真的跑（會列出目標主機並要求確認）
@@ -496,7 +496,7 @@ cx deploy apply staging         # 真的跑（會列出目標主機並要求確�
 | Docker daemon | ✅ 29.7.2 | — |
 | host 的 `pdo_sqlite` | ✅ 已安裝 | `cx --runner native test back` 可用（2026-09-04 實測 rc=0） |
 | SonarQube | 未啟動 | `cx scan code` 會略過 scanner 並警告 |
-| 目標主機 | ✅ 本機容器，24.04 與 26.04 各一 | `cx deploy apply` **完整實跑**（不是 --check）：24.04 ok=498、26.04 ok=491，兩邊 failed=0。Dockerfile 在 `docker/ansible-target/`（2026-09-05） |
+| 目標主機 | ✅ 本機容器，24.04 與 26.04 各一 | `cx deploy apply` **完整實跑**（不是 --check）：24.04 ok=498、26.04 ok=491，兩邊 failed=0。Dockerfile 在 `env/docker/ansible-target/`（2026-09-05） |
 
 > `sudo usermod -aG docker $USER` 之後**必須** `wsl --shutdown`（Windows 端）再重開。
 > `usermod` 只影響之後才建立的登入 session，既有的 shell 不會生效 —— 這是本專案

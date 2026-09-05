@@ -7,8 +7,8 @@
 
 | | 位置 | 誰產生 |
 |---|---|---|
-| Docker | `docker/edge/`（+ `docker/php/` 裡 app 容器自己的那一份） | 版控裡的靜態檔 |
-| 原生 | `ansible/roles/nginx_myguard/templates/*.j2` | Ansible 從變數渲染 |
+| Docker | `env/docker/edge/`（+ `env/docker/php/` 裡 app 容器自己的那一份） | 版控裡的靜態檔 |
+| 原生 | `env/ansible/roles/nginx_myguard/templates/*.j2` | Ansible 從變數渲染 |
 
 **兩套必須表現一致。** 不一致的症狀永遠是同一種：某個路徑在一邊正常、在另一邊
 404 或 413，而且看起來像「應用壞了」，不像「路由設錯了」。
@@ -29,12 +29,12 @@
   └─ edge 容器  nginx:1.30-alpine，:8080
         ├─ PHP 前綴  → upstream pm_php  → app 容器 :8080
         │                                   └─ app 容器內還有一層 nginx
-        │                                      （docker/php/nginx.conf）→ php-fpm 127.0.0.1:9000
+        │                                      （env/docker/php/nginx.conf）→ php-fpm 127.0.0.1:9000
         └─ 其餘全部  → upstream pm_nuxt → nuxt 容器 :3000
 ```
 
 ⚠ **app 容器裡還有一層 nginx。** 這是很容易忽略的一層：`docker/edge` 只是反向代理，
-真正把請求交給 php-fpm 的是 `docker/php/nginx.conf`。所以「PHP 收到的 body 上限」
+真正把請求交給 php-fpm 的是 `env/docker/php/nginx.conf`。所以「PHP 收到的 body 上限」
 是這兩層的**較小值**，不是 edge 那一層。
 
 ### 原生（Ansible）
@@ -61,7 +61,7 @@
 
 | | Docker | 原生 |
 |---|---|---|
-| 來源 | `docker/edge/conf.d/default.conf` | `nginx_php_prefixes`（`group_vars/all/main.yml`）→ `vhost.conf.j2` |
+| 來源 | `env/docker/edge/conf.d/default.conf` | `nginx_php_prefixes`（`group_vars/all/main.yml`）→ `vhost.conf.j2` |
 | 前綴 | `api admin sanctum up filament login logout broadcasting` | 同左 |
 | 邊界 | `^/(…)(/|$)` 正規式 | `^/(…)(/|$)` 正規式 |
 | Livewire | `^/livewire(-[0-9a-zA-Z]+)?/` | `nginx_php_prefix_patterns` 折進同一條正規式 |
@@ -94,8 +94,8 @@ substr(sha256(config('app.key') . 'livewire-endpoint'), 0, 8)
 
 | 項目 | Docker | 原生 | 一致？ |
 |---|---|---|---|
-| `client_max_body_size`（edge） | `64m`（`docker/edge/nginx.conf`） | `nginx_client_max_body_size` = `app_max_upload_mb + app_upload_nginx_overhead_mb` = `48m` | **否，刻意** |
-| `client_max_body_size`（app 內層） | `64m`（`docker/php/nginx.conf`） | n/a（原生只有一層） | — |
+| `client_max_body_size`（edge） | `64m`（`env/docker/edge/nginx.conf`） | `nginx_client_max_body_size` = `app_max_upload_mb + app_upload_nginx_overhead_mb` = `48m` | **否，刻意** |
+| `client_max_body_size`（app 內層） | `64m`（`env/docker/php/nginx.conf`） | n/a（原生只有一層） | — |
 | WAF 請求 body 上限 | `MODSEC_REQ_BODY_LIMIT` = `67108864`（64MB） | `waf_request_body_limit` = `(app_max_upload_mb + app_upload_waf_overhead_mb) × 1MiB` | 一致（見下） |
 | PHP 逾時 | `fastcgi_read_timeout 120s`（app 內層） | `nginx_fastcgi_read_timeout 70s` | **否** |
 | 前端 proxy 逾時 | `proxy_read_timeout 300s` | `nginx_proxy_read_timeout 60s` | **否** |
@@ -198,13 +198,13 @@ Docker 只有一個容器。**這代表 Docker 量不到負載分配與單一 fo
 
 | | 來源 | 版本 |
 |---|---|---|
-| Docker | `WAF_IMAGE`（`docker/compose/test.yml`） | 釘在 `4.28.0-nginx-alpine-…` |
+| Docker | `WAF_IMAGE`（`env/docker/compose/test.yml`） | 釘在 `4.28.0-nginx-alpine-…` |
 | 原生 | MyGuard 的 apt repo | 目前 `4.30.0` |
 
 > ⚠ 2026-09-05 之前 Docker 用的是 `owasp/modsecurity-crs:nginx-alpine` ——
 > 那個 tag **完全沒有版本成分**，而它當時指向的是 **CRS 3.3.10**。
 > 也就是說 Docker 側量到的 WAF 行為，跟實際上線的不是同一個大版本，
-> 而 `docker/waf/.../main.conf` 從一開始就是照 CRS 4 寫的。
+> 而 `env/docker/waf/.../main.conf` 從一開始就是照 CRS 4 寫的。
 > 現在由 `cx verify static` 的 **`4b`** 檢查拒絕無版本／`latest` 的 tag。
 
 ### 3.2 載入順序是這件事唯一重要的東西
@@ -290,7 +290,7 @@ cx dev dc exec edge nginx -t
 
 # 原生：看目標機上實際載入的設定（不加 -c，A12）
 cx deploy apply staging --tags nginx
-ansible -i ansible/inventory/hosts.yml staging -b -m command -a 'nginx -T'
+ansible -i env/ansible/inventory/hosts.yml staging -b -m command -a 'nginx -T'
 
 # WAF 主動探測（需要 test 堆疊起著）
 cx test up -d

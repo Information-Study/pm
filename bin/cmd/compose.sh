@@ -40,7 +40,7 @@ cx <模式> <動作> [參數...]      模式 = dev | test | prod（省略則用 
   cx dev down -v                砍掉開發環境連資料庫（需確認）
 
 三個模式可以同時運行：靠不同的 compose project（-p <專案>_dev|_test|_prod）
-隔離容器／網路／volume，靠 docker/env/<mode>.env 的不同埠段隔離 host 埠。
+隔離容器／網路／volume，靠 env/docker/compose/<mode>.env 的不同埠段隔離 host 埠。
 -p 不隔離 host 埠 —— 只做前者不做後者，第二個模式會 port is already allocated。
 TXT
 }
@@ -159,7 +159,7 @@ _compose_up() {
 }
 
 _compose_port_summary() {
-    local f="$CX_ROOT/docker/env/${CX_DC_MODE}.env"
+    local f="$CX_ROOT/env/docker/compose/${CX_DC_MODE}.env"
     [[ -f $f ]] || { printf '埠段未知'; return; }
     local http nuxt db
     http=$(grep -E '^EDGE_HTTP_PORT=' "$f" | cut -d= -f2)

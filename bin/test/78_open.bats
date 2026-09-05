@@ -42,8 +42,8 @@ setup() {
 }
 
 @test "網址跟著模式走（dev 與 test 的 edge 埠不同）" {
-    printf 'EDGE_HTTP_PORT=8080\n'  > "$CX_TEST_ROOT/docker/env/dev.env"
-    printf 'EDGE_HTTP_PORT=18080\n' > "$CX_TEST_ROOT/docker/env/test.env"
+    printf 'EDGE_HTTP_PORT=8080\n'  > "$CX_TEST_ROOT/env/docker/compose/dev.env"
+    printf 'EDGE_HTTP_PORT=18080\n' > "$CX_TEST_ROOT/env/docker/compose/test.env"
     run cx_bin --mode dev open front --url
     assert_out_has "8080"
     run cx_bin --mode test open front --url

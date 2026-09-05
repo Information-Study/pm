@@ -92,7 +92,7 @@ _init_parse() {                     # 共用的旗標解析；結果放進 _INIT
 # fresh 要你打「DESTROY <目前的專案名>」—— 在 init 的情境裡那個名字還是範本的名字，
 # 讓人打 DESTROY pm 而他其實想建立 shop，是在問錯的問題。
 # 這裡改成打「INIT <新名字>」，同時把 init 特有的損失也列出來
-#（.env 的密碼與 ansible/inventory/hosts.yml 都不在 fresh 的清單裡）。
+#（.env 的密碼與 env/ansible/inventory/hosts.yml 都不在 fresh 的清單裡）。
 _init_gate() {                      # _init_gate <token> <新名字或空> <模式>
     local token=$1 newname=$2 mode=$3
     local body
@@ -119,7 +119,7 @@ _init_gate() {                      # _init_gate <token> <新名字或空> <模�
 
 **不會**被 fresh 保護、需要你自己確認的：
   * .env 裡的密碼與 APP_KEY 會保留 —— 新專案應該重新產生（cx setup env）
-  * ansible/inventory/hosts.yml 還指向舊環境的主機
+  * env/ansible/inventory/hosts.yml 還指向舊環境的主機
   * 已經跑起來的容器與 volume 仍叫舊名字（cx dev down -v 自己清）
 
 執行之前會先做完整封存（cx fresh 的 backup 階段），失敗可以 cx fresh --rollback。

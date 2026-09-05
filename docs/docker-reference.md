@@ -1,6 +1,6 @@
 # Docker 參考
 
-> 改 `docker-compose.yml`、`docker/compose/*.yml` 或任何 Dockerfile 之前先讀這份。
+> 改 `docker-compose.yml`、`env/docker/compose/*.yml` 或任何 Dockerfile 之前先讀這份。
 > 這裡的每一條「不要這樣做」都對應一次實際踩過的坑。
 
 ---
@@ -14,9 +14,9 @@ docker compose \
   --project-directory /path/to/pm \
   -p pm_<mode> \
   -f docker-compose.yml \
-  -f docker/compose/<mode>.yml \
+  -f env/docker/compose/<mode>.yml \
   --env-file .env \
-  --env-file docker/env/<mode>.env \
+  --env-file env/docker/compose/<mode>.env \
   <動作>
 ```
 
@@ -42,11 +42,11 @@ Error response from daemon: Bind for 0.0.0.0:8080 failed: port is already alloca
 
 **顯式的 `--env-file` 指到不存在的檔案是硬錯誤**（隱式的 `./.env` 才會靜默略過）：
 ```
-env file /path/docker/env/dev.env not found: stat ...: no such file or directory
+env file /path/env/docker/compose/dev.env not found: stat ...: no such file or directory
 ```
 所以 `cx_compose_init` 只把**存在的**檔案加進去。
 
-順序也有意義 —— **後面的優先**。`docker/env/<mode>.env` 在 `.env` 之後，
+順序也有意義 —— **後面的優先**。`env/docker/compose/<mode>.env` 在 `.env` 之後，
 模式專屬的值（埠、build target）才蓋得掉根 `.env` 的通用值。
 
 ### 網路名
@@ -67,7 +67,7 @@ services:
   edge:
     ports: ["8080:80"]
 
-# docker/compose/prod.yml (overlay)
+# env/docker/compose/prod.yml (overlay)
 services:
   edge:
     ports: ["80:80"]
@@ -128,7 +128,7 @@ dev 把 `./backend` bind mount 進 `/var/www/html`。host 的 `backend/vendor`
 
 ## 4. Dockerfile
 
-### `docker/php/Dockerfile`
+### `env/docker/php/Dockerfile`
 
 ```
 base ──┬─ vendor-dev ──┐
@@ -156,7 +156,7 @@ pecl 對 PHP 8.5 的很多擴充還沒有相容版本，會在 `phpize` 階段�
 `backend-assets` 是獨立階段而不是在 `dev` 裡跑 npm，因為執行期的映像
 不需要 node —— 留著它會讓正式映像多 ~150MB，也多一整套 npm 的攻擊面。
 
-### `docker/nuxt/Dockerfile`
+### `env/docker/nuxt/Dockerfile`
 
 ```
 deps ──┬─ dev
@@ -196,7 +196,7 @@ supervisord 的設定要有 `nodaemon=true`，否則它會 fork 到背景、PID 
 
 ### 要多加一個 worker：`/etc/supervisor/conf.d/`
 
-`docker/php/supervisord.conf` 有一段 `[include]`：
+`env/docker/php/supervisord.conf` 有一段 `[include]`：
 
 ```ini
 [include]
@@ -205,7 +205,7 @@ files = /etc/supervisor/conf.d/*.conf
 
 所以額外的 program 不必改那個烤進映像的主設定檔 —— 丟一個 `.conf` 進
 `/etc/supervisor/conf.d/`（bind mount 或衍生映像）就會被載入。目錄由
-`docker/php/Dockerfile` 建立，空的也不影響（glob 不匹配不會出錯）。
+`env/docker/php/Dockerfile` 建立，空的也不影響（glob 不匹配不會出錯）。
 
 > 這個 drop-in 目錄一度消失過：舊映像本來就是靠它把 `laravel-queue.conf`
 > 掛進來的，新映像把 program 直接寫進主設定檔之後就沒人補回目錄，
@@ -213,7 +213,7 @@ files = /etc/supervisor/conf.d/*.conf
 
 ### entrypoint 以 root 執行，但不留 root 檔案
 
-`docker/entrypoint/app.sh` 的 PID 1 需要 root（supervisord 的要求），
+`env/docker/entrypoint/app.sh` 的 PID 1 需要 root（supervisord 的要求），
 所以它跑的 `artisan` 也是 root。`backend/` 在 dev 是 bind mount，
 因此凡是 entrypoint **新建**的檔案都要立刻 `chown` 回 `www-data`
 （uid 已在 build 時對齊成 `APP_UID`）：
@@ -280,8 +280,8 @@ ModSecurity CRS 映像用 envsubst 處理 `/etc/nginx/templates/` 底下的檔�
 正確位置：
 ```yaml
 volumes:
-  - ./docker/waf/proxy_backend.conf:/etc/nginx/templates/includes/proxy_backend.conf:ro
-  - ./docker/waf/pm-forwarded-port.conf:/etc/nginx/templates/includes/pm-forwarded-port.conf:ro
+  - ./env/docker/waf/proxy_backend.conf:/etc/nginx/templates/includes/proxy_backend.conf:ro
+  - ./env/docker/waf/pm-forwarded-port.conf:/etc/nginx/templates/includes/pm-forwarded-port.conf:ro
 ```
 
 CRS 的排除規則走官方的擴充點：
@@ -310,7 +310,7 @@ Docker 對「bind mount 來源不存在」的處理是**靜默建立一個 `root
 ## 8. `.dockerignore`
 
 build context 送進 daemon 的東西越少越好，但真正的理由是**祕密**：
-`.env`、`.cx/sonar-token`、`~/.ssh` 的任何複本、`ansible/inventory/group_vars/all/vault.yml`
+`.env`、`.cx/sonar-token`、`~/.ssh` 的任何複本、`env/ansible/inventory/group_vars/all/vault.yml`
 只要進了 context，就算 Dockerfile 沒有 `COPY` 它，它也已經傳給 daemon 了；
 而任何一個 `COPY . .` 都會把它烘進映像層，之後 `docker history` 挖得出來。
 
@@ -367,7 +367,7 @@ nginx（`edge`、`waf`）用 `stop_signal: SIGQUIT` —— nginx 收 SIGTERM 是
 丟棄處理中的請求，SIGQUIT 才是優雅。`mysql` 給 60s：10 秒預設會 SIGKILL mysqld，
 每次 `cx down` 都逼 InnoDB 做 crash recovery。
 
-`init: true` 只加在 `nuxt`。同時把 `docker/entrypoint/nuxt.sh` 的
+`init: true` 只加在 `nuxt`。同時把 `env/docker/entrypoint/nuxt.sh` 的
 `exec npm run dev` 改成直接 `exec npx nuxt dev` —— npm 不轉發 SIGTERM，
 少一層行程比多一個 init 更根本。**不要**加在 `app`：supervisord 自己就是 init，
 多一層會讓 `supervisorctl` 的 PID 預期混亂。

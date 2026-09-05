@@ -1,0 +1,39 @@
+# Trivy 設定。cx scan sca 的 docker runner 以
+#   --config /workspace/env/docker/security/trivy/trivy.yaml
+# 載入（專案根目錄掛在 /workspace）。
+#
+# ⚠ 所有路徑都必須是「容器內絕對路徑」。
+#   aquasec/trivy 沒有 WORKDIR（CWD 是 /），相對路徑的 ignorefile / secret.config
+#   會靜默解析失敗 —— 不會報錯，只是設定沒生效。
+
+severity:
+  - HIGH
+  - CRITICAL
+
+scan:
+  skip-dirs:
+    - "**/vendor"
+    - "**/node_modules"
+    - "**/.nuxt"
+    - "**/.output"
+    - "**/storage/framework"
+    - "**/bootstrap/cache"
+    # ansible-galaxy 下載的上游 collection。它們不是我們的程式碼，
+    # 我們既不該修也修不了；不排除的話 Trivy 會回報一堆上游測試夾具裡的
+    # Containerfile 問題（實測會掃到 community.general 的 keycloak 測試檔）。
+    - "ansible/collections"
+    - "**/.git"
+
+vulnerability:
+  ignore-unfixed: false
+
+misconfiguration:
+  include-non-failures: false
+
+secret:
+  config: /workspace/env/docker/security/trivy/secret.yaml
+
+# ⚠ 這一行在 2026-09-04 之前是缺的 —— .trivyignore.yaml 檔案存在、內容也寫好了，
+# 但沒有任何地方引用它，所以 claude.md §5 說的
+# 「無 HIGH/CRITICAL（除非在 .trivyignore 且有到期日）」這個閘門其實不成立。
+ignorefile: /workspace/env/docker/security/trivy/.trivyignore.yaml

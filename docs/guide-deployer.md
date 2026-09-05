@@ -37,12 +37,12 @@ play 結構、12 個 role 的內部細節、MySQL 的五個坑在
 ### 各自是拿來做什麼的
 
 **Docker `prod` 模式**是「正式構型的可重現快照」。它的價值在於：原始碼烘進映像、
-opcache 不驗證時間戳（`docker/php/zz-mode-prod.ini` 的
+opcache 不驗證時間戳（`env/docker/php/zz-mode-prod.ini` 的
 `opcache.validate_timestamps = 0` 加 `opcache.jit = tracing`，
 改了容器內的檔案不會生效）、xdebug 被 build 斷言擋掉 —— 也就是說，
 你在本機或 CI 跑起來的那一組容器，構型跟正式環境的意圖一致，
 可以拿來確認「把原始碼凍住之後還跑得動」。
-它**不是**用來對外服務的：`docker/compose/prod.yml` 刻意不發布 8443，因為 edge
+它**不是**用來對外服務的：`env/docker/compose/prod.yml` 刻意不發布 8443，因為 edge
 沒有 TLS 監聽；發布了卻沒有 TLS，配上 `SESSION_SECURE_COOKIE=true` 會讓 Filament
 登入陷入無限 419（cookie 只在 https 送出，CSRF token 永遠對不上）。
 
@@ -71,7 +71,7 @@ unit、資料庫備份、release 保留與回滾，全部在這一邊。
 
 ```bash
 cx setup tools ansible        # 裝進 ~/.local/share/cx-venv，免 root
-cx deploy galaxy              # 安裝 ansible/requirements.yml 列的 collections
+cx deploy galaxy              # 安裝 env/ansible/requirements.yml 列的 collections
 ```
 
 `cx deploy galaxy` 在全新 clone 上是**必要**的：`ansible/collections/` 被
@@ -129,7 +129,7 @@ ssh-keyscan -H <你的主機> >> ~/.ssh/known_hosts
 
 ### 3.1 群組模型
 
-來源是 `ansible/site.yml` 的 `roles` 區塊 —— 群組不是命名慣例，是**真的決定哪個
+來源是 `env/ansible/site.yml` 的 `roles` 區塊 —— 群組不是命名慣例，是**真的決定哪個
 role 在哪台跑**的東西。
 
 | 群組 | 誰在上面跑 |
@@ -250,7 +250,7 @@ A15 斷言訊息裡就寫了這個方向。
 
 ### 3.5 `cx deploy hosts` —— 產生與檢查 `hosts.yml`
 
-`ansible/inventory/hosts.yml` 是 `cx deploy` 每一個需要主機的動詞都要用、卻
+`env/ansible/inventory/hosts.yml` 是 `cx deploy` 每一個需要主機的動詞都要用、卻
 **不進版控**（含主機位址與帳號）的檔案。這組子指令是為了不必離開 cx 去手抄範例檔。
 
 | 子指令 | 作用 | 參數 |
@@ -278,7 +278,7 @@ cx deploy hosts check --ansible
   （結構與值會保留）。換來的是三個群組不可能對不起來。要保留註解就用 `edit`。
 * 產生出來的檔案**只會有一個環境群組**。`--env` 設定的是「這個檔案是哪個環境」，
   不是單台主機的屬性。這正好對應 §3.2 的「一個 inventory = 一個環境」。
-* `cx deploy hosts` 只管 `ansible/inventory/hosts.yml` 這一個路徑，
+* `cx deploy hosts` 只管 `env/ansible/inventory/hosts.yml` 這一個路徑，
   而 `ansible.cfg` 的 `inventory = ./inventory/hosts.yml` 也指著它。
   要同時管理兩個環境，就開兩個檔（`inventory/staging.yml`、`inventory/production.yml`）
   並自己帶 `-i` 跑 `ansible-playbook` —— 那條路 `cx deploy hosts` 幫不上忙。
@@ -342,7 +342,7 @@ ansible-vault edit   inventory/group_vars/all/vault.yml
 | `vault_mysql_app_password` | 應用帳號 `pm` 的密碼 | `db_password` / `app_db_password` |
 | `vault_app_key` | Laravel `APP_KEY`（`base64:…`） | `app_key` |
 
-密碼的硬性限制（來源：`ansible/roles/mysql/tasks/assert.yml`）：
+密碼的硬性限制（來源：`env/ansible/roles/mysql/tasks/assert.yml`）：
 
 * 長度 **≥ 12**（`mysql_password_min_length`，預設 12）；
 * **不可含反斜線、雙引號、CR/LF**。理由不是潔癖：同一組密碼要同時寫進
@@ -865,7 +865,7 @@ cx deploy lint                       # ansible-lint（production profile）+ yam
 ```
 
 - [ ] `cx deploy galaxy` 跑過（全新 clone 必要）
-- [ ] `ansible/inventory/hosts.yml` 只有**一個**環境群組
+- [ ] `env/ansible/inventory/hosts.yml` 只有**一個**環境群組
 - [ ] `db_primary` 剛好一台，而且也在 `web` 裡
 - [ ] `group_vars/all/vault.yml` 存在，且路徑是 `all/` 底下（§4.1）
 - [ ] `vault_mysql_root_password` / `vault_mysql_app_password` ≥ 12 字元，
@@ -978,4 +978,4 @@ PM2 的前端 online、ACL 雙向交叉寫入可行。
 `cx deploy` 的完整動詞表在 [`cx-reference.md`](cx-reference.md)；
 play 結構、12 個 role 的順序與理由在 [`ansible-reference.md`](ansible-reference.md)；
 目標主機端的原生部署細節（nginx 路由、PM2 為什麼是 fork、MyGuard 套件名歧異）
-在 [`../ansible/README.md`](../ansible/README.md)。
+在 [`../env/ansible/README.md`](../env/ansible/README.md)。

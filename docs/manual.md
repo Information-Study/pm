@@ -284,9 +284,9 @@ PHPUnit 的 `<env>` 預設語意是「既有的環境變數優先」，而 compo
 
 ```bash
 # 一次性準備
-cp ansible/inventory/hosts.yml.example              ansible/inventory/hosts.yml
-cp ansible/inventory/group_vars/staging.yml.example ansible/inventory/group_vars/staging.yml
-ansible-vault create ansible/inventory/group_vars/all/vault.yml   # ⚠ 注意是 all/ 底下
+cp env/ansible/inventory/hosts.yml.example              env/ansible/inventory/hosts.yml
+cp env/ansible/inventory/group_vars/staging.yml.example env/ansible/inventory/group_vars/staging.yml
+ansible-vault create env/ansible/inventory/group_vars/all/vault.yml   # ⚠ 注意是 all/ 底下
 ssh-keyscan -H <你的主機> >> ~/.ssh/known_hosts
 
 # 流程
@@ -318,7 +318,7 @@ docker ps        # 三個模式共 15 個容器（dev 5 / test 6 / prod 4），�
 靠的是**兩件事同時成立**：
 
 1. 不同的 compose project（`-p pm_dev|pm_test|pm_prod`）→ 隔離容器、網路、volume
-2. 不同的 host 埠段（`docker/env/<mode>.env`）→ 隔離埠
+2. 不同的 host 埠段（`env/docker/compose/<mode>.env`）→ 隔離埠
 
 > `-p` **不隔離 host 埠**。只做第 1 件不做第 2 件，第二個模式會直接
 > `Bind for 0.0.0.0:8080 failed: port is already allocated`。
@@ -472,7 +472,7 @@ pm/
 
 ```bash
 cd backend                 && cx doctor
-cd ansible/roles/mysql     && cx deploy syntax
+cd env/ansible/roles/mysql     && cx deploy syntax
 cd docker/compose          && cx dev config
 cd bin/lib                 && cx dev up -d
 ```

@@ -244,7 +244,7 @@ _scan_sast() {
     while read -r line; do
         [[ $line =~ ^[[:space:]]*# || -z ${line// } ]] && continue
         cfg+=(--config "$line")
-    done < "$CX_ROOT/docker/security/semgrep/rulesets.txt"
+    done < "$CX_ROOT/env/docker/security/semgrep/rulesets.txt"
 
     local sarif="$CX_REPORT_DIR/sast/semgrep.sarif" rc=0
 
@@ -366,7 +366,7 @@ _scan_sca() {
                 -v "$CX_REPORT_DIR:/out" \
                 -w /workspace \
                 "$CX_IMG_TRIVY" \
-                fs --config /workspace/docker/security/trivy/trivy.yaml \
+                fs --config /workspace/env/docker/security/trivy/trivy.yaml \
                    --scanners vuln,secret,misconfig --exit-code 1 \
                    --format json --output /out/sca/trivy-fs.json . || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
@@ -383,9 +383,9 @@ _scan_sca() {
         # 所以用 CLI 旗標覆寫那兩個 —— Trivy 的 CLI 優先於設定檔。
         _scan_step "$EX_SCAN_SCA" "Trivy fs（原生）" \
             env -C "$CX_ROOT" TRIVY_CACHE_DIR="$CX_CACHE_DIR/trivy" \
-                trivy fs --config "$CX_ROOT/docker/security/trivy/trivy.yaml" \
-                    --secret-config "$CX_ROOT/docker/security/trivy/secret.yaml" \
-                    --ignorefile "$CX_ROOT/docker/security/trivy/.trivyignore.yaml" \
+                trivy fs --config "$CX_ROOT/env/docker/security/trivy/trivy.yaml" \
+                    --secret-config "$CX_ROOT/env/docker/security/trivy/secret.yaml" \
+                    --ignorefile "$CX_ROOT/env/docker/security/trivy/.trivyignore.yaml" \
                     --scanners vuln,secret,misconfig --exit-code 1 \
                     --format json --output "$CX_REPORT_DIR/sca/trivy-fs.json" . || rc=$?
         _lane_worst=$(_scan_max "$_lane_worst" "$rc")
@@ -431,7 +431,7 @@ _scan_sca() {
                     -v "$CX_ROOT:/workspace:ro" \
                     -v "$CX_REPORT_DIR:/out" \
                     "$CX_IMG_TRIVY" \
-                    image --config /workspace/docker/security/trivy/trivy.yaml \
+                    image --config /workspace/env/docker/security/trivy/trivy.yaml \
                           --scanners secret,misconfig --exit-code 1 \
                           --format json \
                           --output "/out/sca/trivy-image-${tag//[:\/]/-}.json" \
@@ -514,7 +514,7 @@ _scan_dast() {
     local mode rc=0 _lane_worst=0
     if [[ $(_scan_runner) != docker ]]; then
         cx_warn "ZAP 需要 Docker（本機沒有 Java runtime）"
-        cx_dim "  詳見 docker/security/zap/README.md"
+        cx_dim "  詳見 env/docker/security/zap/README.md"
         return "$EX_PRECOND"
     fi
     local target=${ZAP_TARGET:-http://waf:8080}
@@ -524,7 +524,7 @@ _scan_dast() {
 
     for mode in detect blocking; do
         # C10：這個迴圈以前只是換輸出目錄，從來沒有真的動過引擎 ——
-        # 兩份報告是同一個 WAF 狀態下跑出來的，而 docker/security/zap/README.md
+        # 兩份報告是同一個 WAF 狀態下跑出來的，而 env/docker/security/zap/README.md
         # 卻描述成「DetectionOnly 與 On 各跑一次」。名字說了一件事，行為做的是另一件。
         local engine
         case $mode in
@@ -540,7 +540,7 @@ _scan_dast() {
         cx_run docker run --rm -u "$(id -u):$(id -g)" \
             --network "$net" \
             -v "$CX_REPORT_DIR/dast/$mode:/zap/wrk:rw" \
-            -v "$CX_ROOT/docker/security/zap:/zap/pmconf:ro" \
+            -v "$CX_ROOT/env/docker/security/zap:/zap/pmconf:ro" \
             "$CX_IMG_ZAP" \
             zap-baseline.py -t "$target" \
                 -c /zap/pmconf/baseline.conf \
@@ -578,12 +578,12 @@ _scan_dast() {
 
 # ── WAF 引擎切換 ───────────────────────────────────────────────────────────
 # 切換一定要成對出現：切過去、用完切回宣告值。少了還原這一半，
-# cx scan dast 跑完就把 test 堆疊留在 On，而 docker/env/test.env 宣告的是
+# cx scan dast 跑完就把 test 堆疊留在 On，而 env/docker/compose/test.env 宣告的是
 # DetectionOnly —— 環境與版控說的不一樣，而且不會有任何地方提醒你。
 # 這個漂移在 2026-09-05 的實機檢查中確認過真的發生了。
 _scan_waf_engine_declared() {
     local v
-    v=$(grep -E '^MODSEC_RULE_ENGINE=' "$CX_ROOT/docker/env/test.env" 2>/dev/null \
+    v=$(grep -E '^MODSEC_RULE_ENGINE=' "$CX_ROOT/env/docker/compose/test.env" 2>/dev/null \
         | tail -1 | cut -d= -f2-)
     printf '%s' "${v:-DetectionOnly}"
 }
@@ -685,7 +685,7 @@ _scan_secrets() {
         rm -f "$out"
         cx_info "gitleaks: $slug（含歷史）…"
         gitleaks git "$r" --no-banner --redact \
-            --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
+            --config "$CX_ROOT/env/docker/security/trivy/gitleaks.toml" \
             --report-format json \
             --report-path "$out" || rc=$?
         # ⚠ 不能只看退出碼。gitleaks 的 exit 1 同時代表「找到祕密」與

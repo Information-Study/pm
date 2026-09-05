@@ -1,7 +1,7 @@
 # Semgrep 的忽略清單。
 #
 # ⚠ 位置很重要：Semgrep 只在「掃描目標的根目錄」找 .semgrepignore。
-#   原本這個檔放在 docker/security/semgrep/ 底下，Semgrep 從來沒讀到過 ——
+#   原本這個檔放在 env/docker/security/semgrep/ 底下，Semgrep 從來沒讀到過 ——
 #   於是 backend/public/js/filament/*（好幾百 KB 的壓縮 bundle）每次都被掃。
 #   舊檔已移除，這裡是唯一一份。
 

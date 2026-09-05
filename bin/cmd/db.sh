@@ -31,7 +31,7 @@ TXT
 # 不在 mysql 容器裡執行是因為 app 容器才有 .env 與 artisan。
 _db_env() {
     # 從合併後的 compose 設定讀，而不是自己解析 .env ——
-    # 這樣 docker/env/<mode>.env 的覆寫才會被算進去。
+    # 這樣 env/docker/compose/<mode>.env 的覆寫才會被算進去。
     cx_dc_q config --format json 2>/dev/null | python3 -c '
 import json, sys
 try:

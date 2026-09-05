@@ -354,7 +354,7 @@ SKIP 只出現在誠實的情境，而且每一次都附理由：
   > `CLI-bats` **只驗接線，不代表測試通過** —— 「測試有沒有過」這個宣稱
   > 只屬於 `cx test cli`，不屬於任何別的地方。
 
-* **`docs`** —— 文件與實作一致：`ansible/README.md` 的執行狀態不能與實測衝突、
+* **`docs`** —— 文件與實作一致：`env/ansible/README.md` 的執行狀態不能與實測衝突、
   README 教的 `waf_*` 變數真的被某個 role 讀取、文件指向的 `group_vars` 路徑正確
   （是目錄 `all/main.yml`，不是 `all.yml`）、Livewire 排除規則的前綴形狀、
   `cx-reference.md` 涵蓋每個動詞。
@@ -402,7 +402,7 @@ cx scan <code|sast|sca|dast|secrets|all> [--runner docker|native|auto]
 | lane | 實際執行 | 需要容器在跑嗎 | 失敗碼 |
 |---|---|---|---|
 | `code` ① | host 的 `backend/vendor/bin/phpstan analyse`；另外在 docker runner 且 sonar 網路存在且拿得到 token 時跑 `sonar-scanner` 容器 | ✘（Sonar scanner 需要常駐的 SonarQube，`cx sonar up`） | 20 |
-| `sast` ② | Semgrep（容器或原生），規則集來自 `docker/security/semgrep/rulesets.txt`；產出 SARIF 後由 `bin/lib/sarif_gate.py` 判級 | ✘ | 21 |
+| `sast` ② | Semgrep（容器或原生），規則集來自 `env/docker/security/semgrep/rulesets.txt`；產出 SARIF 後由 `bin/lib/sarif_gate.py` 判級 | ✘ | 21 |
 | `sca` ③ | `trivy fs`（vuln+secret+misconfig）、**`trivy image` 掃已建好的映像**、`composer audit`、`npm audit`、CycloneDX SBOM、掃描器映像 digest | ✘，但映像那一段需要**已經 build 過** | 22 |
 | `dast` ④ | ZAP baseline 跑兩輪（`DetectionOnly` 與 `On`，每輪真的重建 waf 容器切引擎）＋ **主動攻擊探測**＋被動 alert 對照 | **✔ 需要 `cx test up -d`**（否則找不到 `<專案>_test_net`，以 `EX_PRECOND` 中止） | 23 |
 | `secrets` | gitleaks 對 backend / frontend / 主庫各掃一次**全歷史** | ✘ | 22（與 ③ 共用） |
@@ -462,7 +462,7 @@ ZAP 的退出碼慣例不是「0 成功／非 0 失敗」：
 跑的還是舊規則（2026-09-05 實際踩到：改了 `ruleRemoveById` 之後探測仍然 403，
 `docker exec grep` 得到新規則，但生效的是舊的）。
 
-跑完之後引擎會被還原成 `docker/env/test.env` 宣告的值（預設 `DetectionOnly`），
+跑完之後引擎會被還原成 `env/docker/compose/test.env` 宣告的值（預設 `DetectionOnly`），
 而且還原做了兩次：探測程式自己的 `finally` 一次，`_scan_dast` 結尾再一次
 （為了涵蓋「ZAP 跑完但探測被略過」那條路徑）。
 
@@ -604,7 +604,7 @@ Livewire v4 的端點前綴由 `APP_KEY` 推導成 `/livewire-<hash>/`，一條�
   而 CRS 的 920350（Host header is a numeric IP address）會因此加分 ——
   那是探測方式造成的，真實瀏覽器不會這樣送。少了這一行，`waf-livewire`
   會因為一條與 Livewire 完全無關的規則而永遠 FAIL。要覆寫用 `CX_WAF_HOST`。
-* **引擎不是 `On` 時，攔截兩項誠實地 SKIP。** `docker/env/test.env` 宣告的是
+* **引擎不是 `On` 時，攔截兩項誠實地 SKIP。** `env/docker/compose/test.env` 宣告的是
   `DetectionOnly`，所以平常跑 `cx verify all` 這兩項就是 ⬜ —— 那是正確行為，
   不是漏驗。要驗就自己把引擎切成 `On`（或讓 `cx scan dast` 去跑，它每輪都會涵蓋）。
 
@@ -661,7 +661,7 @@ cx deploy syntax && cx deploy lint   # 動到 ansible/ 才需要
 | `cx test back` / `front` | rc=0。**rc=3 要當環境問題處理**（缺 `pdo_sqlite`／缺 `node_modules`／資料庫防護拒絕），不要當成「這次沒測到但沒關係」 |
 | `cx scan code` | rc=0。rc=20 = Larastan 有 error。⚠ `backend/vendor/bin/phpstan` 不存在時只印一行 `cx_warn` 並讓這道回 0 —— 所以要順帶確認終端機上真的出現了 `報告：reports/quality/larastan.json（errors=…）` 那一行，否則這個 0 是「沒跑」不是「乾淨」 |
 | `cx scan sast` | rc=0。rc=21 = 有 **ERROR 等級** finding；warning 會列出但不擋 |
-| `cx scan sca` | rc=0。rc=22 = 有 finding；例外必須進 `docker/security/trivy/.trivyignore.yaml` 且**有 `statement` 與 `expired_at`** |
+| `cx scan sca` | rc=0。rc=22 = 有 finding；例外必須進 `env/docker/security/trivy/.trivyignore.yaml` 且**有 `statement` 與 `expired_at`** |
 | `cx scan secrets` | rc=0，且三份 `gitleaks-*.json` 都**存在**且是 `[]`。檔案不存在 = 沒跑成 |
 
 > **`cx scan sca` 一個已建映像都找不到時，只印一行「沒有已建置的映像可掃」的警告，
@@ -722,7 +722,7 @@ CX_TEST_STRICT=1 cx test cli
 2. **沒有任何 `cx verify` 的 FAIL**，而且**每一個 SKIP 你都看過原因並接受**。
 3. **`cx scan` 的退出碼是 0**；若是 20/21/22/23，例外必須有書面理由與到期日；
    若是 3，那是環境問題，**必須先修好再跑一次**，不能當成通過。
-4. 動到 WAF、CRS 排除規則、`docker/edge/`、`ansible/roles/nginx_myguard/` 任何一個時，
+4. 動到 WAF、CRS 排除規則、`env/docker/edge/`、`env/ansible/roles/nginx_myguard/` 任何一個時，
    **第 3 層必跑**，且 `waf-probe.json` 的 `normal_requests_falsely_blocked` 是空的。
 5. 動到 `backend/phpunit.xml`、`backend/tests/`、`bin/cmd/test.sh` 任何一個時，
    `cx verify cli` 的 `GRD-*` 四項**全部 PASS**。

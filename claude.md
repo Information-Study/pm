@@ -108,7 +108,7 @@
 | 3 | 重建前後端 + 三 Git 初始化 + 推送 | ✅ 完成；migration / 測試 / 端點皆已實跑 |
 | 4 | DevSecOps 工具鏈 + `cx scan` | ✅ 四道防線全部跑得動 |
 | 5 | Ansible roles + playbook | ✅ **對 systemd 目標完整實跑**（24.04 ok=498、26.04 ok=491，failed=0） |
-| 6 | `README.md`、`ansible/README.md`、`docs/progress.md` | ✅ 完成 |
+| 6 | `README.md`、`env/ansible/README.md`、`docs/progress.md` | ✅ 完成 |
 
 ### 2026-09-04 的環境變更（重要）
 
@@ -141,15 +141,15 @@
 已刪除：`.git`、`.gitmodules`、`backend/`、`frontend/`、`php/`、`nuxt/`、
 `init.sh`、`refresh.sh`、`README.md`、`docker-compose.yml`、`.dockerignore`。
 
-**Docker 自定義設定全部保留**（使用者明確要求），遷移至 `docker/php/`、`docker/nuxt/`、
-`docker/legacy/*.orig`。Phase 2 完成後，舊的單階段檔已全數移入 `docker/legacy/`：
+**Docker 自定義設定全部保留**（使用者明確要求），遷移至 `env/docker/php/`、`env/docker/nuxt/`、
+`env/docker/legacy/*.orig`。Phase 2 完成後，舊的單階段檔已全數移入 `env/docker/legacy/`：
 
 | 舊檔 | 現況 |
 |---|---|
-| `docker/php/dockerfile.development` | → `docker/legacy/php-dockerfile.development.orig` |
-| `docker/nuxt/dockerfile`（小寫） | → `docker/legacy/nuxt-dockerfile.orig`。**它原本與新的 `Dockerfile` 並存，正是缺陷 D1 的陷阱本身** |
-| `docker/php/xdebug.ini` | → `docker/legacy/php-xdebug.ini.orig`（改由 entrypoint 依環境變數生成） |
-| `docker/php/laravel-queue.conf` | 併入 `docker/php/supervisord.conf`（原本寫死 `--queue=media-library`，是別的專案的殘留） |
+| `env/docker/php/dockerfile.development` | → `env/docker/legacy/php-dockerfile.development.orig` |
+| `env/docker/nuxt/dockerfile`（小寫） | → `env/docker/legacy/nuxt-dockerfile.orig`。**它原本與新的 `Dockerfile` 並存，正是缺陷 D1 的陷阱本身** |
+| `env/docker/php/xdebug.ini` | → `env/docker/legacy/php-xdebug.ini.orig`（改由 entrypoint 依環境變數生成） |
+| `env/docker/php/laravel-queue.conf` | 併入 `env/docker/php/supervisord.conf`（原本寫死 `--queue=media-library`，是別的專案的殘留） |
 
 ### 已完成的重建（2026-09-03，原生方式）
 
@@ -484,7 +484,7 @@ main     git init → git submodule add ./backend → ./frontend → commit
 三個模式**可以同時運行**，靠的是兩件事同時成立：
 
 1. 不同的 compose project（`-p pm_dev|pm_test|pm_prod`）→ 隔離容器、網路、volume。
-2. 不同的 **host 埠段**（`docker/env/<mode>.env`）→ 隔離 port。
+2. 不同的 **host 埠段**（`env/docker/compose/<mode>.env`）→ 隔離 port。
 
 > **`-p` 不會隔離 host 埠。** 只做 1 不做 2，第二個模式會直接
 > `Bind for 0.0.0.0:8080 failed: port is already allocated`。
@@ -576,7 +576,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 |---|---|---|---|---|
 | ① Quality | 型別錯誤、複雜度、重複、覆蓋率、歷史趨勢 | commit 前 / PR | Larastan level 達標 + Sonar Quality Gate PASSED | `reports/quality/` |
 | ② SAST | 注入、XSS、硬編憑證、不安全 API 用法 | commit 前 / PR | 無 ERROR 等級 finding | `reports/sast/` |
-| ③ SCA | 相依 CVE、憑證外洩、IaC 錯配、映像漏洞 | PR / 每日 | 無 HIGH/CRITICAL（除非在 `docker/security/trivy/.trivyignore.yaml` 且有到期日） | `reports/sca/` |
+| ③ SCA | 相依 CVE、憑證外洩、IaC 錯配、映像漏洞 | PR / 每日 | 無 HIGH/CRITICAL（除非在 `env/docker/security/trivy/.trivyignore.yaml` 且有到期日） | `reports/sca/` |
 | ④ DAST | 執行期真實攻擊面 | 合併前 / 發版前 | 無 High risk alert | `reports/dast/` |
 
 ### 為什麼是這個順序
@@ -653,7 +653,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 
 ## 6. Ansible 原生部署
 
-完整步驟、原理與變數表見 `ansible/README.md`。此處只列與 Docker 的對應關係：
+完整步驟、原理與變數表見 `env/ansible/README.md`。此處只列與 Docker 的對應關係：
 
 | Docker | 原生 |
 |---|---|
@@ -706,7 +706,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 | 初始化工作區 | `cx setup` | — |
 | 裝原生工具鏈 | `cx setup tools [名稱...]` | 免 root 裝到 `~/.local` |
 | 裝專案相依 | `cx setup deps` | `composer install` + 兩邊的 npm |
-| 起開發環境 | `cx dev up -d` | `docker compose --project-directory . -p pm_dev -f docker-compose.yml -f docker/compose/dev.yml --env-file .env --env-file docker/env/dev.env up -d` |
+| 起開發環境 | `cx dev up -d` | `docker compose --project-directory . -p pm_dev -f docker-compose.yml -f env/docker/compose/dev.yml --env-file .env --env-file env/docker/compose/dev.env up -d` |
 | artisan | `cx art migrate` | `… run --rm --entrypoint php app artisan migrate` |
 | composer | `cx composer install` | `… run --rm --no-deps --entrypoint composer app install` |
 | npm（前端） | `cx npm ci` | `… run --rm --no-deps --entrypoint npm nuxt ci` |
@@ -1002,7 +1002,7 @@ ln -sf ~/.local/node/bin/{node,npm,npx} ~/.local/bin/
 | Ubuntu 24.04 目標**完整實跑**（不是 `--check`） | ✅ ok=498 changed=119 failed=0 |
 | Ubuntu 26.04 目標**完整實跑** | ✅ ok=491 changed=116 failed=0 |
 
-驗證目標是 `docker/ansible-target/` 的容器：真的 systemd、真的 sshd、
+驗證目標是 `env/docker/ansible-target/` 的容器：真的 systemd、真的 sshd、
 真的服務啟動順序、真的 PM2。**不是**雲端主機 —— 所以 MyGuard 套件名解析、
 MySQL 8.4 from Oracle repo、certbot 真憑證、多主機 `serial` 仍未驗證。
 

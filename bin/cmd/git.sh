@@ -1388,14 +1388,14 @@ _git_scan_secrets() {
         # 4) gitleaks 掃「整個歷史」——祕密一旦進過 commit，改掉當前檔案是不夠的
         if cx_have gitleaks; then
             if ! gitleaks git "$r" --no-banner --redact \
-                    --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" \
+                    --config "$CX_ROOT/env/docker/security/trivy/gitleaks.toml" \
                     >/dev/null 2>&1; then
                 cx_error "$slug gitleaks 在 git 歷史中發現祕密"
                 # 必須加 -v：gitleaks 8.30 不加 -v 只印 INF/WRN 摘要，
                 # 沒有 -v 的話下面的 grep 永遠抓不到東西，使用者只看到
                 # 「發現祕密」卻不知道是哪一筆。
                 gitleaks git "$r" --no-banner --redact -v \
-                    --config "$CX_ROOT/docker/security/trivy/gitleaks.toml" 2>&1 \
+                    --config "$CX_ROOT/env/docker/security/trivy/gitleaks.toml" 2>&1 \
                     | grep -E 'RuleID|File:|Line:|Commit:' | sed 's/^/      /' >&2 || true
                 repo_bad=1
             fi

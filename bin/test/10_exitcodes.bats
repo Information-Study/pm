@@ -71,9 +71,9 @@ setup() {
 # ${VAR:-預設}，三個模式搶同一組埠，或更糟 —— test 的 WAF 引擎值變成別的。
 # 兩個檔的缺席語意不一樣，所以不可以共用同一個判斷。
 
-@test "缺少 docker/env/<mode>.env 時 compose 動作硬失敗（EX_PRECOND）" {
+@test "缺少 env/docker/compose/<mode>.env 時 compose 動作硬失敗（EX_PRECOND）" {
     add_compose_skeleton
-    rm -f "$CX_TEST_ROOT/docker/env/dev.env"
+    rm -f "$CX_TEST_ROOT/env/docker/compose/dev.env"
     run cx_bin --dry-run ps
     assert_rc "$EX_PRECOND"
     assert_out_has "模式覆寫檔"

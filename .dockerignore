@@ -1,6 +1,6 @@
 # ── build context 排除清單 ──────────────────────────────────────────────────
 # build context 是專案根目錄（compose 的 context: .），所以這個檔決定
-# 有多少東西被打包送給 daemon。舊版（docker/legacy/dockerignore.orig）
+# 有多少東西被打包送給 daemon。舊版（env/docker/legacy/dockerignore.orig）
 # 沒有排除 .env、金鑰、reports/、ansible/、.git，全部都會進 context ——
 # 其中 .env 與金鑰若被某個 stage COPY 到，就會留在 image layer 裡撤不回來。
 
@@ -14,8 +14,8 @@
 # 三個 repo 都是 public，image 也可能被推到 registry。
 #
 # ⚠ 樣式是**錨定在 build context 根目錄**的。裸的 `.env` 只排除 <root>/.env，
-#   **不排除 backend/.env**。而 docker/php/Dockerfile 是 `COPY backend/ ./`，
-#   docker/nuxt/Dockerfile 是 `COPY frontend/ ./` —— 於是開發者的 backend/.env
+#   **不排除 backend/.env**。而 env/docker/php/Dockerfile 是 `COPY backend/ ./`，
+#   env/docker/nuxt/Dockerfile 是 `COPY frontend/ ./` —— 於是開發者的 backend/.env
 #   （含真實 APP_KEY 與 DB_PASSWORD）整份被烘進 test/prod 的映像層，撤不回來。
 #   2026-09-05 實測：pm/app:prod-prod 的 .env 內含 APP_KEY / DB_PASSWORD /
 #   DB_USERNAME 三個值，且與 host 的 backend/.env 完全相同。
@@ -37,8 +37,8 @@ frontend/.env.*
 *.p12
 *.pfx
 auth.json
-ansible/inventory/hosts.yml
-ansible/inventory/group_vars/vault.yml
+env/ansible/inventory/hosts.yml
+env/ansible/inventory/group_vars/vault.yml
 
 # ── 相依與建置產物（由 image 內的 npm ci / composer install 產生）───────────
 # 尤其重要：host 端的 vendor/ 是 Ubuntu 上裝的，直接 COPY 進 Alpine 映像
@@ -66,7 +66,7 @@ docs/
 reports/
 templates/
 .vscode/
-docker/legacy/
+env/docker/legacy/
 bin/
 cx
 claude.md

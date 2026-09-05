@@ -72,10 +72,10 @@ _rename_fixture() {                 # _rename_fixture <目前的名字>
     cp "$CX_TEST_ROOT/.env" "$CX_TEST_ROOT/.env.example"
     printf 'sonar.projectKey=%s\nsonar.projectName=%s\n' "$n" "$n" \
         > "$CX_TEST_ROOT/sonar-project.properties"
-    mkdir -p "$CX_TEST_ROOT/ansible/inventory/group_vars/all" \
-             "$CX_TEST_ROOT/ansible/roles/demo/defaults" \
-             "$CX_TEST_ROOT/ansible/playbooks"
-    cat > "$CX_TEST_ROOT/ansible/inventory/group_vars/all/main.yml" <<YML
+    mkdir -p "$CX_TEST_ROOT/env/ansible/inventory/group_vars/all" \
+             "$CX_TEST_ROOT/env/ansible/roles/demo/defaults" \
+             "$CX_TEST_ROOT/env/ansible/playbooks"
+    cat > "$CX_TEST_ROOT/env/ansible/inventory/group_vars/all/main.yml" <<YML
 ansible_managed: "來源：$n 專案的 ansible/"
 app_name: "$n"
 app_slug: "$n"
@@ -85,8 +85,8 @@ app_repo: "https://github.com/Org/$n.git"
 backend_repo: "https://github.com/Org/$n-backend.git"
 YML
     printf -- '- name: %s | 部署\n  hosts: %s_servers\n' "$n" "$n" \
-        > "$CX_TEST_ROOT/ansible/site.yml"
-    printf 'app_slug: "%s"\n' "$n" > "$CX_TEST_ROOT/ansible/roles/demo/defaults/main.yml"
+        > "$CX_TEST_ROOT/env/ansible/site.yml"
+    printf 'app_slug: "%s"\n' "$n" > "$CX_TEST_ROOT/env/ansible/roles/demo/defaults/main.yml"
     # deploy.sh 是 symlink 進來的真檔，rename 會想改它 —— 換成本地副本，
     # 否則測試會 sed 到真正的 bin/cmd/deploy.sh。
     rm -f "$CX_TEST_ROOT/bin"
@@ -137,12 +137,12 @@ YML
     assert_out_lacks "=old4"
     run cat "$CX_TEST_ROOT/sonar-project.properties"
     assert_out_has "sonar.projectKey=shop"
-    run cat "$CX_TEST_ROOT/ansible/inventory/group_vars/all/main.yml"
+    run cat "$CX_TEST_ROOT/env/ansible/inventory/group_vars/all/main.yml"
     assert_out_has 'app_slug: "shop"' 'db_name: &db_name "shop"' "Org/shop-backend.git" "來源：shop 專案的"
     assert_out_lacks "old4"
-    run cat "$CX_TEST_ROOT/ansible/site.yml"
+    run cat "$CX_TEST_ROOT/env/ansible/site.yml"
     assert_out_has "hosts: shop_servers" "name: shop |"
-    run cat "$CX_TEST_ROOT/ansible/roles/demo/defaults/main.yml"
+    run cat "$CX_TEST_ROOT/env/ansible/roles/demo/defaults/main.yml"
     assert_out_has 'app_slug: "shop"'
 }
 

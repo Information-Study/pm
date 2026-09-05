@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cx open — 開啟這個專案的服務網址。
 #
-# 為什麼要有這個動詞：埠段是每個模式一組（docker/env/<mode>.env），而且可以
+# 為什麼要有這個動詞：埠段是每個模式一組（env/docker/compose/<mode>.env），而且可以
 # 被覆寫。要看前端在哪，得先知道自己在哪個模式、再去翻那個檔 —— 而人記不住
 # dev 是 8080、test 是 18080，於是每次都去 docker ps 找。
 #
@@ -29,14 +29,14 @@ _open_usage() {
     --url         只印網址，不開瀏覽器（給腳本用）
     --no-open     印出網址與說明，但不開瀏覽器
 
-網址依目前的模式決定 —— 埠段來自 docker/env/<模式>.env。
+網址依目前的模式決定 —— 埠段來自 env/docker/compose/<模式>.env。
 要看別的模式：cx --mode test open front（模式是全域旗標，不是這個動詞的參數）。
 TXT
 }
 
 # edge 的 host 埠。來源與 cx verify 的 ep-* 檢查、cx dev up 的埠摘要同一個檔。
 _open_edge_port() {
-    local f="$CX_ROOT/docker/env/${CX_MODE}.env" p
+    local f="$CX_ROOT/env/docker/compose/${CX_MODE}.env" p
     p=$(grep -E '^EDGE_HTTP_PORT=' "$f" 2>/dev/null | cut -d= -f2)
     printf '%s' "${p:-80}"
 }

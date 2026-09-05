@@ -1,0 +1,516 @@
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# env/ansible/playbooks/rollback.yml —— 把 current symlink 切回指定的 release
+#
+# 用法：
+#   cd ansible
+#
+#   # 1) 先看有哪些 release 可以回（不指定 rollback_to 就只列出，什麼都不會改）
+#   ansible-playbook -i inventory/hosts.yml playbooks/rollback.yml
+#
+#   # 2) 回到指定版本（會停下來要你打字確認）
+#   ansible-playbook -i inventory/hosts.yml playbooks/rollback.yml \
+#       -e rollback_to=20260903-181200
+#
+#   # 3) 非互動（CI）：明確帶 rollback_confirm=true
+#   ansible-playbook -i inventory/hosts.yml playbooks/rollback.yml \
+#       -e rollback_to=20260903-181200 -e rollback_confirm=true
+#
+#   # 只回後端 / 只回前端
+#   -e rollback_component=backend      （backend | frontend | both，預設 both）
+#   # 只回某一台
+#   -e rollback_hosts=pm-prod-web-2
+#
+# ★★ 這個 playbook 不會刪除任何東西 ★★
+#    它只做三件事：換 symlink、reload 服務、驗證。舊的 release 目錄原封不動，
+#    所以「回滾之後再回滾回去」永遠是可行的。清理是 deploy role 的 prune 負責（A1）。
+#
+# ★★ 資料庫不會被回滾 ★★
+#    artisan migrate 是單向的。如果被回滾掉的那一版帶了 migration，
+#    舊程式碼會對著新 schema 跑。多數情況（新增欄位、新增資料表）沒事，
+#    但「改欄位型別 / 刪欄位 / 改欄位名」就會壞。
+#    這種情況請先確認 backend/database/migrations 的差異，必要時手動處理。
+#    下面的確認提示會再提醒一次。
+# ══════════════════════════════════════════════════════════════════════════════
+
+- name: pm | rollback —— 把 current 切回指定的 release
+  hosts: "{{ rollback_hosts | default('web') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  vars:
+    # 目標 release id。留空 = 只列出可用的 release，然後結束（不改任何東西）。
+    rollback_to: ""
+    # backend | frontend | both
+    rollback_component: "both"
+    # true = 跳過互動確認（CI 用）。預設 false，會停下來要你打字。
+    rollback_confirm: false
+    # false = 只換 symlink，不碰任何服務（極少用；換完要自己 reload）
+    rollback_restart_services: true
+    # 換完之後跑 healthcheck role（見本檔最後一個 play）
+    rollback_healthcheck: true
+
+  tasks:
+
+    # ── 0. 路徑不變式（A1）───────────────────────────────────────────────────
+    # 這個 playbook 會對 {{ app_root }} 底下的 symlink 動手。
+    # 就算有人繞過 preflight 直接跑它，這裡也要再確認一次路徑是安全的。
+    - name: 安全 | app_root 與 releases 路徑必須合法（A1）
+      ansible.builtin.assert:
+        that:
+          - app_root is match('^/..*')
+          - not (app_root.endswith('/'))
+          - "'..' not in app_root.split('/')"
+          - (app_root.strip('/').split('/') | reject('equalto', '') | list | length) >= 2
+          - backend_releases_dir.startswith(app_root ~ '/')
+          - frontend_releases_dir.startswith(app_root ~ '/')
+          - backend_current_path.startswith(app_root ~ '/')
+          - frontend_current_path.startswith(app_root ~ '/')
+        quiet: true
+        fail_msg: >-
+          app_root =「{{ app_root | default('<未定義>') }}」不安全，或 releases /
+          current 路徑不在它底下。回滾會對這些路徑做 symlink 操作，
+          路徑渲染成空字串或指到系統目錄都是災難。
+          正常值：app_root=/srv/{{ app_slug | default('pm') }}。
+
+    - name: 安全 | rollback_component 只能是 backend / frontend / both
+      ansible.builtin.assert:
+        that:
+          - rollback_component in ['backend', 'frontend', 'both']
+        quiet: true
+        fail_msg: >-
+          rollback_component =「{{ rollback_component }}」不合法，
+          只接受 backend / frontend / both。
+
+    - name: 安全 | 決定這次要動哪幾個元件
+      ansible.builtin.set_fact:
+        rollback_do_backend: "{{ rollback_component in ['backend', 'both'] }}"
+        rollback_do_frontend: "{{ rollback_component in ['frontend', 'both'] }}"
+
+    # ── 1. 現況：有哪些 release、current 指到哪 ──────────────────────────────
+    - name: 現況 | 列出 backend 的 release 目錄
+      ansible.builtin.find:
+        paths: "{{ backend_releases_dir }}"
+        file_type: directory
+        recurse: false
+      register: rollback_backend_found
+
+    - name: 現況 | 列出 frontend 的 release 目錄
+      ansible.builtin.find:
+        paths: "{{ frontend_releases_dir }}"
+        file_type: directory
+        recurse: false
+      register: rollback_frontend_found
+
+    # follow: false 是關鍵 —— 要讀的是 symlink 本身，不是它指向的目錄。
+    # stat.lnk_source 會給出完整解析後的絕對路徑。
+    - name: 現況 | 讀取 backend current symlink
+      ansible.builtin.stat:
+        path: "{{ backend_current_path }}"
+        follow: false
+      register: rollback_backend_current_stat
+
+    - name: 現況 | 讀取 frontend current symlink
+      ansible.builtin.stat:
+        path: "{{ frontend_current_path }}"
+        follow: false
+      register: rollback_frontend_current_stat
+
+    - name: 現況 | 整理成清單與目前版本
+      ansible.builtin.set_fact:
+        # 依名稱由新到舊。預設的 release_id 是 YYYYMMDD-HHMMSS，字典序 == 時間序。
+        # （若你用 -e release_id=... 指定過非時間格式的 id，這裡的排序就只是字典序，
+        #   請以下面印出的 current 為準，不要只看順序。）
+        rollback_backend_releases: >-
+          {{ rollback_backend_found.files | map(attribute='path') | map('basename')
+             | sort | reverse | list }}
+        rollback_frontend_releases: >-
+          {{ rollback_frontend_found.files | map(attribute='path') | map('basename')
+             | sort | reverse | list }}
+        rollback_backend_current_real: "{{ rollback_backend_current_stat.stat.lnk_source | default('') }}"
+        rollback_frontend_current_real: "{{ rollback_frontend_current_stat.stat.lnk_source | default('') }}"
+
+    - name: 現況 | 取出目前的 release id
+      ansible.builtin.set_fact:
+        rollback_backend_current_id: "{{ rollback_backend_current_real | basename }}"
+        rollback_frontend_current_id: "{{ rollback_frontend_current_real | basename }}"
+
+    - name: 現況 | 可用的 release
+      ansible.builtin.debug:
+        msg:
+          - "主機     : {{ inventory_hostname }}"
+          - "backend  : current -> {{ rollback_backend_current_id | default('（無）', true) }}"
+          - "           可用（新→舊）：{{ rollback_backend_releases | join('  ') | default('（無）', true) }}"
+          - "frontend : current -> {{ rollback_frontend_current_id | default('（無）', true) }}"
+          - "           可用（新→舊）：{{ rollback_frontend_releases | join('  ') | default('（無）', true) }}"
+          - "前端模式 : {{ frontend_mode }}"
+          - "指定回滾 : -e rollback_to=<上面其中一個 id>"
+
+    # 沒指定 rollback_to 就到此為止 —— 這是「查詢模式」，不改任何狀態。
+    # 用 end_host 而不是 end_play：每台主機各自結束，多台時的行為比較直覺。
+    - name: 未指定 rollback_to —— 只做查詢，到此結束
+      ansible.builtin.meta: end_host
+      when: (rollback_to | default('') | trim | length) == 0
+
+    # ── 2. Gate：目標必須合法、存在、而且跟現在不一樣 ────────────────────────
+    - name: Gate 1/4 | rollback_to 的格式必須安全（會被拼成目錄名）
+      ansible.builtin.assert:
+        that:
+          - rollback_to is string
+          - (rollback_to | length) >= 1
+          - (rollback_to | length) <= 64
+          - rollback_to is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+          - "'..' not in rollback_to"
+          - "'/' not in rollback_to"
+        quiet: true
+        fail_msg: >-
+          rollback_to =「{{ rollback_to }}」不合法。
+          它會被拼成 {{ backend_releases_dir }}/<rollback_to>，
+          只允許 [A-Za-z0-9._-]、開頭必須是英數、不可含 '..' 或 '/'。
+
+    - name: Gate 2/4 | 目標 release 必須真的存在於 releases 目錄
+      ansible.builtin.assert:
+        that:
+          - (not (rollback_do_backend | bool)) or (rollback_to in rollback_backend_releases)
+          - (not (rollback_do_frontend | bool)) or (rollback_to in rollback_frontend_releases)
+        quiet: true
+        fail_msg: >-
+          找不到 release「{{ rollback_to }}」。
+          backend 有：{{ rollback_backend_releases | join(', ') | default('（無）', true) }}
+          frontend 有：{{ rollback_frontend_releases | join(', ') | default('（無）', true) }}
+          （只回其中一邊請加 -e rollback_component=backend 或 frontend。）
+
+    - name: Gate 2/4 | 目標路徑必須是真的目錄
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ backend_releases_dir }}/{{ rollback_to }}"
+        - "{{ frontend_releases_dir }}/{{ rollback_to }}"
+      loop_control:
+        label: "{{ item }}"
+      register: rollback_target_stat
+
+    - name: Gate 2/4 | 目標必須是目錄而不是檔案或斷掉的 symlink
+      ansible.builtin.assert:
+        that:
+          - (not (rollback_do_backend | bool)) or (rollback_target_stat.results[0].stat.isdir | default(false))
+          - (not (rollback_do_frontend | bool)) or (rollback_target_stat.results[1].stat.isdir | default(false))
+        quiet: true
+        fail_msg: >-
+          {{ backend_releases_dir }}/{{ rollback_to }} 或
+          {{ frontend_releases_dir }}/{{ rollback_to }} 不是目錄。
+          release 目錄可能被手動刪掉了，或者這個 id 只在其中一邊存在。
+
+    - name: Gate 3/4 | 現在的 current 必須是位於 releases 底下的 symlink
+      ansible.builtin.assert:
+        that:
+          - (not (rollback_do_backend | bool)) or
+            ((rollback_backend_current_stat.stat.islnk | default(false))
+             and rollback_backend_current_real.startswith(backend_releases_dir ~ '/'))
+          - (not (rollback_do_frontend | bool)) or
+            ((rollback_frontend_current_stat.stat.islnk | default(false))
+             and rollback_frontend_current_real.startswith(frontend_releases_dir ~ '/'))
+        quiet: true
+        fail_msg: >-
+          current 不是指向 releases 底下的 symlink：
+          backend current = {{ rollback_backend_current_real | default('（不存在）', true) }}
+          frontend current = {{ rollback_frontend_current_real | default('（不存在）', true) }}
+          可能是這台機器還沒部署過，或者有人把 current 換成了實體目錄。
+          回滾只處理 symlink 佈局，請先跑一次 site.yml 把佈局建立起來。
+
+    - name: Gate 4/4 | 判斷各元件是否真的需要切換
+      ansible.builtin.set_fact:
+        rollback_backend_needed: >-
+          {{ (rollback_do_backend | bool)
+             and (rollback_backend_current_id != rollback_to) }}
+        rollback_frontend_needed: >-
+          {{ (rollback_do_frontend | bool)
+             and (rollback_frontend_current_id != rollback_to) }}
+
+    - name: Gate 4/4 | 目標與現況完全相同時不做任何事
+      ansible.builtin.assert:
+        that:
+          - (rollback_backend_needed | bool) or (rollback_frontend_needed | bool)
+        quiet: true
+        fail_msg: >-
+          backend current 已經是 {{ rollback_backend_current_id }}、
+          frontend current 已經是 {{ rollback_frontend_current_id }}，
+          與 rollback_to={{ rollback_to }} 相同 —— 沒有東西需要回滾。
+          （要重新部署同一版程式碼請用 playbooks/deploy-only.yml，不是回滾。）
+
+    # ── 3. 人工確認 ─────────────────────────────────────────────────────────
+    - name: 確認 | 即將執行的變更
+      ansible.builtin.debug:
+        msg:
+          - "主機       : {{ inventory_hostname }}"
+          - "backend    : {{ rollback_backend_current_id }} -> {{ rollback_to }}{{ '  （不變）' if not (rollback_backend_needed | bool) else '' }}"
+          - "frontend   : {{ rollback_frontend_current_id }} -> {{ rollback_to }}{{ '  （不變）' if not (rollback_frontend_needed | bool) else '' }}"
+          - "重啟服務   : {{ rollback_restart_services }}（php-fpm reload / queue restart / pm2 reload / nginx reload）"
+          - "資料庫     : 不會回滾。若被回滾掉的版本帶了 migration，請自行確認相容性。"
+          - "舊 release : 不會被刪除，隨時可以再切回去。"
+
+    - name: 確認 | 請打字確認（-e rollback_confirm=true 可跳過）
+      ansible.builtin.pause:
+        prompt: |-
+          即將把 {{ inventory_hostname }} 的 current 切到 release「{{ rollback_to }}」。
+
+            backend  {{ rollback_backend_current_id }} -> {{ rollback_to }}
+            frontend {{ rollback_frontend_current_id }} -> {{ rollback_to }}
+
+          注意：資料庫「不會」跟著回滾。artisan migrate 是單向的，
+          若這次回滾跨過了會改欄位型別 / 刪欄位的 migration，舊程式碼會壞。
+
+          確定要繼續請輸入 yes，其他任何輸入都會中止
+      register: rollback_answer
+      when:
+        - not (rollback_confirm | bool)
+        - not ansible_check_mode
+
+    - name: 確認 | 沒有輸入 yes 就中止
+      ansible.builtin.assert:
+        that:
+          - (rollback_answer.user_input | default('') | trim | lower) == 'yes'
+        quiet: true
+        fail_msg: >-
+          已中止，什麼都沒有改（你輸入的是
+          「{{ rollback_answer.user_input | default('') | trim }}」）。
+      when:
+        - not (rollback_confirm | bool)
+        - not ansible_check_mode
+        - rollback_answer is not skipped
+
+    # ── 4. 換 symlink（原子）─────────────────────────────────────────────────
+    #
+    # ln -sfn 建一個暫時的 symlink，再用 mv -T 原子地 rename 到 current。
+    #   * -T 是關鍵：current 是「指向目錄的 symlink」，沒有 -T 的話
+    #     `mv tmp current` 會把 tmp 搬「進」那個目錄，而不是取代 symlink。
+    #   * rename(2) 在同一個檔案系統上是原子的 —— 不會出現「current 短暫不存在」
+    #     而讓 nginx 回 500 的窗口。ansible.builtin.file state=link force=yes
+    #     是 unlink + symlink 兩步，會有那個窗口。
+    #   * 以 deploy 身分執行，symlink 的 owner 才跟 deploy role 建出來的一致。
+    - name: 切換 | backend current -> {{ rollback_to }}
+      become: true
+      become_user: "{{ deploy_user }}"
+      ansible.builtin.command:
+        argv:
+          - "/bin/sh"
+          - "-c"
+          - 'set -eu; tmp="$2.rollback.$$"; ln -sfn "$1" "$tmp"; mv -Tf "$tmp" "$2"'
+          - "pm-rollback"
+          - "{{ backend_releases_dir }}/{{ rollback_to }}"
+          - "{{ backend_current_path }}"
+      register: rollback_backend_link
+      changed_when: rollback_backend_link.rc == 0
+      failed_when: rollback_backend_link.rc != 0
+      when: rollback_backend_needed | bool
+
+    - name: 切換 | frontend current -> {{ rollback_to }}
+      become: true
+      become_user: "{{ deploy_user }}"
+      ansible.builtin.command:
+        argv:
+          - "/bin/sh"
+          - "-c"
+          - 'set -eu; tmp="$2.rollback.$$"; ln -sfn "$1" "$tmp"; mv -Tf "$tmp" "$2"'
+          - "pm-rollback"
+          - "{{ frontend_releases_dir }}/{{ rollback_to }}"
+          - "{{ frontend_current_path }}"
+      register: rollback_frontend_link
+      changed_when: rollback_frontend_link.rc == 0
+      failed_when: rollback_frontend_link.rc != 0
+      when: rollback_frontend_needed | bool
+
+    # ── 5. 重新載入服務 ─────────────────────────────────────────────────────
+    # php-fpm：一定要 reload。FPM worker 有 realpath cache（realpath_cache_ttl
+    # 預設 600 秒），不 reload 的話最長 10 分鐘內還會解析到舊的 release 路徑；
+    # OPcache 的 key 也是 realpath，同樣要靠 reload 清掉。
+    - name: 重載 | php-fpm（清 realpath cache 與 OPcache）
+      ansible.builtin.systemd_service:
+        name: "{{ php_fpm_service }}"
+        state: reloaded
+      when:
+        - rollback_backend_needed | bool
+        - rollback_restart_services | bool
+
+    - name: 重載 | 檢查 queue worker 的 systemd unit 是否存在
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ backend_queue_service }}"
+      register: rollback_queue_unit
+
+    # 長駐的 queue worker 會把程式碼載在記憶體裡，換版之後一定要重啟，
+    # 否則它會繼續跑舊的 Job 類別（而且錯誤訊息完全看不出原因）。
+    - name: 重載 | 重啟 queue worker
+      ansible.builtin.systemd_service:
+        name: "{{ backend_queue_service }}"
+        state: restarted
+      when:
+        - rollback_backend_needed | bool
+        - rollback_restart_services | bool
+        - rollback_queue_unit.stat.exists
+
+    # A10：PM2 一律 fork。startOrReload 會用 ecosystem 裡的定義重新載入，
+    # script 路徑是走 current symlink 的，所以換完 symlink 之後 reload 就會跑到新版。
+    - name: 重載 | PM2 startOrReload（ssr / spa）
+      become: true
+      become_user: "{{ deploy_user }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ pm2_bin }}"
+          - "startOrReload"
+          - "{{ pm2_ecosystem_path }}"
+          - "--update-env"
+        chdir: "{{ pm2_ecosystem_dir }}"
+      environment:
+        PM2_HOME: "{{ pm2_home }}"
+        HOME: "{{ deploy_user_home }}"
+      register: rollback_pm2_reload
+      changed_when: rollback_pm2_reload.rc == 0
+      failed_when: rollback_pm2_reload.rc != 0
+      when:
+        - rollback_frontend_needed | bool
+        - rollback_restart_services | bool
+        - frontend_mode in ['ssr', 'spa']
+
+    - name: 重載 | PM2 save（讓開機 resurrect 的內容與現況一致）
+      become: true
+      become_user: "{{ deploy_user }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ pm2_bin }}"
+          - "save"
+          - "--force"
+      environment:
+        PM2_HOME: "{{ pm2_home }}"
+        HOME: "{{ deploy_user_home }}"
+      register: rollback_pm2_save
+      changed_when: rollback_pm2_save.rc == 0
+      failed_when: rollback_pm2_save.rc != 0
+      when:
+        - rollback_pm2_reload is defined
+        - rollback_pm2_reload is not skipped
+        - rollback_pm2_reload is changed
+
+    # A12：驗證用 `nginx -t`，絕不加 -c（-c 會把片段當成完整主設定，
+    # 沒有 events{} 就 emerg）。這裡驗的是完整的主設定，所以沒有那個問題。
+    - name: 重載 | nginx 設定檢查（不加 -c，A12）
+      ansible.builtin.command:
+        argv:
+          - "{{ nginx_binary }}"
+          - "-t"
+      register: rollback_nginx_test
+      changed_when: false
+      failed_when: rollback_nginx_test.rc != 0
+      when:
+        - rollback_restart_services | bool
+        - (rollback_backend_needed | bool) or (rollback_frontend_needed | bool)
+
+    # static 模式時 nginx 直接從 {{ frontend_static_root }}（走 current symlink）
+    # 送檔，reload 讓它重新解析路徑；ssr/spa 模式 reload 也無害。
+    - name: 重載 | nginx reload
+      ansible.builtin.systemd_service:
+        name: "{{ nginx_service_name }}"
+        state: reloaded
+      when:
+        - rollback_restart_services | bool
+        - rollback_nginx_test is not skipped
+        - (rollback_backend_needed | bool) or (rollback_frontend_needed | bool)
+
+    # ── 6. 就地驗證 ─────────────────────────────────────────────────────────
+    - name: 驗證 | current 已經指到目標 release
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ backend_current_path }}"
+        - "{{ frontend_current_path }}"
+      loop_control:
+        label: "{{ item }}"
+      register: rollback_verify_stat
+
+    - name: 驗證 | symlink 指向確認
+      ansible.builtin.assert:
+        that:
+          - (not (rollback_backend_needed | bool)) or
+            ((rollback_verify_stat.results[0].stat.lnk_source | default('') | basename) == rollback_to)
+          - (not (rollback_frontend_needed | bool)) or
+            ((rollback_verify_stat.results[1].stat.lnk_source | default('') | basename) == rollback_to)
+        quiet: true
+        fail_msg: >-
+          symlink 沒有切過去：
+          backend -> {{ rollback_verify_stat.results[0].stat.lnk_source | default('（不存在）') }}
+          frontend -> {{ rollback_verify_stat.results[1].stat.lnk_source | default('（不存在）') }}
+          預期兩者都指向 {{ rollback_to }}。
+      when: not ansible_check_mode
+
+    - name: 驗證 | 後端進入點存在
+      ansible.builtin.stat:
+        path: "{{ backend_current_path }}/public/index.php"
+      register: rollback_verify_index
+      when: rollback_backend_needed | bool
+
+    - name: 驗證 | 後端進入點必須存在
+      ansible.builtin.assert:
+        that:
+          - rollback_verify_index.stat.exists | default(false)
+        quiet: true
+        fail_msg: >-
+          {{ backend_current_path }}/public/index.php 不存在。
+          這個 release 目錄可能是壞的（部署到一半失敗留下來的）。
+          請改回滾到別的 id：-e rollback_to=<其他 id>
+      when:
+        - rollback_backend_needed | bool
+        - not ansible_check_mode
+
+    # 直接打 Nitro 的埠，跳過 nginx 與 TLS —— 這樣才能區分
+    # 「前端本身掛了」和「nginx / 憑證設定有問題」。
+    - name: 驗證 | 前端 Nitro 直連（ssr / spa）
+      ansible.builtin.uri:
+        url: "http://{{ frontend_host }}:{{ (frontend_port | int) + item }}/"
+        method: GET
+        status_code: [200, 301, 302, 304]
+        timeout: 10
+        validate_certs: false
+      loop: "{{ range(frontend_instances | int) | list }}"
+      loop_control:
+        label: "{{ frontend_host }}:{{ (frontend_port | int) + item }}"
+      register: rollback_verify_front
+      retries: 12
+      delay: 5
+      until: rollback_verify_front is succeeded
+      when:
+        - rollback_frontend_needed | bool
+        - frontend_mode in ['ssr', 'spa']
+        - not ansible_check_mode
+
+    - name: 回滾完成
+      ansible.builtin.debug:
+        msg:
+          - "主機     : {{ inventory_hostname }}"
+          - "backend  : {{ rollback_backend_current_id }} -> {{ rollback_to }}{{ '（未變動）' if not (rollback_backend_needed | bool) else '' }}"
+          - "frontend : {{ rollback_frontend_current_id }} -> {{ rollback_to }}{{ '（未變動）' if not (rollback_frontend_needed | bool) else '' }}"
+          - "要再切回去：ansible-playbook playbooks/rollback.yml -e rollback_to={{ rollback_backend_current_id }}"
+          - "舊 release 都還在，沒有任何東西被刪除。"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 回滾後的健康檢查：直接重用 healthcheck role，不另外寫一份會漂移的檢查邏輯。
+# 查詢模式（沒帶 rollback_to）時不執行。
+# ──────────────────────────────────────────────────────────────────────────────
+- name: pm | rollback 之後的健康檢查
+  hosts: "{{ rollback_hosts | default('web') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  vars:
+    rollback_to: ""
+    rollback_healthcheck: true
+
+  roles:
+    - role: healthcheck
+      tags: [healthcheck]
+      when:
+        - rollback_healthcheck | bool
+        - (rollback_to | default('') | trim | length) > 0
+        - healthcheck_enabled | bool

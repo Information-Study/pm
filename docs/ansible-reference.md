@@ -59,7 +59,7 @@ collections_path = ./collections:~/.ansible/collections:/usr/share/ansible/colle
 ## 3. 變數與 vault
 
 ```
-ansible/inventory/
+env/ansible/inventory/
 ├── hosts.yml                    ⚠ 不進版控
 ├── hosts.yml.example
 └── group_vars/
@@ -560,14 +560,14 @@ cx --yes deploy rollback staging -e rollback_to=20260903-181200 -e rollback_conf
 
 ## 9. 本機驗證用的目標
 
-`ansible/inventory/hosts.yml`（不進版控）指向一個
+`env/ansible/inventory/hosts.yml`（不進版控）指向一個
 `pm/ansible-target:<版本>` 容器：Ubuntu + systemd + sshd + sudo NOPASSWD，
 SSH 在 `127.0.0.1:2222`。
 
 這不是玩具 —— 它跑 systemd，`systemd_service` 模組、handler、
 服務啟動順序全部是真的。
 
-建置與啟動見 [`docker/ansible-target/README.md`](../docker/ansible-target/README.md)。
+建置與啟動見 [`env/docker/ansible-target/README.md`](../env/docker/ansible-target/README.md)。
 Dockerfile 用 `UBUNTU_VERSION` 參數化，所以同一份可以建 22.04 / 24.04 / 26.04。
 
 > 這個 Dockerfile 2026-09-05 才進版控 —— 在那之前映像是用一次性腳本建的，

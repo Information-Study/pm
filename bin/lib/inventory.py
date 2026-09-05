@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""ansible/inventory/hosts.yml 的產生、修改與檢查。
+"""env/ansible/inventory/hosts.yml 的產生、修改與檢查。
 
 為什麼要有這支程式：`cx deploy` 的每一個動詞都需要 hosts.yml，而它是唯一
 一個**沒有任何工具幫忙產生**的必要檔案 —— 從選單走到部署那一步會撞牆，
-訊息只說「缺少 ansible/inventory/hosts.yml」，然後叫人離開 cx 自己 cp 範例檔。
+訊息只說「缺少 env/ansible/inventory/hosts.yml」，然後叫人離開 cx 自己 cp 範例檔。
 
 為什麼用 Python 而不是在 bash 裡改 YAML：巢狀結構加上「同一台主機要同時
 出現在環境群組、web、db_primary 三個地方」，用 sed/awk 改是找死。
@@ -13,7 +13,7 @@
    換來的是產出一定是合法且一致的 —— 三個群組不會對不起來。
    要手寫就用 `cx deploy hosts edit`，那條路徑不會經過這裡。
 
-群組模型（來源：ansible/site.yml 的 roles 區塊）：
+群組模型（來源：env/ansible/site.yml 的 roles 區塊）：
     <專案>_servers  site.yml 的作用對象，所有主機都要在裡面（common / hardening）
     web          php-fpm / nginx / node+PM2 / deploy_* / healthcheck
     db_primary   MySQL，而且由它執行 artisan migrate。**剛好一台**，
@@ -38,7 +38,7 @@ except ImportError:                                  # pragma: no cover
 #
 # ⚠ 這裡原本寫死 "pm_servers"，而 cx rename 的改名清單裡**沒有這個檔**
 #   （rename.sh 改的是 .cxroot / .env / sonar-project.properties /
-#     group_vars/all/main.yml / ansible/site.yml / bin/cmd/deploy.sh）。
+#     group_vars/all/main.yml / env/ansible/site.yml / bin/cmd/deploy.sh）。
 #   後果很具體：cx rename shop 之後 site.yml 與 deploy.sh 都變成 shop_servers，
 #   但 cx deploy hosts init/add 產生的 hosts.yml 群組仍叫 pm_servers →
 #   ansible 比對到 0 台主機，而它對「比對不到任何主機」只印 warning 並回 0。
@@ -107,7 +107,7 @@ def render(env, hosts):
     add("# 由 `cx deploy hosts` 產生。要手寫請用 `cx deploy hosts edit`——")
     add("# 再跑一次 add/rm 會重新產生這個檔，手寫的註解會不見（結構與值會保留）。")
     add("#")
-    add("# 群組的意義（來源：ansible/site.yml 的 roles 區塊）：")
+    add("# 群組的意義（來源：env/ansible/site.yml 的 roles 區塊）：")
     add(f"#   {SERVERS_GROUP}  site.yml 的作用對象，所有主機都要在裡面")
     add("#   web_frontend  node+PM2 / deploy_frontend")
     add("#   web_backend   php-fpm / composer / deploy_backend（migration 在這裡）")

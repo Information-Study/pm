@@ -313,9 +313,9 @@ def check_external_image_pins(cfgs, root):
 def check_dockerfiles(root):
     """3.2 不用 pecl；2.1 vendor-dev 不加 --no-autoloader；
     D12 prod 有 xdebug 斷言；D14 dev 不 COPY 原始碼；D15 nuxt 多 target。"""
-    php = Path(root, "docker/php/Dockerfile")
+    php = Path(root, "env/docker/php/Dockerfile")
     if not php.exists():
-        out("FAIL", "3.2", "Dockerfile 存在", "缺少 docker/php/Dockerfile")
+        out("FAIL", "3.2", "Dockerfile 存在", "缺少 env/docker/php/Dockerfile")
         return
     body = uncommented(php.read_text(encoding="utf-8"))
 
@@ -344,9 +344,9 @@ def check_dockerfiles(root):
     else:
         out("PASS", "D14", "dev stage 不 COPY 原始碼")
 
-    nuxt = Path(root, "docker/nuxt/Dockerfile")
+    nuxt = Path(root, "env/docker/nuxt/Dockerfile")
     if not nuxt.exists():
-        out("FAIL", "D15", "nuxt 有多個 target", "缺少 docker/nuxt/Dockerfile")
+        out("FAIL", "D15", "nuxt 有多個 target", "缺少 env/docker/nuxt/Dockerfile")
         return
     n = nuxt.read_text(encoding="utf-8")
     targets = [t for t in ("AS deps", "AS dev", "AS build", "AS prod", "AS static") if t in n]
@@ -395,7 +395,7 @@ def check_scan_no_fixed_name(root):
 def check_no_ignore_platform(root):
     """D10 / 紅線 4：不得用 --ignore-platform-reqs 硬過相依衝突。"""
     hits = []
-    targets = list(Path(root, "bin").rglob("*.sh")) + [Path(root, "docker/php/Dockerfile")]
+    targets = list(Path(root, "bin").rglob("*.sh")) + [Path(root, "env/docker/php/Dockerfile")]
     for p in targets:
         if not p.exists():
             continue
@@ -519,7 +519,7 @@ def check_stop_semantics(cfgs, root):
     Docker 10 秒就 SIGKILL —— 於是處理中的 queue job 一律被砍，而兩個檔案
     各自看起來都很合理。
     """
-    conf = Path(root, "docker/php/supervisord.conf")
+    conf = Path(root, "env/docker/php/supervisord.conf")
     if not conf.exists():
         out("SKIP", "hard-stop", "stop_grace_period 大於 supervisord 的 stopwaitsecs",
             "找不到 supervisord.conf")
@@ -582,14 +582,14 @@ def check_upload_limit_chain(cfgs, root):
     再被 ModSecurity 以 SecRequestBodyLimitAction Reject 擋掉，
     而訊息只會指向 ModSecurity，看不出是兩個限制設反了。
 
-    原生側（ansible/roles/nginx_myguard/defaults/main.yml）一直是從
+    原生側（env/ansible/roles/nginx_myguard/defaults/main.yml）一直是從
     app_max_upload_mb 推導整條鏈並在 A16 明文要求這個順序；
     Docker 側曾經是 12.5MB < 64m，也就是兩條路徑對同一件事的規則不一致。
     這個檢查就是不讓它們再分岔。
     """
-    conf = Path(root, "docker/edge/nginx.conf")
+    conf = Path(root, "env/docker/edge/nginx.conf")
     if not conf.exists():
-        out("SKIP", "A16", "上傳大小的限制鏈（nginx ≤ WAF）", "找不到 docker/edge/nginx.conf")
+        out("SKIP", "A16", "上傳大小的限制鏈（nginx ≤ WAF）", "找不到 env/docker/edge/nginx.conf")
         return
     m = re.search(r"^\s*client_max_body_size\s+(\S+?);", conf.read_text(encoding="utf-8"), re.M)
     if not m:

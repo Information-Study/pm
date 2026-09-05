@@ -12,7 +12,7 @@
 #   裡的，而 _fresh_delete 會把 FRESH_DELETE **加上** FRESH_MIGRATE 一起刪掉。
 #   當時的註解寫「Phase 2 會重寫根目錄那兩份」—— 那句話在遷移進行中是對的，
 #   遷移完成之後就過期了：**根目錄的 docker-compose.yml 現在就是 Phase 2 的那一份**。
-#   後果是 cx fresh 跑完之後 docker/legacy/ 有一份 .orig 副本，而根目錄什麼都沒有，
+#   後果是 cx fresh 跑完之後 env/docker/legacy/ 有一份 .orig 副本，而根目錄什麼都沒有，
 #   於是每一個 compose 動詞都死在「缺少 base compose」——
 #   一個「重建成可以直接跑的新專案」的動詞，交出來的樹是不能跑的。
 #   2026-09-05 實測確認（cx fresh --phase delete 之後 cx dev config → EX_PRECOND）。
@@ -314,7 +314,7 @@ _fresh_step() {                     # _fresh_step <說明> -- <指令...>
 _fresh_migrate() {
     cx_step "遷移 Docker 自定義設定到 docker/"
     _fresh_step "建立 docker/{php,nuxt,legacy}" -- \
-        mkdir -p "$CX_ROOT/docker/php" "$CX_ROOT/docker/nuxt" "$CX_ROOT/docker/legacy" || return $?
+        mkdir -p "$CX_ROOT/env/docker/php" "$CX_ROOT/env/docker/nuxt" "$CX_ROOT/env/docker/legacy" || return $?
 
     local f d
     for d in php nuxt; do
@@ -322,19 +322,19 @@ _fresh_migrate() {
         for f in "$CX_ROOT/$d"/*; do
             [[ -e $f ]] || continue
             _fresh_step "$d/$(basename "$f") → docker/$d/" -- \
-                cp -a "$f" "$CX_ROOT/docker/$d/$(basename "$f")" || return $?
+                cp -a "$f" "$CX_ROOT/env/docker/$d/$(basename "$f")" || return $?
         done
     done
 
-    # 這裡曾經把 docker-compose.yml 與 .dockerignore 複製到 docker/legacy/ ——
+    # 這裡曾經把 docker-compose.yml 與 .dockerignore 複製到 env/docker/legacy/ ——
     # 那是為了在「刪掉原處」之前留一份參考。現在那兩個檔改成保留（見
     # FRESH_PRESERVE 的說明），所以複製一份 .orig 只會讓人以為根目錄那份會被換掉。
 
     # 舊腳本也留一份，方便對照
     for f in init.sh refresh.sh README.md; do
         [[ -f $CX_ROOT/$f ]] || continue
-        _fresh_step "$f → docker/legacy/" -- \
-            cp -a "$CX_ROOT/$f" "$CX_ROOT/docker/legacy/$f.orig" || return $?
+        _fresh_step "$f → env/docker/legacy/" -- \
+            cp -a "$CX_ROOT/$f" "$CX_ROOT/env/docker/legacy/$f.orig" || return $?
     done
 
     cx_ok "遷移完成 —— 所有自定義設定都有副本在 docker/ 底下"
@@ -476,7 +476,7 @@ _fresh_delete() {                   # _fresh_delete [模式]
         return 0
     fi
     for t in "${FRESH_DELETE[@]}" "${FRESH_MIGRATE[@]}"; do
-        # docker-compose.yml 與 .dockerignore 已複製到 docker/legacy/，原處刪除
+        # docker-compose.yml 與 .dockerignore 已複製到 env/docker/legacy/，原處刪除
         _fresh_nuke "$CX_ROOT/$t" || return 1
     done
 
@@ -780,15 +780,15 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
     # 少了這一段，「重建完成」可以在**沒有 docker-compose.yml** 的情況下宣告成功，
     # 而使用者要到下一次 cx dev up 才發現整個 compose 都不能用。
     # 這正是 2026-09-05 抓到的那個缺陷會走的路徑。
-    for f in docker-compose.yml .dockerignore docker/compose/dev.yml \
-             docker/compose/test.yml docker/compose/prod.yml; do
+    for f in docker-compose.yml .dockerignore env/docker/compose/dev.yml \
+             env/docker/compose/test.yml env/docker/compose/prod.yml; do
         [[ -f $CX_ROOT/$f ]] && cx_ok "存在：$f" || { cx_error "缺少：$f"; fail=1; }
     done
-    # 而且要是**現行**那一份（引用 docker/compose/），不是舊版面留下來的
-    if grep -q 'docker/compose/' "$CX_ROOT/docker-compose.yml" 2>/dev/null; then
-        cx_ok "docker-compose.yml 是現行版面（引用 docker/compose/）"
+    # 而且要是**現行**那一份（引用 env/docker/compose/），不是舊版面留下來的
+    if grep -q 'env/docker/compose/' "$CX_ROOT/docker-compose.yml" 2>/dev/null; then
+        cx_ok "docker-compose.yml 是現行版面（引用 env/docker/compose/）"
     else
-        cx_error "docker-compose.yml 不是現行版面 —— 沒有引用 docker/compose/"
+        cx_error "docker-compose.yml 不是現行版面 —— 沒有引用 env/docker/compose/"
         fail=1
     fi
 
@@ -1170,7 +1170,7 @@ cmd_fresh_main() {
 
         # 閘門必須在 _fresh_migrate **之前**。
         # 原本順序是 migrate → gate，而 migrate 會把 docker-compose.yml /
-        # .dockerignore / README.md 複製成 docker/legacy/*.orig —— 那是三個
+        # .dockerignore / README.md 複製成 env/docker/legacy/*.orig —— 那是三個
         # 進版控的檔案。於是使用者在確認畫面按取消，畫面印「未變更任何檔案」，
         # git status 卻多出三個 M。訊息說謊比動到檔案更糟。
         _fresh_gate "$A" "$mode" || { _fresh_state_clear; return "$EX_ABORT"; }
@@ -1189,7 +1189,7 @@ cmd_fresh_main() {
     elif (( floor <= 2 && ceiling >= 2 )); then
         # migrate 的 rc 一定要檢查。閘門已經過了，這裡是不可逆點的另一邊 ——
         # 遷移失敗卻繼續 _fresh_delete，等於把 docker 自定義設定連同原處
-        # 一起刪掉，而 docker/legacy/ 底下沒有可用的副本。
+        # 一起刪掉，而 env/docker/legacy/ 底下沒有可用的副本。
         _fresh_migrate || { _fresh_recovery_note "$A" "遷移失敗"; cx_die "$EX_FAIL" \
             "遷移失敗 —— 已中止，未刪除任何東西（封存在 $A）"; }
         _fresh_state_write migrate "$A"

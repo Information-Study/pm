@@ -195,7 +195,7 @@ cx help            # 看有哪些動詞
 ### `Bind for 0.0.0.0:8080 failed: port is already allocated`
 
 `-p pm_<mode>` 隔離容器、網路、volume，**但不隔離 host 埠**。
-兩個模式必須用不同的埠段（`docker/env/<mode>.env`）。
+兩個模式必須用不同的埠段（`env/docker/compose/<mode>.env`）。
 
 先看誰佔著：`docker ps --format '{{.Names}} {{.Ports}}' | grep 8080`
 

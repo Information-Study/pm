@@ -19,7 +19,7 @@
 #   backend  → 不能用 app service。app 是 php:8.5-fpm-alpine，
 #              裡面根本沒有 node/npm，實測會是
 #                exec: "npm": executable file not found in $PATH
-#              後端資產在正式流程裡是由 docker/php/Dockerfile 的
+#              後端資產在正式流程裡是由 env/docker/php/Dockerfile 的
 #              backend-assets stage 建的（那個 stage 才有 node，
 #              而且它在映像內自己 npm ci，不掛 host 的 node_modules）。
 #
@@ -75,8 +75,8 @@ _npm_frontend_native() {
 
 _npm_frontend_docker() {
     cx_runner_need_docker "cx npm"
-    [[ -f $CX_ROOT/docker/compose/${CX_MODE}.yml ]] \
-        || cx_die "$EX_PRECOND" "缺少 docker/compose/${CX_MODE}.yml"
+    [[ -f $CX_ROOT/env/docker/compose/${CX_MODE}.yml ]] \
+        || cx_die "$EX_PRECOND" "缺少 env/docker/compose/${CX_MODE}.yml"
     cx_runner_banner "compose 的 nuxt service"
     cx_compose_init "$CX_MODE"
     # --no-deps：npm 不需要資料庫。少了它會為了跑一個 npm ci 把整組拉起來。

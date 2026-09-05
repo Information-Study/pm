@@ -30,15 +30,15 @@ TXT
 }
 
 _lint_ansible() {
-    local target="${1:-$CX_ROOT/ansible}"
+    local target="${1:-$CX_ROOT/env/ansible}"
     [[ $target == /* ]] || target=$(cx_resolve "$target")
     [[ -d $target ]] || cx_die "$EX_PRECOND" "找不到 $target"
 
     cx_step "Ansible 靜態檢查"
     if cx_have ansible-playbook; then
         cx_warn "偵測到 ansible-playbook —— 真正的檢查是 cx deploy lint"
-        cx_dim "  ansible-playbook $CX_ROOT/ansible/site.yml --syntax-check"
-        cx_dim "  ansible-lint $CX_ROOT/ansible/"
+        cx_dim "  ansible-playbook $CX_ROOT/env/ansible/site.yml --syntax-check"
+        cx_dim "  ansible-lint $CX_ROOT/env/ansible/"
         cx_info "以下仍執行靜態檢查作為補充"
     else
         cx_warn "ansible 未安裝 —— 這是替代性檢查，不等於 --syntax-check"

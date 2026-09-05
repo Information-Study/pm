@@ -38,6 +38,6 @@ setup() {
     make_repo drymig >/dev/null
     run cx_bin --dry-run --yes fresh --phase migrate
     assert_rc 0
-    [ ! -e "$CX_TEST_ROOT/docker/legacy/docker-compose.yml.orig" ] \
+    [ ! -e "$CX_TEST_ROOT/env/docker/legacy/docker-compose.yml.orig" ] \
         || _fail_with "dry-run 真的複製了檔案"
 }

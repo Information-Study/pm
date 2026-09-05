@@ -95,9 +95,9 @@ _vf_config() {
     # pm_<mode>_net 去比對真實的 <專案>_<mode>_net，全部判 FAIL ——
     # 一個全新的範本專案開箱就報驗證失敗。
     local -a a=(--project-directory "$CX_ROOT" -p "$(cx_project_for "$mode")"
-                -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/docker/compose/${mode}.yml")
+                -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/env/docker/compose/${mode}.yml")
     local f
-    for f in "$CX_ROOT/.env" "$CX_ROOT/docker/env/${mode}.env"; do
+    for f in "$CX_ROOT/.env" "$CX_ROOT/env/docker/compose/${mode}.env"; do
         [[ -f $f ]] && a+=(--env-file "$f")
     done
     docker compose "${a[@]}" config --format json >"$out" 2>/dev/null || return 1
@@ -287,7 +287,7 @@ _verify_waf() {
     cx_step "WAF 驗收（test 模式）"
     local proj port
     proj=$(cx_project_for test)
-    port=$(grep -E '^WAF_HTTP_PORT=' "$CX_ROOT/docker/env/test.env" 2>/dev/null | cut -d= -f2)
+    port=$(grep -E '^WAF_HTTP_PORT=' "$CX_ROOT/env/docker/compose/test.env" 2>/dev/null | cut -d= -f2)
     port=${port:-18081}
 
     local cid
@@ -302,7 +302,7 @@ _verify_waf() {
     # 宣告值與實際值必須一致。這一項抓的是 cx scan dast 切換引擎之後沒還原
     # 造成的漂移 —— 環境跟版控說的不一樣，而且沒有任何地方會提醒你。
     local declared actual
-    declared=$(grep -E '^MODSEC_RULE_ENGINE=' "$CX_ROOT/docker/env/test.env" 2>/dev/null | cut -d= -f2)
+    declared=$(grep -E '^MODSEC_RULE_ENGINE=' "$CX_ROOT/env/docker/compose/test.env" 2>/dev/null | cut -d= -f2)
     declared=${declared:-DetectionOnly}
     actual=$(docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
              | sed -n 's/^MODSEC_RULE_ENGINE=//p' | head -1)
@@ -342,7 +342,7 @@ _verify_waf() {
         _vf SKIP "waf-livewire" "Livewire 的正常請求不被誤擋" "抓不到端點前綴"
         return 0
     fi
-    edge_port=$(grep -E '^EDGE_HTTP_PORT=' "$CX_ROOT/docker/env/test.env" 2>/dev/null | cut -d= -f2)
+    edge_port=$(grep -E '^EDGE_HTTP_PORT=' "$CX_ROOT/env/docker/compose/test.env" 2>/dev/null | cut -d= -f2)
     edge_port=${edge_port:-18080}
     # body 要用「排除規則正是為了放行它才存在」的內容 —— 太溫和的字串
     # 在 PL1 之下本來就不會觸發 CRS，那樣的檢查會永遠通過，等於沒驗。
@@ -471,7 +471,7 @@ cmd_verify_main() {
                 cx_docker_need
                 local m port
                 for m in dev test prod; do
-                    port=$(grep -E '^EDGE_HTTP_PORT=' "$CX_ROOT/docker/env/$m.env" 2>/dev/null | cut -d= -f2)
+                    port=$(grep -E '^EDGE_HTTP_PORT=' "$CX_ROOT/env/docker/compose/$m.env" 2>/dev/null | cut -d= -f2)
                     [[ -n $port ]] || continue
                     if curl -s -o /dev/null -m 5 "http://localhost:$port/healthz" 2>/dev/null; then
                         _verify_app_mode "$m" "http://localhost:$port"

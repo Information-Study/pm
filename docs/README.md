@@ -18,7 +18,7 @@
 | [`acceptance.md`](acceptance.md) | 驗收清單：原始需求 → 檢查 ID → 實測結果 | 交接、要證據時 |
 | [`progress.md`](progress.md) | 進度追蹤與「還沒驗證什麼」 | 交接、規劃 |
 | [`docker-verification.md`](docker-verification.md) | Phase 2 的驗收需求與實測結果 | 稽核 |
-| [`../docker/ansible-target/README.md`](../docker/ansible-target/README.md) | **本機驗證用的 Ansible 目標容器**：怎麼建 22.04 / 24.04 / 26.04、systemd 需要什麼 | 在 WSL 內驗證部署 |
+| [`../env/docker/ansible-target/README.md`](../env/docker/ansible-target/README.md) | **本機驗證用的 Ansible 目標容器**：怎麼建 22.04 / 24.04 / 26.04、systemd 需要什麼 | 在 WSL 內驗證部署 |
 
 ## 該讀哪一份
 

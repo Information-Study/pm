@@ -103,7 +103,7 @@ LIVEWIRE_BODY = json.dumps({
 ENGINES = ["DetectionOnly", "On"]
 
 # 引擎探測完要還原成宣告值，否則 cx scan dast 會把 test 堆疊留在 On，
-# 而 docker/env/test.env 宣告的是 DetectionOnly —— 下一個人看到的環境
+# 而 env/docker/compose/test.env 宣告的是 DetectionOnly —— 下一個人看到的環境
 # 與版控裡寫的不一樣，而且沒有任何地方會告訴他。
 DEFAULT_ENGINE = "DetectionOnly"
 
@@ -119,9 +119,9 @@ def compose(root, *args):
         "--project-directory", root,
         "-p", f"{PROJECT}_test",
         "-f", os.path.join(root, "docker-compose.yml"),
-        "-f", os.path.join(root, "docker/compose/test.yml"),
+        "-f", os.path.join(root, "env/docker/compose/test.yml"),
     ]
-    for f in (".env", "docker/env/test.env"):
+    for f in (".env", "env/docker/compose/test.env"):
         p = os.path.join(root, f)
         if os.path.exists(p):
             base += ["--env-file", p]
@@ -187,8 +187,8 @@ def livewire_prefix(net):
 
 
 def declared_engine(root):
-    """docker/env/test.env 宣告的引擎值 —— 探測結束後要還原成這個。"""
-    path = os.path.join(root, "docker/env/test.env")
+    """env/docker/compose/test.env 宣告的引擎值 —— 探測結束後要還原成這個。"""
+    path = os.path.join(root, "env/docker/compose/test.env")
     try:
         for line in open(path, encoding="utf-8"):
             line = line.strip()
@@ -228,7 +228,7 @@ def main() -> int:
     finally:
         # 一定要還原。少了這一段，cx scan dast 會把 test 堆疊留在最後一個
         # 引擎值（On）上，而版控裡宣告的是 DetectionOnly ——
-        # 下一個人拿到的環境與 docker/env/test.env 說的不一樣，
+        # 下一個人拿到的環境與 env/docker/compose/test.env 說的不一樣，
         # 而且沒有任何地方會提醒他。實測確認過這個漂移真的會發生。
         want = declared_engine(root)
         try:
@@ -265,7 +265,7 @@ def main() -> int:
     if false_positives:
         # 這比「沒擋到攻擊」更嚴重：代表排除規則沒生效，後台會不能用。
         print(f"  ✘ 正常請求被誤擋：{', '.join(false_positives)}", file=sys.stderr)
-        print("    這代表 CRS 排除規則沒生效，檢查 docker/waf/exclusions-before/",
+        print("    這代表 CRS 排除規則沒生效，檢查 env/docker/waf/exclusions-before/",
               file=sys.stderr)
     else:
         print("  ✔ 正常請求全部通過（排除規則有效）", file=sys.stderr)

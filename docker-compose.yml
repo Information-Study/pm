@@ -1,6 +1,6 @@
 # ── pm base compose ─────────────────────────────────────────────────────────
 # 這是合併鏈的**最底層**。三個模式共用的拓撲寫在這裡，模式差異寫在
-# docker/compose/<mode>.yml。永遠不要直接 docker compose，要走 cx（見 claude.md §0 紅線 3）。
+# env/docker/compose/<mode>.yml。永遠不要直接 docker compose，要走 cx（見 claude.md §0 紅線 3）。
 #
 # base 檔的四條禁令（每一條都對應一個實際踩過的坑）：
 #
@@ -79,7 +79,7 @@ services:
   app:
     build:
       context: .
-      dockerfile: docker/php/Dockerfile
+      dockerfile: env/docker/php/Dockerfile
       target: ${APP_TARGET:-dev}
       args:
         PHP_IMAGE: ${PHP_IMAGE:-php:8.5-fpm-alpine}
@@ -149,7 +149,7 @@ services:
   nuxt:
     build:
       context: .
-      dockerfile: docker/nuxt/Dockerfile
+      dockerfile: env/docker/nuxt/Dockerfile
       target: ${NUXT_TARGET:-dev}
       args:
         NODE_IMAGE: ${NODE_IMAGE:-node:24.20-alpine}
@@ -198,8 +198,8 @@ services:
     stop_signal: SIGQUIT
     stop_grace_period: 30s
     volumes:
-      - ./docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/edge/conf.d:/etc/nginx/conf.d:ro
+      - ./env/docker/edge/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./env/docker/edge/conf.d:/etc/nginx/conf.d:ro
     depends_on:
       app:
         condition: service_healthy

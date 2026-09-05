@@ -21,7 +21,7 @@
 
 `--mode`、`--ui`、`--runner` 三個值都會被白名單驗證（`--root` 另外驗路徑與 `.cxroot`）。
 `--mode` 會被拿去組 `-p <專案>_${CX_MODE}` 與
-`-f docker/compose/${CX_MODE}.yml`，不驗證等於留一個檔名／專案名注入面。
+`-f env/docker/compose/${CX_MODE}.yml`，不驗證等於留一個檔名／專案名注入面。
 `--runner` 不驗證的話，打錯的值會落進 `auto` 分支 —— 你以為在測原生，實際上跑的是容器。
 `--ui` 不驗證的話，非法值會讓 `_cx_dlg` 的 case 找不到分支而「什麼都不做並回傳 0」，
 而回傳 0 在 `cx_confirm` 眼中就是「使用者按了 Yes」—— 所有刪除閘門會同時失效。
@@ -123,7 +123,7 @@ cx pma --no-open  # 印資訊但不開瀏覽器
 `cx --mode <m> db shell`。
 
 埠是從**合併後**的 compose 設定讀出來的，不是寫死 8891 ——
-`docker/env/dev.env` 可以覆寫，寫死就會給出錯的網址。
+`env/docker/compose/dev.env` 可以覆寫，寫死就會給出錯的網址。
 
 容器沒在跑時會告訴你怎麼起，而不是給一個開不起來的連結。
 
@@ -145,7 +145,7 @@ cx open front --url  # 只印網址（給腳本用）
 cx open front --no-open
 ```
 
-**為什麼需要這個動詞**：埠段是每個模式一組（`docker/env/<模式>.env`），而且
+**為什麼需要這個動詞**：埠段是每個模式一組（`env/docker/compose/<模式>.env`），而且
 可以被覆寫。「前端在哪」因此不是背得起來的東西 —— dev 是 8080、test 是 18080、
 prod 是 80，而且都可以改。原本每次都得去 `docker ps` 找。
 
@@ -420,7 +420,7 @@ entrypoint 已經修好（生成後立刻 `chown` 回 `www-data`；symlink 那�
 
 ### 本機 web 與 dev 常常是同一個 uid
 
-容器裡的 `www-data` 在 build 時已被對齊成 `APP_UID`（`docker/php/Dockerfile`
+容器裡的 `www-data` 在 build 時已被對齊成 `APP_UID`（`env/docker/php/Dockerfile`
 的 `groupmod`/`usermod`），而 `APP_UID` 預設就是你的 uid。
 所以本機開發其實不需要 ACL —— `cx acl check` 會直接把這件事講出來，
 免得你以為自己漏設了什麼。規則仍然寫上去，之後 `APP_UID` 改了才不會突然壞掉。
@@ -540,7 +540,7 @@ cx scan <code|sast|sca|dast|secrets|all> [--runner docker|native|auto]
 只有 `error` 會讓 `cx scan sast` 回傳 `EX_SCAN_SAST`，`warning` 與 `note` 印出來但放行。
 
 `.semgrepignore` **必須在專案根目錄** —— Semgrep 只在「掃描目標的根目錄」找它，
-放在 `docker/security/` 底下完全不會被讀到。
+放在 `env/docker/security/` 底下完全不會被讀到。
 
 ### DAST 的退出碼映射
 
@@ -995,7 +995,7 @@ cx git remote-set git@github.com:me/shop.git   # 指到已經存在的
 
 ### 從子目錄執行
 
-`backend/`、`frontend/`、`ansible/roles/mysql/tasks/`、`bin/lib/`、`docs/`
+`backend/`、`frontend/`、`env/ansible/roles/mysql/tasks/`、`bin/lib/`、`docs/`
 五個位置各跑 `status` / `fetch` / `pull`，全部 rc=0。
 
 ---
@@ -1130,7 +1130,7 @@ CX_PROJECT_NAME=shop ・ CX_GH_ORG=my-org ・ CX_REPO_BACKEND=shop-backend
 名字 —— 讓人打 `DESTROY pm` 而他其實想建立 `shop`，是在問錯的問題。
 所以 init 要求的是 `INIT <新名字>`（`re-init` 則是 `RE-INIT <目前的名字>`），
 並且額外列出 fresh 的清單裡沒有的損失：`.env` 的密碼、
-`ansible/inventory/hosts.yml`、以及仍叫舊名字的容器與 volume。
+`env/ansible/inventory/hosts.yml`、以及仍叫舊名字的容器與 volume。
 
 ### 骨架產生之後會自動裝回「範本自己的東西」
 
@@ -1164,11 +1164,11 @@ cx deploy hosts rm web-2
 cx deploy hosts edit                                   # 用編輯器直接開（註解會保留）
 ```
 
-`ansible/inventory/hosts.yml` 是 `cx deploy` 每一個動詞都需要、卻是**唯一沒有
+`env/ansible/inventory/hosts.yml` 是 `cx deploy` 每一個動詞都需要、卻是**唯一沒有
 工具幫忙產生**的檔案。原本從選單走到部署那一步會撞牆，訊息只說「缺少
 hosts.yml」，然後叫人離開 cx 自己 `cp` 範例檔。
 
-### 群組模型（來源：`ansible/site.yml` 的 roles 區塊）
+### 群組模型（來源：`env/ansible/site.yml` 的 roles 區塊）
 
 | 群組 | 決定什麼 |
 |---|---|
@@ -1198,7 +1198,7 @@ hosts.yml」，然後叫人離開 cx 自己 `cp` 範例檔。
 
 nginx、前端、後端目前**必須在同一台**。這不是設定問題，是架構事實：
 
-* `php_fpm_socket` 是 **unix socket**（`ansible/roles/php/templates/pool.conf.j2`），
+* `php_fpm_socket` 是 **unix socket**（`env/ansible/roles/php/templates/pool.conf.j2`），
   nginx 只連得到同一台的 PHP
 * 前端 PM2 綁 `127.0.0.1:3000`（`deploy_frontend/defaults/main.yml`）
 
@@ -1255,7 +1255,7 @@ cx dev up -d --build                                   # 映像 tag 前綴變了
 cx setup guard                                         # git hook 的白名單裡有專案名
 cx verify cli                                          # TPL-* 四項應該全綠
 ```
-`ansible/inventory/hosts.yml` 的群組名也要自己改（那個檔不進版控）。
+`env/ansible/inventory/hosts.yml` 的群組名也要自己改（那個檔不進版控）。
 
 ### 檢查比自動化重要
 
@@ -1588,12 +1588,12 @@ $ ./cx < /dev/null
 
 ## 從子目錄執行
 
-`cx` 向上搜尋 `.cxroot`，所以 `backend/`、`ansible/roles/mysql/` 底下
+`cx` 向上搜尋 `.cxroot`，所以 `backend/`、`env/ansible/roles/mysql/` 底下
 都可以直接跑：
 
 ```bash
 cd backend && ../cx doctor          # 或者 cx install 之後直接 cx doctor
-cd ansible/roles/mysql && cx deploy syntax
+cd env/ansible/roles/mysql && cx deploy syntax
 ```
 
 搜尋順序是「呼叫者的 cwd 往上」→ 找不到才退回「`cx` 自身所在目錄往上」。

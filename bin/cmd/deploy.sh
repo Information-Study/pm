@@ -3,7 +3,7 @@
 #
 # 這是 cx 的第三個階段：開發（dev 容器）→ 測試（test 容器 + 四道防線）→ 部署（本檔）。
 #
-# 所有動作都在 $CX_ROOT/ansible 底下執行 —— ansible.cfg 的 roles_path /
+# 所有動作都在 $CX_ROOT/env/ansible 底下執行 —— ansible.cfg 的 roles_path /
 # inventory / collections_path 都是相對路徑，從別的目錄跑會全部找不到。
 #
 # 安全預設：
@@ -30,7 +30,7 @@ cx deploy <子指令> [參數...]
   rollback [限制]   playbooks/rollback.yml（互動式，需輸入 yes）
 
 其他
-  hosts <子指令>    主機清單（ansible/inventory/hosts.yml，不進版控）
+  hosts <子指令>    主機清單（env/ansible/inventory/hosts.yml，不進版控）
       init          建立空的 hosts.yml
       add <名稱> --ip <IP> [--user u] [--port n] [--key 路徑]
                     [--env staging|production] [--no-web] [--db|--no-db]
@@ -50,10 +50,10 @@ cx deploy <子指令> [參數...]
   cx deploy rollback staging
 
 ⚠ inventory/hosts.yml 不進版控（.gitignore）。第一次使用：
-    cp ansible/inventory/hosts.yml.example ansible/inventory/hosts.yml
-    cp ansible/inventory/group_vars/staging.yml.example ansible/inventory/group_vars/staging.yml
+    cp env/ansible/inventory/hosts.yml.example env/ansible/inventory/hosts.yml
+    cp env/ansible/inventory/group_vars/staging.yml.example env/ansible/inventory/group_vars/staging.yml
   然後填 app_domain、certbot_email，並用 ansible-vault 建立 vault.yml。
-  完整步驟見 ansible/README.md。
+  完整步驟見 env/ansible/README.md。
 TXT
 }
 
@@ -75,10 +75,10 @@ _deploy_need_ansible() {
 _deploy_stub_inventory() {
     local d
     d=$(mktemp -d) || return 1
-    if [[ -f $CX_ROOT/ansible/inventory/hosts.yml ]]; then
-        cp "$CX_ROOT/ansible/inventory/hosts.yml" "$d/hosts.yml"
-    elif [[ -f $CX_ROOT/ansible/inventory/hosts.yml.example ]]; then
-        cp "$CX_ROOT/ansible/inventory/hosts.yml.example" "$d/hosts.yml"
+    if [[ -f $CX_ROOT/env/ansible/inventory/hosts.yml ]]; then
+        cp "$CX_ROOT/env/ansible/inventory/hosts.yml" "$d/hosts.yml"
+    elif [[ -f $CX_ROOT/env/ansible/inventory/hosts.yml.example ]]; then
+        cp "$CX_ROOT/env/ansible/inventory/hosts.yml.example" "$d/hosts.yml"
     else
         rm -rf "$d"
         return 1
@@ -87,9 +87,9 @@ _deploy_stub_inventory() {
 }
 
 _deploy_real_inventory() {
-    if [[ ! -f $CX_ROOT/ansible/inventory/hosts.yml ]]; then
-        cx_error "缺少 ansible/inventory/hosts.yml"
-        cx_dim "  cp ansible/inventory/hosts.yml.example ansible/inventory/hosts.yml"
+    if [[ ! -f $CX_ROOT/env/ansible/inventory/hosts.yml ]]; then
+        cx_error "缺少 env/ansible/inventory/hosts.yml"
+        cx_dim "  cp env/ansible/inventory/hosts.yml.example env/ansible/inventory/hosts.yml"
         cx_dim "  然後填入真實主機。這個檔刻意不進版控（含主機位址與帳號）。"
         exit "$EX_PRECOND"
     fi
@@ -104,7 +104,7 @@ _deploy_real_inventory() {
 #
 # 而且是包在 ansible 的 UNREACHABLE! => {"msg": "…"} JSON 裡、帶著 \r\n，
 # 幾乎不可能一眼看懂 —— 但真正的原因通常很平凡：目標主機被重建了。
-# 換本機驗證容器的 Ubuntu 版本（docker/ansible-target/README.md 的流程）
+# 換本機驗證容器的 Ubuntu 版本（env/docker/ansible-target/README.md 的流程）
 # 每一次都會踩到。
 #
 # ansible.cfg 的 host_key_checking = True 是刻意保留的
@@ -114,7 +114,7 @@ _deploy_check_hostkeys() {
     cx_have ssh-keygen && cx_have ssh-keyscan || return 0   # 沒工具就跳過，不是錯誤
     [[ -f $HOME/.ssh/known_hosts ]] || return 0             # 沒記錄過就沒得比
 
-    local inv="$CX_ROOT/ansible/inventory/hosts.yml"
+    local inv="$CX_ROOT/env/ansible/inventory/hosts.yml"
     local -a bad=()
     local host='' port='' line stored scanned
 
@@ -150,7 +150,7 @@ _deploy_check_hostkeys() {
     done
     cx_dim ""
     cx_dim "  最常見的原因不是攻擊，而是**目標主機被重建了** ——"
-    cx_dim "  例如換了本機驗證容器的 Ubuntu 版本（見 docker/ansible-target/README.md）。"
+    cx_dim "  例如換了本機驗證容器的 Ubuntu 版本（見 env/docker/ansible-target/README.md）。"
     cx_dim "  ansible.cfg 的 host_key_checking = True 是刻意保留的，所以要你手動確認："
     cx_dim ""
     for b in "${bad[@]}"; do
@@ -176,12 +176,12 @@ CX_DEPLOY_PLAYBOOKS='site.yml playbooks/deploy-only.yml playbooks/rollback.yml'
 _deploy_collections_ok() {
     cx_have ansible-galaxy || return 1
     local installed missing=() name
-    installed=$( cd "$CX_ROOT/ansible" && ansible-galaxy collection list 2>/dev/null \
+    installed=$( cd "$CX_ROOT/env/ansible" && ansible-galaxy collection list 2>/dev/null \
                  | awk '/^[a-z0-9_]+\./ {print $1}' )
     while read -r name; do
         [[ -z $name ]] && continue
         printf '%s\n' "$installed" | grep -qx "$name" || missing+=("$name")
-    done < <(awk '/^[[:space:]]*- name:/ {print $3}' "$CX_ROOT/ansible/requirements.yml" 2>/dev/null)
+    done < <(awk '/^[[:space:]]*- name:/ {print $3}' "$CX_ROOT/env/ansible/requirements.yml" 2>/dev/null)
 
     (( ${#missing[@]} == 0 )) && return 0
     cx_error "缺少 collection：${missing[*]}"
@@ -197,7 +197,7 @@ _deploy_syntax() {
     _deploy_collections_ok || return "$EX_PRECOND"
     cx_step "ansible-playbook --syntax-check"
     for pb in $CX_DEPLOY_PLAYBOOKS; do
-        if ( cd "$CX_ROOT/ansible" && ANSIBLE_DEPRECATION_WARNINGS=False \
+        if ( cd "$CX_ROOT/env/ansible" && ANSIBLE_DEPRECATION_WARNINGS=False \
              cx_run ansible-playbook "$pb" --syntax-check -i "$d/hosts.yml" >/dev/null ); then
             cx_ok "$pb"
         else
@@ -216,8 +216,8 @@ _deploy_lint() {
 
     if cx_have ansible-lint; then
         _deploy_collections_ok || return "$EX_PRECOND"
-        cx_step "ansible-lint（設定：ansible/.ansible-lint，profile=production）"
-        if ( cd "$CX_ROOT/ansible" && ANSIBLE_INVENTORY="$d/hosts.yml" \
+        cx_step "ansible-lint（設定：env/ansible/.ansible-lint，profile=production）"
+        if ( cd "$CX_ROOT/env/ansible" && ANSIBLE_INVENTORY="$d/hosts.yml" \
              ANSIBLE_DEPRECATION_WARNINGS=False cx_run ansible-lint --nocolor ); then
             cx_ok "ansible-lint 無 finding"
         else
@@ -238,8 +238,8 @@ _deploy_lint() {
     fi
 
     if cx_have yamllint; then
-        cx_step "yamllint（設定：ansible/.yamllint）"
-        if ( cd "$CX_ROOT/ansible" && cx_run yamllint . ); then
+        cx_step "yamllint（設定：env/ansible/.yamllint）"
+        if ( cd "$CX_ROOT/env/ansible" && cx_run yamllint . ); then
             cx_ok "yamllint 無 finding"
         else
             cx_error "yamllint 有 finding"
@@ -253,8 +253,8 @@ _deploy_lint() {
 _deploy_galaxy() {
     _deploy_need_ansible
     cx_need ansible-galaxy
-    cx_step "安裝 collections（ansible/requirements.yml）"
-    ( cd "$CX_ROOT/ansible" && cx_run ansible-galaxy collection install -r requirements.yml )
+    cx_step "安裝 collections（env/ansible/requirements.yml）"
+    ( cd "$CX_ROOT/env/ansible" && cx_run ansible-galaxy collection install -r requirements.yml )
 }
 
 # 把 [限制] 轉成 --limit 參數。空的就不加（等於全部主機，apply 時會特別警告）。
@@ -264,7 +264,7 @@ _deploy_limit_args() {
 
 _deploy_hosts_preview() {
     local limit=$1
-    ( cd "$CX_ROOT/ansible" && ansible ${limit:+--limit "$limit"} \
+    ( cd "$CX_ROOT/env/ansible" && ansible ${limit:+--limit "$limit"} \
         --list-hosts pm_servers 2>/dev/null | tail -n +2 | tr -d ' ' | tr '\n' ' ' )
 }
 
@@ -274,7 +274,7 @@ _deploy_ping() {
     local limit=${1:-}; shift || true
     cx_step "ansible -m ping${limit:+（--limit $limit）}"
     (( $# )) && cx_dim "  額外參數：$*"
-    ( cd "$CX_ROOT/ansible" \
+    ( cd "$CX_ROOT/env/ansible" \
       && cx_run ansible pm_servers ${limit:+--limit "$limit"} -m ping "$@" )
 }
 
@@ -282,14 +282,14 @@ _deploy_facts() {
     _deploy_need_ansible
     _deploy_real_inventory
     [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "cx deploy facts 需要主機名稱"
-    ( cd "$CX_ROOT/ansible" && cx_run ansible "$1" -m setup )
+    ( cd "$CX_ROOT/env/ansible" && cx_run ansible "$1" -m setup )
 }
 
 _deploy_vars() {
     _deploy_need_ansible
     _deploy_real_inventory
     local limit=${1:-staging}
-    ( cd "$CX_ROOT/ansible" && cx_run ansible-inventory --list --yaml --limit "$limit" )
+    ( cd "$CX_ROOT/env/ansible" && cx_run ansible-inventory --list --yaml --limit "$limit" )
 }
 
 _deploy_check() {
@@ -302,7 +302,7 @@ _deploy_check() {
     cx_dim "  （唯讀的探測已標 check_mode: false，會真的執行 —— 否則 register"
     cx_dim "    出來的變數是空的，assert 會報出指向錯誤方向的訊息。）"
     (( $# )) && cx_dim "  額外參數：$*"
-    ( cd "$CX_ROOT/ansible" \
+    ( cd "$CX_ROOT/env/ansible" \
       && cx_run ansible-playbook site.yml --check --diff --limit "$limit" "$@" )
 }
 
@@ -333,7 +333,7 @@ _deploy_apply() {
 確定要繼續？" || return "$EX_ABORT"
 
     cx_step "$pb${limit:+ --limit $limit}"
-    ( cd "$CX_ROOT/ansible" && cx_run ansible-playbook "$pb" ${limit:+--limit "$limit"} "${extra[@]}" )
+    ( cd "$CX_ROOT/env/ansible" && cx_run ansible-playbook "$pb" ${limit:+--limit "$limit"} "${extra[@]}" )
 }
 
 _deploy_rollback() {
@@ -343,7 +343,7 @@ _deploy_rollback() {
     cx_step "playbooks/rollback.yml${limit:+ --limit $limit}"
     cx_dim "  rollback.yml 自己有四道 gate 與一個「輸入 yes」的確認，cx 不繞過它們。"
     cx_dim "  不給 rollback_to 時它只列出可用的 release，不做任何事。"
-    ( cd "$CX_ROOT/ansible" && cx_run ansible-playbook playbooks/rollback.yml \
+    ( cd "$CX_ROOT/env/ansible" && cx_run ansible-playbook playbooks/rollback.yml \
         ${limit:+--limit "$limit"} "${@:2}" )
 }
 
@@ -361,14 +361,14 @@ _deploy_reject_flag() {
 # ── 主機清單 ────────────────────────────────────────────────────────────────
 #
 # hosts.yml 是 cx deploy 每一個動詞都需要、卻是**唯一沒有工具幫忙產生**的檔案。
-# 原本從選單走到部署那一步會撞牆，訊息只說「缺少 ansible/inventory/hosts.yml」，
+# 原本從選單走到部署那一步會撞牆，訊息只說「缺少 env/ansible/inventory/hosts.yml」，
 # 然後叫人離開 cx 自己去 cp 範例檔。
 #
-# 群組模型（來源：ansible/site.yml 的 roles 區塊）與可拆分的邊界寫在
+# 群組模型（來源：env/ansible/site.yml 的 roles 區塊）與可拆分的邊界寫在
 # docs/ansible-reference.md；產生與驗證的邏輯在 bin/lib/inventory.py。
 _deploy_hosts() {
     local sub=${1:-show}; shift || true
-    local inv="$CX_ROOT/ansible/inventory/hosts.yml"
+    local inv="$CX_ROOT/env/ansible/inventory/hosts.yml"
     local py="$CX_ROOT/bin/lib/inventory.py"
 
     case $sub in

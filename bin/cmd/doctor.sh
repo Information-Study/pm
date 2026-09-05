@@ -69,7 +69,7 @@ cmd_doctor_main() {
     if (( ${#_busy[@]} )); then
         _wr "埠" "被非本專案的行程佔用：${_busy[*]}"
         cx_dim '  查佔用者： ss -ltnp "sport = :<埠>"'
-        cx_dim '  埠段定義在 docker/env/<模式>.env，可以改'
+        cx_dim '  埠段定義在 env/docker/compose/<模式>.env，可以改'
     else
         _ok "埠" "三模式所需的埠都可用（或已由本專案的容器佔用）"
     fi
@@ -181,7 +181,7 @@ cmd_doctor_main() {
     local dk_ok=1
     if cx_docker_ok; then
         local p
-        for p in docker-compose.yml docker/compose/dev.yml docker/php/Dockerfile docker/nuxt/Dockerfile; do
+        for p in docker-compose.yml env/docker/compose/dev.yml env/docker/php/Dockerfile env/docker/nuxt/Dockerfile; do
             [[ -e $CX_ROOT/$p ]] || dk_ok=0
         done
         if (( dk_ok )); then _ok "docker runner" "daemon 可用、compose 與 Dockerfile 齊全"
@@ -275,12 +275,12 @@ cmd_doctor_main() {
     # cx_compose_init 就 EX_PRECOND —— 早點在 doctor 講清楚比較好。
     local need_missing=0 p
     for p in docker-compose.yml \
-             docker/compose/dev.yml docker/compose/test.yml docker/compose/prod.yml \
-             docker/compose/sonar.yml \
-             docker/env/dev.env docker/env/test.env docker/env/prod.env \
-             docker/php/Dockerfile docker/nuxt/Dockerfile \
-             docker/edge/nginx.conf docker/edge/conf.d/default.conf \
-             docker/entrypoint/app.sh .dockerignore .env.example; do
+             env/docker/compose/dev.yml env/docker/compose/test.yml env/docker/compose/prod.yml \
+             env/docker/compose/sonar.yml \
+             env/docker/compose/dev.env env/docker/compose/test.env env/docker/compose/prod.env \
+             env/docker/php/Dockerfile env/docker/nuxt/Dockerfile \
+             env/docker/edge/nginx.conf env/docker/edge/conf.d/default.conf \
+             env/docker/entrypoint/app.sh .dockerignore .env.example; do
         [[ -e $CX_ROOT/$p ]] || { _fl "缺少檔案" "$p"; need_missing=1; }
     done
     (( need_missing )) || _ok "Docker 三模式的檔案" "compose / Dockerfile / edge / entrypoint 齊全"

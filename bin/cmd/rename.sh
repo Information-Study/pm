@@ -10,9 +10,9 @@
 #       從不回頭核對。所以只改 .cxroot 的話，compose 專案前綴仍是舊的
 #       —— 網路還叫 pm_dev_net，而且沒有任何地方會說出來。
 #   sonar-project.properties 的 projectKey / projectName
-#   ansible/inventory/group_vars/all/main.yml 的 app_name / app_slug /
+#   env/ansible/inventory/group_vars/all/main.yml 的 app_name / app_slug /
 #       db_name / db_user / 三個 repo URL
-#   ansible/site.yml 的 hosts 群組名 ←→ bin/cmd/deploy.sh 的 --list-hosts
+#   env/ansible/site.yml 的 hosts 群組名 ←→ bin/cmd/deploy.sh 的 --list-hosts
 #       這兩個必須彼此一致，否則 cx deploy ping 會找不到任何主機。
 #
 # 刻意**不碰 .git**：改名不該動版本歷史，remote 要不要改是另一個決定
@@ -118,13 +118,13 @@ cmd_rename_main() {
         "/^DB_DATABASE=$old\$/p" "/^DB_USERNAME=$old\$/p" && targets+=(.env.example)
     _rename_plan_file sonar-project.properties "$old" "$new" \
         "/^sonar.projectKey=$old\$/p" "/^sonar.projectName=$old\$/p" && targets+=(sonar-project.properties)
-    _rename_plan_file ansible/inventory/group_vars/all/main.yml "$old" "$new" \
+    _rename_plan_file env/ansible/inventory/group_vars/all/main.yml "$old" "$new" \
         "/^app_name: \"$old\"\$/p" "/^app_slug: \"$old\"\$/p" \
         "/^db_name: &db_name \"$old\"\$/p" "/^db_user: &db_user \"$old\"\$/p" \
         "/$old\(-backend\|-frontend\)\?\.git/p" \
-        "/^ansible_managed:.*$old /p" && targets+=(ansible/inventory/group_vars/all/main.yml)
-    _rename_plan_file ansible/site.yml "$old" "$new" \
-        "/^  hosts: $old_grp\$/p" && targets+=(ansible/site.yml)
+        "/^ansible_managed:.*$old /p" && targets+=(env/ansible/inventory/group_vars/all/main.yml)
+    _rename_plan_file env/ansible/site.yml "$old" "$new" \
+        "/^  hosts: $old_grp\$/p" && targets+=(env/ansible/site.yml)
     _rename_plan_file bin/cmd/deploy.sh "$old" "$new" \
         "/$old_grp/p" && targets+=(bin/cmd/deploy.sh)
 
@@ -135,10 +135,10 @@ cmd_rename_main() {
     local -a role_files=()
     while IFS= read -r f; do role_files+=("${f#"$CX_ROOT/"}"); done < <(
         grep -rlE "(app_name|app_slug|author|namespace):[[:space:]]*\"?$old\b|default\('$old'\)|name: $old \|" \
-            "$CX_ROOT/ansible/roles" "$CX_ROOT/ansible/playbooks" \
-            "$CX_ROOT/ansible/site.yml" 2>/dev/null | sort)
+            "$CX_ROOT/env/ansible/roles" "$CX_ROOT/env/ansible/playbooks" \
+            "$CX_ROOT/env/ansible/site.yml" 2>/dev/null | sort)
     if (( ${#role_files[@]} )); then
-        printf '  %-46s %s\n' "ansible/roles/*、site.yml 的 play 名稱" "${#role_files[@]} 個檔" >&2
+        printf '  %-46s %s\n' "env/ansible/roles/*、site.yml 的 play 名稱" "${#role_files[@]} 個檔" >&2
         targets+=(--roles)
     fi
 
@@ -189,7 +189,7 @@ cmd_rename_main() {
                 cx_run sed -i -e "s|^sonar.projectKey=$old\$|sonar.projectKey=$new|" \
                               -e "s|^sonar.projectName=$old\$|sonar.projectName=$new|" \
                     "$CX_ROOT/$f" ;;
-            ansible/inventory/group_vars/all/main.yml)
+            env/ansible/inventory/group_vars/all/main.yml)
                 cx_run sed -i -e "s|^app_name: \"$old\"|app_name: \"$new\"|" \
                               -e "s|^app_slug: \"$old\"|app_slug: \"$new\"|" \
                               -e "s|^db_name: &db_name \"$old\"\$|db_name: \&db_name \"$new\"|" \
@@ -199,7 +199,7 @@ cmd_rename_main() {
                               -e "s|/$old-frontend\.git|/$new-frontend.git|g" \
                               -e "s|^\(ansible_managed:.*\)$old \(專案的\)|\1$new \2|" \
                     "$CX_ROOT/$f" ;;
-            ansible/site.yml)
+            env/ansible/site.yml)
                 cx_run sed -i -e "s|^  hosts: $old_grp\$|  hosts: $new_grp|" "$CX_ROOT/$f" ;;
             bin/cmd/deploy.sh)
                 cx_run sed -i -e "s|\\b$old_grp\\b|$new_grp|g" "$CX_ROOT/$f" ;;

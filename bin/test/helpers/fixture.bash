@@ -57,12 +57,12 @@ CXR
 #   的存在讓 verify 的 static 家族開始檢查一份假的 compose 然後 FAIL。
 #   要測 compose 的案例自己叫這個。
 add_compose_skeleton() {            # add_compose_skeleton（在 CX_TEST_ROOT 上）
-    mkdir -p "$CX_TEST_ROOT/docker/compose" "$CX_TEST_ROOT/docker/env"
+    mkdir -p "$CX_TEST_ROOT/env/docker/compose"
     printf 'services: {}\n' > "$CX_TEST_ROOT/docker-compose.yml"
     local m
     for m in dev test prod; do
-        printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$m.yml"
-        : > "$CX_TEST_ROOT/docker/env/$m.env"
+        printf 'services: {}\n' > "$CX_TEST_ROOT/env/docker/compose/$m.yml"
+        : > "$CX_TEST_ROOT/env/docker/compose/$m.env"
     done
     : > "$CX_TEST_ROOT/.env"
 }
@@ -85,7 +85,7 @@ CXR
     ln -s "$CX_TEST_REAL_ROOT/bin" "$CX_TEST_ROOT/bin"
     ln -s "$CX_TEST_REAL_ROOT/cx"  "$CX_TEST_ROOT/cx"
     # fresh 會找這些
-    mkdir -p "$CX_TEST_ROOT"/{docker/legacy,docs,reports,ansible,.vscode}
+    mkdir -p "$CX_TEST_ROOT"/{env/docker/legacy,env/docker/compose,docs,reports,env/ansible,.vscode}
     : > "$CX_TEST_ROOT/claude.md"; : > "$CX_TEST_ROOT/.gitignore"
     : > "$CX_TEST_ROOT/.env"; : > "$CX_TEST_ROOT/.env.example"
     : > "$CX_TEST_ROOT/.semgrepignore"; : > "$CX_TEST_ROOT/sonar-project.properties"
@@ -95,17 +95,16 @@ CXR
     #   不是產品缺陷。skip 讓這件事藏了很久，正好是本專案 SKIP≠PASS 教條在講的。
     #
     #   _fresh_verify_rebuild 會斷言根目錄的基礎設施還在，而且 docker-compose.yml
-    #   必須是**現行版面**（引用 docker/compose/）—— 空檔過不了。
-    mkdir -p "$CX_TEST_ROOT/docker/compose"
-    printf 'include:\n  - docker/compose/dev.yml\nservices: {}\n' \
+    #   必須是**現行版面**（引用 env/docker/compose/）—— 空檔過不了。
+    mkdir -p "$CX_TEST_ROOT/env/docker/compose"
+    printf 'include:\n  - env/docker/compose/dev.yml\nservices: {}\n' \
         > "$CX_TEST_ROOT/docker-compose.yml"
     local _m
-    for _m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$_m.yml"; done
+    for _m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/env/docker/compose/$_m.yml"; done
     # 模式覆寫檔。cx_compose_init 對它是**硬要求**（缺了埠段會靜默落回
     # compose 裡的 ${VAR:-預設}，三個模式搶同一組埠）—— 所以 fixture 也要有，
     # 否則任何走 compose 的測試都會停在 EX_PRECOND 而不是測到它要測的東西。
-    mkdir -p "$CX_TEST_ROOT/docker/env"
-    for _m in dev test prod; do : > "$CX_TEST_ROOT/docker/env/$_m.env"; done
+        for _m in dev test prod; do : > "$CX_TEST_ROOT/env/docker/compose/$_m.env"; done
     #   templates/ 指到真的那一份：scaffold_patch.py 要從那裡把範本自己的接線
     #  （Filament 面板、routes/api.php、Sanctum migration、測試防護、ESLint）裝回去。
     #   自己 mkdir 一個空的等於那一整段不執行，重建後系統是否完整就驗不到。
@@ -153,7 +152,7 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
     } > "$CX_TEST_ROOT/.cxroot"
     ln -s "$CX_TEST_REAL_ROOT/bin" "$CX_TEST_ROOT/bin"
     ln -s "$CX_TEST_REAL_ROOT/cx"  "$CX_TEST_ROOT/cx"
-    mkdir -p "$CX_TEST_ROOT"/{docker/legacy,docs,reports,ansible,.vscode}
+    mkdir -p "$CX_TEST_ROOT"/{env/docker/legacy,env/docker/compose,docs,reports,env/ansible,.vscode}
     # templates/ 用 symlink 指到真的那一份 —— scaffold_patch.py 要從這裡把
     # 範本自己的接線（Filament 面板、routes/api.php、Sanctum migration、
     # tests/ 的防護、ESLint）裝回去。自己 mkdir 一個空的會讓那一整段變成
@@ -165,15 +164,14 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
     : > "$CX_TEST_ROOT/.semgrepignore"; : > "$CX_TEST_ROOT/sonar-project.properties"
     : > "$CX_TEST_ROOT/README.md";   : > "$CX_TEST_ROOT/.dockerignore"
     # _fresh_verify_rebuild 會斷言根目錄的基礎設施還在，而且 docker-compose.yml
-    # 必須是**現行版面**（引用 docker/compose/）—— 空檔會讓重建後的驗證失敗，
+    # 必須是**現行版面**（引用 env/docker/compose/）—— 空檔會讓重建後的驗證失敗，
     # 那是 fixture 不完整，不是產品缺陷。
-    mkdir -p "$CX_TEST_ROOT/docker/compose"
-    printf 'include:\n  - docker/compose/dev.yml\nservices: {}\n' \
+    mkdir -p "$CX_TEST_ROOT/env/docker/compose"
+    printf 'include:\n  - env/docker/compose/dev.yml\nservices: {}\n' \
         > "$CX_TEST_ROOT/docker-compose.yml"
     local m
-    for m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$m.yml"; done
-    mkdir -p "$CX_TEST_ROOT/docker/env"
-    for m in dev test prod; do : > "$CX_TEST_ROOT/docker/env/$m.env"; done
+    for m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/env/docker/compose/$m.yml"; done
+        for m in dev test prod; do : > "$CX_TEST_ROOT/env/docker/compose/$m.env"; done
 
     local g=(-c user.email=b@b -c user.name=b) c
     # 子模組要先是完整的 repo（有 commit），submodule add 才加得上去 ——

@@ -1,0 +1,650 @@
+---
+# ── vault 的位置：必須是 all/vault.yml，不能是 vault.yml ────────────────────
+#
+# Ansible 把 group_vars/<名字>.yml 對應到「名為 <名字> 的群組」。
+# 沒有叫 vault 的群組，所以 group_vars/vault.yml 永遠不會被載入 ——
+# 而且不會有任何警告。症狀是密碼像是沒設過：
+#   mysql_root_password 未設定或長度不足 12 字元
+# 你會去檢查 vault 檔的內容、檢查 ansible-vault 的密碼，全部都是對的。
+#
+# 2026-09-04 對真實主機實測三種放法：
+#
+#   group_vars/vault.yml                     ✘ vault 從未載入
+#   group_vars/all.yml + all/vault.yml       ✘ 更糟：目錄會遮蔽同名的 .yml，
+#                                               vault 讀得到，但 all.yml 這
+#                                               180 個變數整份消失
+#   group_vars/all/main.yml + all/vault.yml  ✔ 兩邊都正確載入
+#
+# 所以本專案採用純目錄形式。這個檔就是原本的 all.yml。
+# 祕密放隔壁的 all/vault.yml（已被 .gitignore 排除）：
+#
+#   ansible-vault create inventory/group_vars/all/vault.yml
+#
+# ── 由 Ansible 產生的檔案標頭 ────────────────────────────────────────────────
+# 原本設在 ansible.cfg 的 ansible_managed（DEFAULT_MANAGED_STR）。
+# 那個選項在 ansible-core 2.21 已 deprecated、2.23 移除，而且只對 template
+# 模組生效 —— `copy: content: |` 裡的 {{ ansible_managed }} 是從一般變數空間
+# 解析的，那裡沒有這個名字，實跑會直接 fatal：
+#   Error while resolving value for 'content': 'ansible_managed' is undefined
+# 這個失敗只有在真的對主機跑才會出現（--syntax-check 與 ansible-lint 都看不到）。
+#
+# 定義成一般變數之後 template 與 copy 兩邊都拿得到。
+# 刻意不放日期：每次跑都會造成無意義的檔案異動，diff 會被雜訊淹沒。
+ansible_managed: "此檔由 Ansible 產生，請勿手動編輯 —— 下次部署會覆蓋掉手動修改。來源：pm 專案的 ansible/"
+# ══════════════════════════════════════════════════════════════════════════════
+# inventory/group_vars/all.yml —— 全域變數「正本」
+#
+# 優先權：group_vars/all.yml  >  role defaults/main.yml
+# 各 role 的 defaults 只是「單獨執行該 role 時的保底值」，真正生效的是這個檔。
+# 因此：
+#   * 跨 role 共用的東西（路徑、使用者、上傳上限、DB 名稱）一律寫在這裡；
+#   * 只有該 role 自己用得到的旋鈕才留在 role defaults。
+#
+# 環境別的覆寫寫在 group_vars/staging.yml 與 group_vars/production.yml
+# （兩個 .example 範本已附）。祕密一律走 vault，不寫在這個檔。
+#
+# 註：roles/common 與 roles/preflight 的註解提到 group_vars/all/main.yml（目錄形式）。
+#     本專案採用單檔形式 group_vars/all.yml。兩種形式不要同時存在，
+#     否則同一個 group 會被載入兩次，覆寫順序難以預測。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. 專案識別
+# ──────────────────────────────────────────────────────────────────────────────
+app_name: "pm"
+# app_slug 會被拿去當路徑、systemd unit 名、log 目錄名、FPM pool 名、
+# PM2 process 名前綴。preflight 用 ^[a-z][a-z0-9_-]{1,31}$ 驗證。
+app_slug: "pm"
+# production | staging | local（preflight 只接受這三個）
+app_env: "production"
+# ★ 必填。留空或填佔位值會被 preflight 在 5 秒內擋下。
+#   這個值會進 nginx server_name、APP_URL、FRONTEND_URL、SANCTUM_STATEFUL_DOMAINS
+#   與 certbot 的憑證申請 —— 填錯會在很後面才炸。
+#   實際值請寫在 group_vars/staging.yml 或 group_vars/production.yml。
+app_domain: ""
+app_timezone: "Asia/Taipei"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. 目錄骨架（A8：必須在 deploy role 之前由 common 一次建好，owner=deploy）
+#
+#    /srv/pm
+#    ├── shared/                共用（pm2/ecosystem.config.cjs 等）
+#    ├── backend/
+#    │   ├── releases/<release_id>/
+#    │   ├── shared/            .env、storage/
+#    │   └── current -> releases/<release_id>
+#    └── frontend/
+#        ├── releases/<release_id>/
+#        ├── shared/
+#        └── current -> releases/<release_id>
+#
+#    A1：release prune 與 rollback 都以這些路徑為根做檔案操作。
+#    preflight 會斷言 app_root 是絕對路徑、深度 >= 2、不在系統目錄黑名單內，
+#    而且下面每一條路徑都必須位於 app_root 底下。不要把 app_root 設成 /srv 或 /var/www。
+# ──────────────────────────────────────────────────────────────────────────────
+app_root: "/srv/{{ app_slug }}"
+app_shared_dir: "{{ app_root }}/shared"
+
+backend_root: "{{ app_root }}/backend"
+backend_releases_dir: "{{ backend_root }}/releases"
+backend_shared_dir: "{{ backend_root }}/shared"
+backend_current_path: "{{ backend_root }}/current"
+# 別名：部分 role 用不帶 _path 的名字。指向同一個來源，避免改了一個忘了另一個。
+backend_current: "{{ backend_current_path }}"
+
+frontend_root: "{{ app_root }}/frontend"
+frontend_releases_dir: "{{ frontend_root }}/releases"
+frontend_shared_dir: "{{ frontend_root }}/shared"
+frontend_current_path: "{{ frontend_root }}/current"
+frontend_current: "{{ frontend_current_path }}"
+
+# A9：這幾個目錄必須「明確建立」。
+#   * php_log_dir 少了的話 php-fpm 會 "Unable to create or open slowlog(...)"
+#     → "FPM initialization failed"，服務根本起不來。
+#   * app_state_dir 放 frontend_mode 狀態檔（判斷是否發生模式切換）。
+app_state_dir: "/var/lib/{{ app_slug }}"
+frontend_mode_state_file: "{{ app_state_dir }}/frontend_mode"
+app_log_dir: "/var/log/{{ app_slug }}"
+php_log_dir: "/var/log/php"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. 使用者
+#    程式碼 owner=deploy、group=www-data、02750 → www-data 只能讀，改不了程式碼
+#    storage owner=deploy、group=www-data、02770 → www-data 可寫
+# ──────────────────────────────────────────────────────────────────────────────
+deploy_user: "deploy"
+deploy_group: "deploy"
+deploy_home: "/home/{{ deploy_user }}"
+deploy_user_home: "{{ deploy_home }}"
+# php-fpm 與 nginx worker 的執行身分
+web_user: "www-data"
+web_group: "www-data"
+# deploy 使用者的 SSH 公鑰（空清單 = 不動 authorized_keys）
+deploy_user_authorized_keys: []
+# 有限度 sudo（只給 systemctl reload/restart 幾條），預設關閉
+deploy_user_sudo: false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. 上傳限制 —— A16：四個值只能有一個來源
+#
+#    必須維持的大小順序（preflight/tasks/uploads.yml 會換算 bytes 驗證）：
+#      app_max_upload_mb
+#        <= php upload_max_filesize
+#        <= php post_max_size
+#        <= nginx client_max_body_size
+#        <  WAF SecRequestBodyLimit   ( <= 1 GiB )
+#
+#    順序錯掉的典型症狀：26–32 MB 的檔案「過了 nginx、也過了 PHP」，
+#    最後才被 WAF 擋掉回 413，而錯誤訊息完全指不到真正的原因。
+#
+#    這裡用 YAML anchor 把加成值同時餵給 preflight 與 php role，
+#    確保「驗證用的公式」與「實際產生設定檔的公式」是同一組數字。
+# ──────────────────────────────────────────────────────────────────────────────
+app_max_upload_mb: 32
+
+app_upload_post_overhead_mb: &upload_post_overhead 8      # 表單其他欄位的空間
+app_upload_nginx_overhead_mb: &upload_nginx_overhead 16   # multipart 邊界與標頭
+app_upload_waf_overhead_mb: &upload_waf_overhead 32       # WAF 必須是最大的那個
+
+# preflight 驗證時用的加成（必須等於下面實際推導用的加成）
+preflight_post_overhead_mb: *upload_post_overhead
+preflight_nginx_overhead_mb: *upload_nginx_overhead
+preflight_waf_overhead_mb: *upload_waf_overhead
+# php role 內部推導 post_max_size 時用的加成
+php_post_overhead_mb: *upload_post_overhead
+
+# 四個推導值（都從 app_max_upload_mb 算出來，不要單獨改）
+php_upload_max_filesize: "{{ app_max_upload_mb | int }}M"
+php_post_max_size: "{{ (app_max_upload_mb | int) + (app_upload_post_overhead_mb | int) }}M"
+nginx_client_max_body_size: "{{ (app_max_upload_mb | int) + (app_upload_nginx_overhead_mb | int) }}m"
+# ModSecurity 的 SecRequestBodyLimit 用 bytes；硬上限 1 GiB。
+waf_request_body_limit: "{{ ((app_max_upload_mb | int) + (app_upload_waf_overhead_mb | int)) * 1048576 }}"
+# memory_limit 必須 > post_max_size，否則大檔上傳會在 PHP 內部 OOM。
+php_memory_limit_mb: 512
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. PHP 8.5
+# ──────────────────────────────────────────────────────────────────────────────
+php_version: "8.5"
+php_fpm_service: "php{{ php_version }}-fpm"
+php_cli_binary: "/usr/bin/php{{ php_version }}"
+php_fpm_socket: "/run/php/php{{ php_version }}-fpm-{{ app_slug }}.sock"
+php_timezone: "{{ app_timezone }}"
+
+# ★ A2：這份清單絕對不可以含 proc_open（也不要含 putenv），
+#   而且產生出來的 ini 只能放進 fpm/conf.d，不可以放進 cli/conf.d。
+#
+#   本專案 backend/composer.json 的 post-autoload-dump 會跑
+#     @php artisan package:discover --ansi
+#     @php artisan filament:upgrade
+#   兩者都經 Symfony Process 呼叫 proc_open。禁掉就會得到
+#     "The Process class relies on proc_open, which is not available on your PHP installation."
+#   而 composer install 直接失敗 —— 這是整個部署最容易踩到的一顆地雷。
+#
+#   另外不要加 pcntl_*：queue worker（artisan queue:work）在 CLI 需要
+#   pcntl_signal / pcntl_alarm 才能正確處理 timeout 與 graceful restart。
+php_disable_functions:
+  - exec
+  - passthru
+  - shell_exec
+  - system
+  - popen
+
+php_expose_php: "Off"
+php_display_errors: "Off"
+php_max_execution_time: 60
+# Filament 的表單/表格一次會送很多欄位，預設 1000 容易被吃掉。
+php_max_input_vars: 5000
+php_opcache_enable: 1
+php_opcache_memory_consumption: 256
+# 保守值：validate_timestamps=1。設 0 需要 nginx 用 $realpath_root 且部署後 reload FPM，
+# 這兩件事分屬 nginx role 與 deploy role，任一沒做到就會在換版後繼續服務舊程式碼。
+php_opcache_validate_timestamps: 1
+# 必須是 1：Laravel / Filament 有元件靠反射讀 doc-comment。
+php_opcache_save_comments: 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. 跨 role 共用的執行檔路徑
+#    正本在此。rollback.yml / deploy-only.yml 這類「沒有帶 role」的 playbook
+#    也需要這些路徑，而 role defaults 在那種 play 裡是拿不到的。
+#    數值必須與對應 role 的 defaults 一致（目前一致）。
+# ──────────────────────────────────────────────────────────────────────────────
+composer_bin_path: "/usr/local/bin/composer"
+nodejs_bin: "/usr/bin/node"
+npm_bin: "/usr/bin/npm"
+pm2_bin: "/usr/bin/pm2"
+# 必須等於 {{ deploy_user_home }}/.pm2 —— `pm2 startup --hp <home>` 產生的 systemd
+# unit 會把 PM2_HOME 推導成 <home>/.pm2，這個推導寫死在 PM2 裡改不了。
+pm2_home: "{{ deploy_user_home }}/.pm2"
+pm2_ecosystem_dir: "{{ app_shared_dir }}/pm2"
+pm2_ecosystem_path: "{{ pm2_ecosystem_dir }}/ecosystem.config.cjs"
+pm2_systemd_unit: "pm2-{{ deploy_user }}"
+nginx_binary: "/usr/sbin/nginx"
+# role 的 tasks/handlers 讀的是 nginx_service；certbot 讀的是 nginx_service_name。
+# 兩個名字都保留並指向同一個值，避免其中一邊變成未定義。
+nginx_service: "nginx"
+nginx_service_name: "{{ nginx_service }}"
+# 這兩個 unit 由 deploy_backend role 產生；rollback 會在檔案存在時才動它們。
+backend_queue_service: "{{ app_slug }}-queue.service"
+backend_schedule_timer: "{{ app_slug }}-schedule.timer"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. Node 24 LTS + PM2 + 前端模式
+#
+#    A10：PM2 一律 fork，絕不用 cluster。
+#         cluster 走 CJS require() 載不動 Nuxt 產出的 ESM .mjs
+#         （ERR_REQUIRE_ESM；pm2#5946、nuxt#13916）。
+#         要水平擴充就開 N 個 fork 綁 N 個埠，nginx upstream 用 least_conn。
+#         instances 也絕不能用 'max' —— 容器 / cgroup 底下 CPU 數會被誤讀。
+#
+#    A20：frontend_mode 預設 ssr。本專案 frontend/nuxt.config.ts 已經是
+#           const ssr = process.env.NUXT_SSR !== 'false'
+#         （不是舊版那種寫死 ssr: false）。preflight 每次仍會 grep 確認，
+#         讓錯誤在 5 秒內出現，而不是等 npm ci + 半個 build 之後才發現。
+# ──────────────────────────────────────────────────────────────────────────────
+nodejs_major: 24
+
+pm2_exec_mode: "fork"
+# pm2_instances 與 frontend_instances 必須相同（site.yml 的 pre_tasks 有斷言）。
+# 用 anchor 綁在一起，改一個就是改兩個。
+pm2_instances: &pm2_instances 1
+frontend_instances: *pm2_instances
+
+# ssr | spa | static
+#   ssr    → nuxt build                    → .output/server/index.mjs → PM2 fork
+#   spa    → NUXT_SSR=false nuxt build     → .output/server/index.mjs → PM2 fork
+#   static → NUXT_SSR=false nuxt generate  → .output/public/          → Nginx 直送
+frontend_mode: "ssr"
+frontend_host: "127.0.0.1"
+frontend_port: 3000
+frontend_app_prefix: "{{ app_slug }}-frontend"
+frontend_entry: "{{ frontend_current_path }}/.output/server/index.mjs"
+frontend_static_root: "{{ frontend_current_path }}/.output/public"
+# 空字串 = 同源。原生拓撲與 Docker 一樣，前面都有一層反向代理：
+# / 給前端、/api|/admin|/up|/storage 給 PHP，所以同源是正確預設。
+frontend_public_api_base_url: ""
+frontend_extra_env: {}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. MySQL 8.4 LTS / 資料庫
+#
+#    A4：Ubuntu noble 的 mysql-server 是 8.0.x，Debian 的 default-mysql-server
+#        根本是 MariaDB。要拿到 8.4 LTS 只能用 repo.mysql.com（mysql_repo_source=oracle）。
+#    A3：skip-name-resolve 之下 MySQL 不做反解，DB_HOST=127.0.0.1 時比對的是
+#        字面 '127.0.0.1'。只建 'pm'@'localhost' 會得到 1045 Access denied，
+#        所以兩個 host 都要建。
+#    A19：DROP DATABASE test 預設關閉，而且 role 只在該 schema 沒有任何 table 時才動手。
+# ──────────────────────────────────────────────────────────────────────────────
+# ★ DB_HOST 必須是 127.0.0.1（TCP）或 localhost（unix socket）。
+#   backend/.env.example 裡的 DB_HOST=mysql 是 Docker compose 的服務名，原生部署用不到。
+db_host: "127.0.0.1"
+db_port: 3306
+db_name: &db_name "pm"
+db_user: &db_user "pm"
+db_password: "{{ vault_mysql_app_password | default('') }}"
+
+# mysql role 讀的是 app_db_* 這組名字；用 anchor 綁住，不會漂移。
+app_db_name: *db_name
+app_db_user: *db_user
+app_db_password: "{{ vault_mysql_app_password | default('') }}"
+
+mysql_repo_source: "oracle"          # oracle | distro（distro 會被 assert 擋下）
+mysql_version_series: "8.4"
+mysql_allow_distro_version: false
+mysql_bind_address: "127.0.0.1"
+mysql_skip_name_resolve: true
+mysql_app_user_hosts:                # A3：兩個都要
+  - "localhost"
+  - "127.0.0.1"
+mysql_charset: "utf8mb4"
+mysql_collation: "utf8mb4_unicode_ci"
+# 只接受 SYSTEM 或 ±HH:MM。具名時區（Asia/Taipei）需要先載入 tz 表，沒載入 mysqld 起不來。
+mysql_default_time_zone: "+08:00"
+# ★ A19：不可逆動作，預設關閉。
+mysql_drop_test_db: false
+mysql_remove_anonymous_users: true
+mysql_remove_remote_root: true
+mysql_backup_enabled: true
+mysql_backup_retention_days: 14
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9. Nginx + ModSecurity / CRS（MyGuard APT）
+#
+#    A12：不可對 vhost 片段用 `validate: nginx -t -c %s`。
+#         -c 會把該檔當成完整主設定，沒有 events{} 就 emerg，好好的 vhost 永遠寫不進去。
+#         正確做法：片段不驗證，最後跑一次 `nginx -t`（不加 -c）。
+#    A13：Laravel public 目錄中「實際存在的檔案」必須優先，再 fallback 到前端。
+#         Filament 會用 asset('images/xxx.png')，location 若寫成
+#         ^/(css|js|images)/filament/ 就不會匹配 /images/xxx.png，
+#         會被代理到 Nitro 變成 404 破圖。favicon.ico、robots.txt、
+#         /sanctum/csrf-cookie、/filament/、/livewire/ 同理。
+#         → vhost 應以 backend public 為 root，try_files $uri 命中就直送，
+#           沒命中才 @nuxt（proxy_pass 到 upstream）。
+#    A14：location 內只要出現 add_header，server 層的 add_header 就「全部失效」
+#         （nginx 的繼承規則：當前層有 add_header 就不繼承上層）。
+#         /storage/ 與 /_nuxt/ 若自己加 Cache-Control，必須重新 include 安全標頭 snippet。
+# ──────────────────────────────────────────────────────────────────────────────
+nginx_server_name: "{{ app_domain }}"
+nginx_server_aliases: []
+nginx_worker_processes: "auto"
+nginx_worker_connections: 1024
+nginx_keepalive_timeout: 65
+nginx_server_tokens: "off"
+nginx_backend_public_root: "{{ backend_current_path }}/public"
+nginx_fastcgi_pass: "unix:{{ php_fpm_socket }}"
+nginx_frontend_upstream_name: "{{ app_slug }}_frontend"
+# A10：多個 fork 時用 least_conn（各 fork 的請求耗時差異大，round-robin 會塞住）
+nginx_upstream_balancer: "least_conn"
+nginx_access_log: "/var/log/nginx/{{ app_slug }}.access.log"
+nginx_error_log: "/var/log/nginx/{{ app_slug }}.error.log"
+# 供 site.yml 的 A5 檢查與 rollback 參考；nginx role 若採用別的路徑，
+# 那些檢查會安靜跳過（有 stat / rc 判斷保護）。
+nginx_vhost_path: "/etc/nginx/sites-available/{{ app_slug }}.conf"
+nginx_vhost_link: "/etc/nginx/sites-enabled/{{ app_slug }}.conf"
+nginx_snippets_dir: "/etc/nginx/snippets"
+# A13：這些前綴一定要交給 PHP，不可以被前端 catch-all 吃掉。
+# 這裡放**字面**前綴。需要正規式的放 nginx_php_prefix_patterns。
+nginx_php_prefixes:
+  - "/api"
+  - "/admin"
+  - "/livewire"
+  - "/filament"
+  - "/sanctum"
+  - "/up"
+  - "/login"
+  - "/logout"
+  - "/broadcasting"
+# A21：Livewire v4（Filament v5 的底層）的端點前綴由 APP_KEY 推導 ——
+#   EndpointResolver::prefix() = '/livewire-' . substr(sha256(app.key.'livewire-endpoint'), 0, 8)
+#   實測 route:list 得到 /livewire-cda13245/update。每個部署都不同，key:generate 之後還會變。
+#   上面的字面 "/livewire" 比對不到它，於是每一次後台互動都會掉進 location /
+#   被轉給 Nuxt —— Filament 後台整個是壞的，而且 waf_enabled: false 也一樣壞。
+#   （這與 WAF 無關；WAF 那邊是另一個同源的缺陷，見 waf_exclusions_before 的 10010/10011。）
+#   所以額外提供一份**正規式**片段，與字面清單一起組成 php_regex。
+#   同時保留不帶 hash 的舊形式。Docker 那條路的 env/docker/edge/conf.d/default.conf
+#   早在 2026-09-04 就修過同一個坑，原生這條路當時漏掉了。
+nginx_php_prefix_patterns:
+  - "livewire(-[0-9a-zA-Z]+)?"
+
+# /storage 是 Laravel 的 public/storage symlink，由 nginx 直送（不走 PHP）。
+nginx_static_prefixes:
+  - "/storage"
+  - "/_nuxt"
+nginx_static_cache_control: "public, max-age=31536000, immutable"
+# A14：加了上面的 Cache-Control 之後，這些 location 必須重新 include 安全標頭。
+nginx_security_headers_snippet: "{{ nginx_snippets_dir }}/{{ app_slug }}-security-headers.conf"
+
+# ---- MyGuard APT 來源 -------------------------------------------------------
+# 官方說明的來源行長這樣（注意 base URL 已經含 /apt/dists/<codename>，
+# 而 suite 又是 <codename> —— 看起來重複，但那是站方寫的格式，不要自己「修正」）：
+#   deb [arch=amd64 signed-by=/etc/apt/keyrings/deb.myguard.nl.gpg] \
+#       https://deb.myguard.nl/apt/dists/$CODENAME $CODENAME main
+# nginx_myguard role 應該在 apt update 之前先 HEAD 一次 Release 檔確認 codename 有被支援。
+waf_repo_manage: true
+waf_repo_base: "https://deb.myguard.nl"
+waf_repo_uri: "{{ waf_repo_base }}/apt/dists/{{ ansible_facts['distribution_release'] }}"
+waf_repo_suite: "{{ ansible_facts['distribution_release'] }}"
+waf_repo_components:
+  - "main"
+waf_repo_architectures:
+  - "amd64"
+waf_repo_key_url: "{{ waf_repo_base }}/deb.myguard.nl.gpg"
+waf_repo_keyring: "/etc/apt/keyrings/deb.myguard.nl.gpg"
+
+# ★ 套件名有兩組說法，且會隨發行版 codename 變動。
+#   nginx_myguard role 必須先用 `apt-cache policy <pkg>` 探測，
+#   命中 waf_packages 就用它，否則依序試 waf_packages_alternates，
+#   全部落空就以「可行動的訊息」fail fast —— 絕不默默裝錯東西、絕不靜靜跳過 WAF。
+waf_packages:
+  - "libnginx-mod-http-modsecurity"
+  - "libmodsecurity3"
+  - "modsecurity-crs"
+#
+# ⚠ 形狀必須是 **mapping**：主要名稱 → 備選名稱清單。
+#   這裡曾經寫成 list of {name, packages}（「備選套件組」），而
+#   nginx_myguard/tasks/packages.yml 是用 `| dict2items` 與
+#   `waf_packages_alternates[item]` 去讀它的 —— 兩邊對資料形狀的認知不同。
+#   後果不是報錯而是**整個備選機制從來沒有生效過**：group_vars 的優先序高於
+#   role defaults，所以 role 自己那份正確的 dict 一直被這份 list 蓋掉，
+#   而 waf_enabled 預設在 staging 是 false，於是沒有人踩到。
+#   2026-09-05 第一次把 waf_enabled 打開就炸了（dict2items 對 list 丟例外，
+#   ansible-core 2.19+ 會包成 CapturedExceptionMarker，錯誤訊息是
+#   「can only concatenate list (not "CapturedExceptionMarker") to list」，
+#   完全看不出真正的原因）。packages.yml 現在有形狀斷言擋這件事。
+waf_packages_alternates:
+  libnginx-mod-http-modsecurity:
+    - "libnginx-mod-http-modsecurity3"
+    # "OWASP Coraza WAF embedded in NGINX, libmodsecurity-compatible, CRS-ready"
+    - "libnginx-mod-http-coraza"
+    - "libnginx-mod-security"
+  libmodsecurity3:
+    # noble 的 time_t 64-bit 轉換套件名
+    - "libmodsecurity3t64"
+    - "libcoraza"
+    - "libmodsecurity"
+  modsecurity-crs:
+    # 部分發行版把 CRS 改名為這個
+    - "coreruleset"
+    - "owasp-modsecurity-crs"
+    - "modsecurity-crs-extra"
+
+# ---- WAF 行為 ---------------------------------------------------------------
+waf_enabled: true
+# On | DetectionOnly。第一次上線建議先 DetectionOnly 跑一週收 audit log，
+# 把誤判整理成 waf_exclusions_before 之後再切 On。
+waf_rule_engine: "DetectionOnly"
+waf_audit_engine: "RelevantOnly"
+waf_audit_log: "/var/log/nginx/modsec_audit.log"
+# Serial 只寫單一檔案；要逐筆 JSON 分析改 Concurrent + SecAuditLogFormat JSON。
+waf_audit_log_type: "Serial"
+waf_crs_paranoia_level: 1
+waf_crs_anomaly_threshold_inbound: 5
+waf_crs_anomaly_threshold_outbound: 4
+
+# ★ A11：CRS 排除規則必須載入在 CRS「之前」。
+#   ctl:ruleRemoveById 只影響「同一個 phase 中尚未執行」的規則，
+#   載在 CRS 之後等於沒寫。所以要拆成兩個目錄：
+#     exclusions-before/ → SecRule ... ctl:ruleRemoveById=...（在 include CRS 之前）
+#     exclusions-after/  → SecRuleUpdateTargetById ...（在 include CRS 之後）
+#
+#   ★ 兩個 ctl: 之間是「逗號」不是分號。分號會讓 ModSecurity 拒絕載入設定，
+#     nginx 起不來，而且錯誤訊息只會說 "Rules error"。正確：
+#       SecRule REQUEST_URI "@beginsWith /admin/" \
+#         "id:1000,phase:1,pass,nolog,ctl:ruleRemoveById=920420,ctl:ruleRemoveById=942100"
+#                                                            ↑ 逗號
+#
+#   預設留空：真正需要排除哪幾條規則，必須從這台機器實際的 audit log 讀出來
+#   （先跑 DetectionOnly，再把命中的 rule id 填進來）。憑空猜 id 只會關掉不該關的規則。
+# ⚠ 刻意「不」在這裡定義 waf_exclusions_before。
+#   inventory group_vars 的優先權高於 role defaults，一旦在這裡寫 []，
+#   roles/nginx_myguard/defaults/main.yml 裡針對 Livewire/Filament 研究過的
+#   5 條排除規則（10010–10014）就會被整組清掉。
+#   今天看不出來，只因為 waf_rule_engine 是 DetectionOnly；
+#   一旦改成 On，Filament 後台會被 941/942 擋死而且毫無線索。
+#
+#   要「加」站台專屬的排除規則，請在這裡改成
+#     直接編輯 roles/nginx_myguard/defaults/main.yml 的 waf_exclusions_before，
+#     把你的規則附加到既有的 5 條後面（role defaults 沒有另外提供
+#     「預設 + 額外」的合併機制，所以只能改同一份清單）。
+#   要「關掉」內建排除規則才在這裡寫 []（並想清楚為什麼）。
+#
+# waf_exclusions_before: []
+waf_exclusions_after: []
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10. TLS / certbot
+#
+#     A5：先有雞先有蛋 —— nginx role 排在 certbot 之前，但 vhost 已經引用
+#         /etc/letsencrypt/live/<domain>/fullchain.pem。憑證還不存在時
+#         `nginx -t` 會 emerg，any_errors_fatal 一開，certbot 就永遠跑不到。
+#         解法：nginx role 先用 ssl-cert 套件的 snakeoil 憑證讓 443 起得來，
+#         再用 stat 判斷正式憑證是否出現，出現了才切過去。
+#         → 第一次部署完成後，若 nginx 還指著 snakeoil，
+#           site.yml 的 post_tasks 會偵測到並印出提醒（再跑一次 --tags nginx 即可）。
+# ──────────────────────────────────────────────────────────────────────────────
+tls_enable: true
+# ★ tls_enable 為 true 時必填。site.yml 的 preflight play 會擋（不會等到 certbot 才失敗）。
+certbot_email: ""
+# true = 用 Let's Encrypt staging 端點（憑證不被信任，但不吃正式速率限制）。
+# staging 環境建議先設 true 跑通流程，再換 false。
+certbot_staging: false
+certbot_agree_tos: true
+certbot_key_type: "ecdsa"
+certbot_domains: "{{ [app_domain] + nginx_server_aliases }}"
+# certbot 套件自帶 systemd timer 做續期；deploy hook 需要 reload nginx。
+certbot_renew_hook: "/usr/bin/systemctl reload {{ nginx_service_name }}"
+
+tls_cert_dir: "/etc/letsencrypt/live/{{ app_domain }}"
+tls_cert_fullchain: "{{ tls_cert_dir }}/fullchain.pem"
+tls_cert_privkey: "{{ tls_cert_dir }}/privkey.pem"
+# A5 的開機憑證（ssl-cert 套件提供，安裝後就存在）
+tls_snakeoil_fullchain: "/etc/ssl/certs/ssl-cert-snakeoil.pem"
+tls_snakeoil_privkey: "/etc/ssl/private/ssl-cert-snakeoil.key"
+# HSTS 預設關閉：一旦送出，瀏覽器端在 max-age 內無法撤銷，
+# 憑證出問題時整個網域會直接連不上。確定憑證自動續期穩定後再打開。
+tls_hsts_enabled: false
+tls_hsts_max_age: 15552000
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 11. 部署（deploy_backend / deploy_frontend）
+#
+#     A1：release prune 絕不可以是無條件 rm -rf。
+#         `ls -1dt X/*/ | tail -n +N | xargs rm -rf` 有兩個致命問題：
+#           (a) 按 mtime 排序且不排除 current 指向的目標 —— rollback 之後
+#               下一次部署就會刪掉正在服務的版本；
+#           (b) 變數渲染成空字串會變成 rm -rf /*/。
+#         正確做法：ansible.builtin.find 列出 releases → stat current 解析出
+#         實體路徑 → reject 掉它 → 依名稱（release_id 可排序）排序 →
+#         永遠保留最新的 releases_keep 個 → 而且刪除清單要有上界檢查。
+# ──────────────────────────────────────────────────────────────────────────────
+# 主庫（含 submodule）。預設不用它 —— 兩個子專案各自 clone 比較乾淨，
+# release 目錄、分支、建置流程都可以分開走。
+app_repo: "https://github.com/Information-Study/pm.git"
+backend_repo: "https://github.com/Information-Study/pm-backend.git"
+backend_branch: "main"
+frontend_repo: "https://github.com/Information-Study/pm-frontend.git"
+frontend_branch: "main"
+# 淺 clone。要用 git describe / 讀歷史就設 0（完整歷史）。
+deploy_git_depth: 1
+
+releases_keep: &releases_keep 5
+# preflight 讀的是 keep_releases 這個名字；anchor 綁住，不會漂移。
+keep_releases: *releases_keep
+releases_prune: true
+
+# migration 由 deploy_backend 用 `when: inventory_hostname in groups['db_primary']`
+# 明確 gate（A15：serial 之下 run_once 只在當前 batch 內生效，等同 no-op）。
+deploy_backend_migrate: true
+# --seed 預設關閉：seeder 在既有資料上重跑通常不是冪等的。
+deploy_backend_seed: false
+deploy_backend_optimize: true
+# storage:link 只在 public/storage 不存在時建立
+deploy_backend_storage_link: true
+composer_install_args:
+  - "--no-dev"
+  - "--prefer-dist"
+  - "--no-interaction"
+  - "--no-progress"
+  - "--optimize-autoloader"
+deploy_frontend_build: true
+# npm ci 需要 lockfile 與 package.json 相符；不相符要讓它失敗，不要退回 npm install。
+npm_ci_args:
+  - "--no-audit"
+  - "--no-fund"
+
+# ---- backend 的 .env（寫進 backend_shared_dir/.env，release 只做 symlink）----
+# APP_KEY 必須跨 release 穩定。留空時 deploy_backend 應該只在 .env 尚未有 APP_KEY 時
+# 執行一次 `artisan key:generate`，之後永遠沿用 —— 每次部署重新產生會讓
+# 既有 session、加密欄位、已簽章的 URL 全部失效。
+app_key: "{{ vault_app_key | default('') }}"
+backend_app_url: "{{ 'https' if (tls_enable | bool) else 'http' }}://{{ app_domain }}"
+# 同源拓撲：前端與後端同一個網域，所以 FRONTEND_URL == APP_URL。
+# config/cors.php 的 allowed_origins 就是 [env('FRONTEND_URL')]，supports_credentials=true，
+# 兩者不一致的話 Sanctum 的 cookie 流程會被 CORS 擋掉。
+backend_frontend_url: "{{ backend_app_url }}"
+# 同源時不需要帶埠；跨網域部署才要寫成 "app.example.com,api.example.com"。
+backend_sanctum_stateful_domains: "{{ app_domain }}"
+backend_app_debug: false
+backend_log_channel: "stack"
+backend_log_level: "warning"
+backend_session_driver: "database"
+backend_session_secure_cookie: "{{ tls_enable | bool }}"
+backend_queue_connection: "database"
+backend_cache_store: "database"
+backend_filesystem_disk: "local"
+backend_mail_mailer: "log"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 12. Healthcheck
+# ──────────────────────────────────────────────────────────────────────────────
+healthcheck_enabled: true
+healthcheck_scheme: "{{ 'https' if (tls_enable | bool) else 'http' }}"
+healthcheck_base_url: "{{ healthcheck_scheme }}://{{ app_domain }}"
+# certbot staging 憑證不被信任，驗證會失敗 —— 那不是應用有問題。
+healthcheck_validate_certs: "{{ (tls_enable | bool) and not (certbot_staging | bool) }}"
+healthcheck_retries: 12
+healthcheck_delay: 5
+healthcheck_timeout: 10
+# /up 是 Laravel 的內建健康端點（backend/bootstrap/app.php 的 health: '/up'）。
+# /admin/login 驗 Filament 面板真的起得來（ext-intl 缺了就會 500）。
+healthcheck_paths:
+  - path: "/up"
+    status: [200]
+  - path: "/"
+    status: [200]
+  - path: "/admin/login"
+    status: [200]
+# ssr / spa 模式時直接打 Nitro 的埠，可以區分「前端掛了」與「nginx 設定錯了」。
+healthcheck_frontend_direct: true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 13. Hardening —— 每一項都能把你自己鎖在門外，所以全部預設關閉。
+#     打開順序建議：sshd（先確認公鑰可登入）→ ufw → fail2ban → sysctl。
+#     每一項打開後都先用 --check --diff 跑一次。
+# ──────────────────────────────────────────────────────────────────────────────
+hardening_sshd_enabled: false
+hardening_ufw_enabled: false
+hardening_fail2ban_enabled: false
+hardening_sysctl_enabled: false
+hardening_ssh_port: 22
+hardening_ufw_allowed_tcp_ports:
+  - 22
+  - 80
+  - 443
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 14. 編排（site.yml 的 play 層旋鈕）
+# ──────────────────────────────────────────────────────────────────────────────
+# serial：預設 100% = 一個 batch 跑完全部主機。
+# ★ A15：一旦改成 1 或 "50%"，run_once 的作用域就只剩「當前 batch」，等同 no-op。
+#   本專案的 migration 是用 groups['db_primary'] 明確 gate，不依賴 run_once，
+#   所以 serial 是安全的。但請不要在任何地方新增 run_once 來做「只做一次」的事。
+deploy_serial: "100%"
+# any_errors_fatal：任一台失敗就整個 play 中止。
+#   優點：不會留下「A 機是新版、B 機是舊版」的半吊子艦隊。
+#   代價：某台在 nginx 就掛掉時，其他台的 certbot / deploy 也不會執行（A5 講的就是這個坑）。
+#         nginx role 用 snakeoil 開機正是為了讓「憑證還沒簽」不再構成失敗。
+#   單台部署時這個值沒有差別。多台且可接受部分成功，改用 max_fail_percentage。
+deploy_any_errors_fatal: true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 15. 祕密（vault）
+#
+# 下列變數刻意「不」在這個檔給值，只在需要處以 | default('') 引用，
+# 讓對應 role 的 assert 能以清楚訊息擋下空值：
+#
+#   vault_mysql_root_password   MySQL root 密碼（>= 12 字元）
+#   vault_mysql_app_password    應用帳號 pm 的密碼（>= 12 字元）
+#   vault_app_key               Laravel APP_KEY（base64:...）；留空則首次部署自動產生一次
+#
+# 放置位置（建議，兩者擇一）：
+#   inventory/group_vars/production/vault.yml   ← 目錄形式，需要把 production.yml 改成 production/main.yml
+#   或直接 ansible-vault encrypt inventory/group_vars/production.yml 整檔加密
+#
+# 建立：
+#   cd ansible
+#   ansible-vault create inventory/group_vars/production.yml
+#   ansible-playbook -i inventory/production.yml site.yml --ask-vault-pass
+#
+# .gitignore 已排除 inventory/hosts.yml、環境別 group_vars 與 .vault_pass。
+# ══════════════════════════════════════════════════════════════════════════════

@@ -4,6 +4,35 @@
 readonly EX_OK=0 EX_FAIL=1 EX_USAGE=2 EX_PRECOND=3 EX_ABORT=4
 readonly EX_SCAN_QUALITY=20 EX_SCAN_SAST=21 EX_SCAN_SCA=22 EX_SCAN_DAST=23
 
+# ── 目錄版面 ───────────────────────────────────────────────────────────────
+#
+#   v2  docker/ ansible/ backend/ frontend/ 平鋪在根目錄
+#   v3  env/{docker,ansible} + src/{frontend,backend}
+#
+# ⚠ 這個值必須真的被 cx_assert_layout() 讀。2026-09-06 之前 CX_LAYOUT_VERSION
+#   只在 doctor.sh 被**印出來**，沒有任何比較 —— 也就是一個裝飾。
+#   後果是「舊版面的樹跑新 cx」會用一堆看不出關聯的方式壞掉：缺
+#   env/docker/compose/dev.yml、composer 找不到 src/backend/composer.json、
+#   ansible cd 失敗 —— 每一個訊息都指向不同的方向，沒有一個說出真正的原因。
+#   cx verify cli 的 LAY-version 檢查盯著這個值與 .cxroot 一致。
+readonly CX_LAYOUT_REQUIRED=2
+# 版面無關的動詞。拿到舊樹的人正需要這幾個 —— 清單刻意很短。
+readonly CX_LAYOUT_EXEMPT_VERBS='help doctor install uninstall'
+
+cx_assert_layout() {
+    local got=${CX_LAYOUT_VERSION:-1}
+    [[ $got == "$CX_LAYOUT_REQUIRED" ]] && return 0
+    if [[ " $CX_LAYOUT_EXEMPT_VERBS " == *" ${CX_VERB:-} "* ]]; then
+        cx_warn "這棵樹是 layout v$got，本版 cx 需要 v$CX_LAYOUT_REQUIRED —— ${CX_VERB} 仍可用"
+        return 0
+    fi
+    cx_error "版面不相容：.cxroot 是 layout v$got，本版 cx 需要 v$CX_LAYOUT_REQUIRED"
+    cx_dim "  v2 → v3：docker/ ansible/ → env/ ；backend/ frontend/ → src/"
+    cx_dim "  遷移步驟（含子模組 gitdir）：docs/cx/layout.md"
+    cx_dim "  只想看看目前狀態： cx doctor"
+    exit "$EX_PRECOND"
+}
+
 # ── 外部映像的單一事實來源 ────────────────────────────────────────────────────
 # 每一個都**釘住明確版本**，沒有 latest、沒有無版本 tag。
 # 這些原本散在 scan.sh / fresh.sh / compose.sh 的 `${VAR:-預設}` 裡，
@@ -313,7 +342,7 @@ cx_sonar_net()     { printf '%s_devsecops_net' "$(cx_project)"; }
 # ── compose 引數組裝 ──────────────────────────────────────────────────────────
 # claude.md §4 的四個陷阱全部在這裡處理掉，所有動詞都必須走這條路：
 #   1) --project-directory "$CX_ROOT"：相對路徑以「第一個 -f 的目錄」為基準，不是 cwd。
-#   2) -p <專案>_<mode>：隔離容器／網路／volume（但**不隔離 host 埠**，埠靠 docker/env/<mode>.env）。
+#   2) -p <專案>_<mode>：隔離容器／網路／volume（但**不隔離 host 埠**，埠靠 env/docker/compose/<mode>.env）。
 #   3) --env-file 顯式缺檔是硬錯誤（隱式 ./.env 才會靜默略過）→ 只加存在的檔。
 #   4) 網路名在 compose 裡明寫 name:，否則會被命名空間化成 <project>_<key>。
 CX_DC_ARGS=()
@@ -324,7 +353,7 @@ cx_compose_init() {
         *) cx_die "$EX_USAGE" "模式只接受 dev|test|prod（收到 $mode）" ;;
     esac
     local base="$CX_ROOT/docker-compose.yml"
-    local overlay="$CX_ROOT/docker/compose/${mode}.yml"
+    local overlay="$CX_ROOT/env/docker/compose/${mode}.yml"
     [[ -f $base    ]] || cx_die "$EX_PRECOND" "缺少 base compose：$base"
     [[ -f $overlay ]] || cx_die "$EX_PRECOND" "缺少 overlay compose：$overlay"
 
@@ -340,7 +369,7 @@ cx_compose_init() {
     #     三個模式搶同一組埠（port is already allocated），
     #     或更糟 —— test 模式的 WAF 引擎值變成別的而沒有人發現。
     [[ -f $CX_ROOT/.env ]] && CX_DC_ARGS+=(--env-file "$CX_ROOT/.env")
-    local modeenv="$CX_ROOT/docker/env/${mode}.env"
+    local modeenv="$CX_ROOT/env/docker/compose/${mode}.env"
     [[ -f $modeenv ]] || cx_die "$EX_PRECOND" \
         "缺少模式覆寫檔：$modeenv（少了它埠段會靜默落回預設值，三個模式會搶埠）"
     CX_DC_ARGS+=(--env-file "$modeenv")
@@ -388,11 +417,11 @@ cx_assert_mount_sources() {
 cx_compose_mount_sources() {
     local mode=${1:-${CX_DC_MODE:-dev}} f
     local -a a=(--project-directory "$CX_ROOT" -p "$(cx_project_for "$mode")"
-                -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/docker/compose/${mode}.yml")
+                -f "$CX_ROOT/docker-compose.yml" -f "$CX_ROOT/env/docker/compose/${mode}.yml")
     # 同 cx_compose_init：.env 寬容、<mode>.env 硬要求。這裡是唯讀的探測路徑，
     # 所以缺檔回非 0 而不是 cx_die —— 呼叫端（cx_assert_mount_sources）自己會報。
     [[ -f $CX_ROOT/.env ]] && a+=(--env-file "$CX_ROOT/.env")
-    f="$CX_ROOT/docker/env/${mode}.env"
+    f="$CX_ROOT/env/docker/compose/${mode}.env"
     [[ -f $f ]] || { cx_error "缺少模式覆寫檔：$f"; return "$EX_PRECOND"; }
     a+=(--env-file "$f")
     docker compose "${a[@]}" config --format json 2>/dev/null \
