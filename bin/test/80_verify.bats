@@ -135,3 +135,41 @@ PHP
     run grep -q 'inventory.py' "$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py"
     assert_rc 0
 }
+
+# ── TUI-coverage 在模式門檻之下必須仍然證明得了東西 ────────────────────────
+#
+# 主選單開始依模式隱藏項目之後，靜態 regex 看不到 $_TUI_MODE ——
+# 舊的算法（「整份 tui.sh 出現過哪些動詞」）會**照樣 PASS 但不再證明任何事**：
+# 它會宣稱每個動詞都到得了，而 dev 模式下 scan 一個都到不了。
+# 那比檢查變紅糟得多，因為沒有人會發現。所以這兩條案例盯的是「它真的會紅」。
+
+@test "TUI-coverage：某動詞三個模式都到不了時要 FAIL" {
+    cp "$CX_TEST_REAL_ROOT/bin/cmd/tui.sh" "$BATS_TEST_TMPDIR/tui.sh"
+    # 把 test 模式那一段改成一個不存在的模式 —— scan 的唯一入口因此消失
+    sed -i '0,/# @tui-mode: test/s//# @tui-mode: nosuchmode/' "$BATS_TEST_TMPDIR/tui.sh"
+    mkdir -p "$CX_TEST_ROOT/bin/cmd"
+    run bash -c "
+        cd '$CX_TEST_REAL_ROOT'
+        tmp=\$(mktemp -d); cp -r bin \"\$tmp/\"
+        cp '$BATS_TEST_TMPDIR/tui.sh' \"\$tmp/bin/cmd/tui.sh\"
+        cp .cxroot \"\$tmp/\" 2>/dev/null || true
+        CX_ROOT=\"\$tmp\" CX_PROJECT_NAME=pm python3 bin/lib/verify_meta.py tui
+        rm -rf \"\$tmp\"
+    "
+    [[ $output == *"FAIL|TUI-coverage"* ]] \
+        || _fail_with "三個模式都到不了卻沒有變紅：$output"
+    [[ $output == *"scan"* ]] || _fail_with "沒有指出是哪個動詞：$output"
+}
+
+@test "TUI-coverage：@tui-mode 標記不見時要 FAIL（不可以退回舊語意）" {
+    run bash -c "
+        cd '$CX_TEST_REAL_ROOT'
+        tmp=\$(mktemp -d); cp -r bin \"\$tmp/\"
+        sed -i 's/# @tui-mode: [a-z,]*//' \"\$tmp/bin/cmd/tui.sh\"
+        cp .cxroot \"\$tmp/\" 2>/dev/null || true
+        CX_ROOT=\"\$tmp\" CX_PROJECT_NAME=pm python3 bin/lib/verify_meta.py tui
+        rm -rf \"\$tmp\"
+    "
+    [[ $output == *"FAIL|TUI-coverage"* ]] \
+        || _fail_with "標記不見了卻沒有變紅：$output"
+}

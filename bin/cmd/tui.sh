@@ -469,28 +469,22 @@ _tui_git_commit() {
 
 _tui_env() {
     local c
+    # init / rename / fresh / status 搬到「專案設定」了 —— 它們改的是
+    # 「這個專案是誰」，而這裡是「這台機器能不能跑它」。兩件不同的事。
     while c=$(_tui_menu "環境（模式：$_TUI_MODE・runner：$_TUI_RUNNER）" "返回" \
         doctor "檢查工具鏈、埠、子模組與阻擋項目" \
         setup  "整備環境：原生工具鏈 / 系統套件 / 專案相依" \
         runner "切換 runner：auto ／ docker ／ native" \
         verify "跑驗收清單並產出報告（可選範圍）" \
         lint   "靜態檢查：ansible / php / js / sh" \
-        acl    "檔案權限（POSIX ACL）" \
-        fresh  "⚠ 清理與重建專案" \
-        rename "⚠ 把整個範本改成新的專案名" \
-        init   "⚠ 把範本設定成新專案（改名 → 重建 → 接遠端）" \
-        status "三個 repo 的狀態"); do
+        acl    "檔案權限（POSIX ACL）"); do
         case $c in
             '<')     return 0 ;;
             setup)   _tui_setup ;;
             runner)  _tui_switch_runner ;;
-            status)  _tui_run git status ;;
             verify)  _tui_verify ;;
             lint)    _tui_lint ;;
             acl)     _tui_acl ;;
-            fresh)   _tui_fresh ;;
-            rename)  _tui_rename ;;
-            init)    _tui_init ;;
             *)       _tui_run "$c" ;;
         esac
     done
@@ -696,15 +690,100 @@ _tui_docker() {
         prod "正式：只發布 80、無管理工具" \
         db   "資料庫：狀態 / migrate / dump / fresh / 還原" \
         pma  "開啟 phpMyAdmin（dev 與 test 模式）" \
-        open "開啟服務網址：前端 / 後台 / API / phpMyAdmin / SonarQube"); do
+        open "開啟服務網址：前端 / 後台 / API / phpMyAdmin / SonarQube" \
+        vol  "Volume：列出這個專案的具名 volume 與大小" \
+        img  "Image：列出這個專案建出來的映像"); do
         case $c in
             '<')  return 0 ;;
             db)   _tui_db ;;
             pma)  _tui_run pma ;;
             open) _tui_open ;;
+            vol)  _tui_volumes ;;
+            img)  _tui_images ;;
             *)    _tui_stack "$c" ;;
         esac
     done
+}
+
+# ── Volume 與 Image ────────────────────────────────────────────────────────
+#
+# 這兩個原本完全沒有入口 —— 而「為什麼硬碟滿了」與「為什麼改了 Dockerfile
+# 卻沒生效」的答案都在這裡。
+#
+# ⚠ 刪除一律走 cx_confirm（紅線 2）。而且**只列出這個專案的**東西：
+#   docker volume prune 之類的全域指令會掃到別的專案，那不是這個選單該做的事。
+#   要全域清理請自己下 docker 指令 —— 那是有意識的決定，不該藏在選單裡。
+_tui_volumes() {
+    local c proj
+    while c=$(_tui_menu "Volume（模式：$_TUI_MODE）" "返回" \
+        list "列出這個專案的具名 volume 與大小" \
+        rm   "⚠ 刪除某一個 volume（資料會消失）"); do
+        proj=$(cx_project_for "$_TUI_MODE")
+        case $c in
+            '<')  return 0 ;;
+            list) _tui_shell_page "Volume：$proj" \
+                    "docker volume ls --filter label=com.docker.compose.project=$proj \
+                     --format 'table {{.Name}}\t{{.Driver}}' ;
+                     echo ; echo '── 佔用空間 ──' ;
+                     docker system df -v 2>/dev/null | awk -v p=\"$proj\" '
+                        /^VOLUME NAME/{f=1} f && (\$1 ~ p || /^VOLUME NAME/) {print}'" ;;
+            rm)   _tui_volume_rm "$proj" ;;
+        esac
+    done
+}
+
+_tui_volume_rm() {                  # _tui_volume_rm <compose project>
+    local proj=$1 sel f
+    local -a items=()
+    while read -r v; do
+        [[ -n $v ]] || continue
+        items+=("$v" "$(docker volume inspect "$v" --format '{{.CreatedAt}}' 2>/dev/null || echo '?')")
+    done < <(docker volume ls -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null)
+    (( ${#items[@]} )) || { cx_msg "Volume" "$proj 底下沒有具名 volume。"; return 0; }
+    f=$(mktemp)
+    if _cx_dlg --title "刪除 volume（$proj）" \
+            --menu "\n⚠ 選一個刪除。裡面的資料會消失且無法還原。" 20 76 10 \
+            "${items[@]}" 2>"$f" 1>&8; then
+        sel=$(<"$f"); rm -f "$f"
+        cx_confirm --danger "刪除 volume" \
+            "將刪除：$sel\n\n裡面的資料會消失，而且**無法還原**。\n\n資料庫的話請先 cx db dump。\n\n確定嗎？" \
+            && _tui_shell_page "刪除 $sel" "docker volume rm '$sel'"
+    else rm -f "$f"; fi
+}
+
+_tui_images() {
+    local c
+    while c=$(_tui_menu "Image（模式：$_TUI_MODE）" "返回" \
+        list "列出這個專案建出來的映像" \
+        why  "為什麼改了 Dockerfile 卻沒生效？"); do
+        case $c in
+            '<')  return 0 ;;
+            list) _tui_shell_page "Image：$(cx_image_prefix)" \
+                    "docker image ls --filter reference='$(cx_image_prefix)/*' \
+                     --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}'" ;;
+            why)  cx_msg "映像 tag 含模式" \
+"映像 tag 一定含模式（例如 $(cx_image_prefix)/nuxt:test-prod-ssr）。
+
+up 沒有加 --build 的話，compose 會直接用既有的映像 ——
+改了 Dockerfile 也不會重建。
+
+  重建： cx $_TUI_MODE up -d --build
+
+spa / static 的 API base URL 是**build 時**烘進 bundle 的，
+所以 test 與 prod 共用同一個 tag 會讓測試環境打到正式 API。
+這就是 tag 必須含模式的原因。" ;;
+        esac
+    done
+}
+
+# 把一段唯讀的 shell 輸出顯示在對話框裡。
+# 不用 _tui_run —— 那一支是給 cx 動詞用的（會帶 --mode / --runner）。
+_tui_shell_page() {                 # _tui_shell_page <標題> <指令>
+    local title=$1 cmd=$2 out
+    out=$(eval "$cmd" 2>&1) || true
+    [[ -n ${out// /} ]] || out="（沒有結果）"
+    local _h _w; read -r _h _w < <(_cx_fit 22 96)
+    _cx_dlg --title "$title" --scrolltext --msgbox "$out" "$_h" "$_w" 1>&8 2>&9 || true
 }
 
 # 埠段是每個模式一組而且可以被覆寫，所以「前端在哪」不是背得起來的東西。
@@ -953,39 +1032,102 @@ _tui_tools() {
     done
 }
 
+# ── 主選單的模式門檻 ────────────────────────────────────────────────────────
+#
+# 測試／掃描只在 test 模式出現，部署只在 prod 模式出現（使用者規劃）。
+#
+# ⚠ 隱藏之後，「每個動詞都到得了」這句話就不再是對整個選單成立，而是對
+#   **三個模式的聯集**成立。verify_meta.py 的 check_tui 是靜態 regex 剖析，
+#   它看不到 $_TUI_MODE —— 也就是說，如果不做別的事，那條檢查會**照樣 PASS
+#   但不再證明任何事**（它會宣稱每個動詞都到得了，而 dev 模式下 scan 一個
+#   都到不了）。那比檢查變紅糟得多。
+#
+#   所以底下用 @tui-mode 標記把「這幾個項目只在哪些模式出現」寫成機器讀得懂的
+#   形式，check_tui 依它做三模式聯集判定。標記與 if 條件必須一致 ——
+#   刻意用標記而不是剖析 bash 條件式：後者等於新增一個會漂移的剖析器。
+#
+# 另外加一行提示：藏起來的東西如果沒有說去哪裡找，使用者只會以為壞了。
 cmd_tui_main() {
     _tui_need_tty || return "$EX_PRECOND"
     local c
-    # 標題把兩個狀態都帶出來。原本只印模式，而且那個模式還改不了。
-    while c=$(_tui_menu "cx — $(cx_project) 專案管理  [模式：$_TUI_MODE・runner：$_TUI_RUNNER]" "離開" \
-        status "▸ 現況一覽：身分／容器／分支／gitlink／網址／上次驗收" \
-        mode   "▸ 切換模式（目前：$_TUI_MODE）" \
-        env    "環境：doctor / 整備 / verify / lint / acl / fresh" \
-        docker "容器：dev / test / prod / 資料庫 / phpMyAdmin" \
-        tools  "工具：artisan / php / composer / npm / 風格 / VS Code" \
-        test   "測試：後端 / 前端 / 覆蓋率" \
-        scan   "DevSecOps：四道防線" \
-        deploy "部署：Ansible" \
-        git    "Git：狀態 / 分支 / 提交 / guard" \
-        custom "自訂選單（.cx/menu.conf）" \
-        help   "指令說明"); do
+    local -a items=()
+    # @tui-mode: all
+    items+=(
+        status "▸ 現況一覽：身分／容器／分支／gitlink／網址／上次驗收"
+        mode   "▸ 切換模式（目前：$_TUI_MODE）"
+        project "專案：init / re-init / 抹除紀錄 / 狀態"
+        env    "環境：doctor / 整備 / verify / lint / acl"
+        docker "容器：dev / test / prod / 資料庫 / 網址"
+        tools  "工具：artisan / php / composer / npm / 風格 / VS Code"
+    )
+    # @tui-mode: test
+    if [[ $_TUI_MODE == test ]]; then
+        items+=(
+            test   "測試：後端 / 前端 / 覆蓋率"
+            scan   "DevSecOps：四道防線"
+        )
+    fi
+    # @tui-mode: prod
+    if [[ $_TUI_MODE == prod ]]; then
+        items+=(
+            deploy "部署：Ansible"
+        )
+    fi
+    # @tui-mode: all
+    items+=(
+        git    "Git：狀態 / 分支 / feature / hotfix / release / guard"
+        custom "自訂選單（.cx/menu.conf）"
+        help   "指令說明"
+    )
+    local hint
+    case $_TUI_MODE in
+        dev)  hint="（測試與掃描在 test 模式・部署在 prod 模式 —— 用上面的「切換模式」）" ;;
+        test) hint="（部署在 prod 模式）" ;;
+        prod) hint="（測試與掃描在 test 模式）" ;;
+    esac
+    while c=$(_tui_menu "cx — $(cx_project) 專案管理  [模式：$_TUI_MODE・runner：$_TUI_RUNNER]$hint" \
+        "離開" "${items[@]}"); do
         case $c in
-            '<')    break ;;
-            status) _tui_run status ;;
-            mode)   _tui_switch_mode ;;
-            env)    _tui_env ;;
-            docker) _tui_docker ;;
-            tools)  _tui_tools ;;
-            test)   _tui_test ;;
-            git)    _tui_git ;;
-            scan)   _tui_scan ;;
-            deploy) _tui_deploy ;;
-            custom) _tui_custom ;;
-            help)   _tui_run help ;;
+            '<')     break ;;
+            status)  _tui_run status ;;
+            mode)    _tui_switch_mode ;;
+            project) _tui_project ;;
+            env)     _tui_env ;;
+            docker)  _tui_docker ;;
+            tools)   _tui_tools ;;
+            test)    _tui_test ;;
+            git)     _tui_git ;;
+            scan)    _tui_scan ;;
+            deploy)  _tui_deploy ;;
+            custom)  _tui_custom ;;
+            help)    _tui_run help ;;
         esac
     done
     printf '\n' >&8
     return 0
+}
+
+# ── 專案設定 ────────────────────────────────────────────────────────────────
+#
+# 這一組原本散在 env 選單底下（init / rename / fresh），而它們與「整備環境」
+# 是不同性質的東西：前者改的是**這個專案是誰**，後者是**這台機器能不能跑它**。
+_tui_project() {
+    local c
+    while c=$(_tui_menu "專案設定" "返回" \
+        status  "現況一覽（身分／容器／分支／gitlink／網址／上次驗收）" \
+        init    "⚠ 把範本設定成新專案（改名 → 重建 → 接遠端）" \
+        re-init "⚠ 同樣的重建流程但不改名（重來一次）" \
+        rename  "⚠ 只改名字（不碰 .git）" \
+        crash   "⚠ 抹除專案紀錄與狀態（清理與重建，或只抹 git）"); do
+        case $c in
+            '<')      return 0 ;;
+            status)   _tui_run status ;;
+            init)     _tui_init ;;
+            re-init)  _tui_init ;;
+            rename)   _tui_rename ;;
+            crash)    _tui_fresh ;;
+        esac
+    done
 }
 
 _tui_test() {

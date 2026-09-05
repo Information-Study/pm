@@ -320,17 +320,96 @@ def check_tui():
     else:
         row("PASS", "TUI-resolve", "選單項目都指得到實際存在的指令", f"涵蓋 {len(seen)} 個動詞")
 
-    # 覆蓋率：哪些動詞從選單完全到不了
-    # 這幾個刻意只走命令列：tui 自己、安裝／移除、以及 compose 的原始逃生門
+    # ── 覆蓋率：三個模式的**聯集**要涵蓋每個動詞 ──────────────────────
+    #
+    # ⚠ 2026-09-06 之前這裡只算「整份 tui.sh 出現過哪些動詞」。主選單開始依
+    #   模式隱藏項目之後，那個算法會**照樣 PASS 但不再證明任何事**：
+    #   它會宣稱「每個動詞都到得了」，而 dev 模式下 scan 一個都到不了。
+    #   靜態 regex 看不到 $_TUI_MODE —— 那比檢查變紅糟得多，因為沒有人會發現。
+    #
+    #   所以改成：對三個模式各走訪一次選單圖，斷言聯集涵蓋全部，
+    #   並把每個模式各能到幾個印在備註裡（那個數字本身就是可讀的證據）。
+    #   模式門檻用 tui.sh 裡的 `# @tui-mode: <清單>` 標記表示 ——
+    #   刻意不去剖析 bash 的條件式：那等於新增一個會漂移的剖析器。
     CLI_ONLY = {"tui", "install", "uninstall", "dc", "config", "help",
                 "up", "down", "restart", "ps", "logs", "sh", "build"}
-    unreachable = sorted(v for v in comp if v not in seen and v not in CLI_ONLY)
-    if unreachable:
-        row("FAIL", "TUI-coverage", "每個動詞都能從選單到達",
-            "到不了：" + " ".join(unreachable))
+    MODES = ("dev", "test", "prod")
+
+    funcs = {m.group(1): m.group(2)
+             for m in re.finditer(r"^(_tui_\w+|cmd_tui_main)\(\)\s*\{(.*?)^\}", s, re.S | re.M)}
+    main_body = funcs.get("cmd_tui_main", "")
+
+    def verbs_in(body):
+        out = set()
+        for mm in re.finditer(r"_tui_(?:run|freeform)\s+([a-z][a-z0-9-]*)", body):
+            if mm.group(1) in known:
+                out.add(mm.group(1))
+        if re.search(r'_tui_run\s+"\$c"', body):
+            for mm in re.finditer(r'^\s{8}([a-z][a-z0-9-]*)\s+"', body, re.M):
+                if mm.group(1) in known:
+                    out.add(mm.group(1))
+        if "_tui_stack" in body:
+            out |= {v for v in ("dev", "prod", "test") if v in known}
+        return out
+
+    # 主選單每個 tag 在哪些模式出現（@tui-mode 標記分段）
+    #
+    # ⚠ 「標記不見了」要看**標記本身**出現過沒有，不能看 tag_modes 是不是空的：
+    #   tag_modes 是從選單**項目**建的，而項目一直都在 —— 標記全部被刪掉時
+    #   cur 會停在初始值（三個模式全開），tag_modes 照樣非空，
+    #   於是檢查全綠而模式門檻已經完全沒有被驗證。實測 2026-09-06。
+    have_marker = bool(re.search(r"@tui-mode:", main_body))
+    tag_modes, cur = {}, set(MODES)
+    for line in main_body.splitlines():
+        mm = re.search(r"@tui-mode:\s*([a-z,\s]+)", line)
+        if mm:
+            spec = mm.group(1).strip()
+            cur = set(MODES) if spec == "all" else {x.strip() for x in spec.split(",") if x.strip()}
+            continue
+        # ⚠ 8 空白**以上**。模式門檻的項目包在 if 區塊裡，縮排是 12。
+        #   寫成恰好 8 的話，那幾個受限的項目一個都抓不到 —— 而它們正是
+        #   這整段程式碼存在的理由。實測 2026-09-06：三個模式都算出 26，
+        #   一模一樣，數字看起來很正常。
+        mm = re.match(r"\s{8,}([a-z][a-z0-9-]*)\s+\"", line)
+        if mm:
+            tag_modes.setdefault(mm.group(1), set()).update(cur)
+
+    # tag → case 分支的內容
+    dispatch = {m.group(1): m.group(2)
+                for m in re.finditer(r"^\s+([a-z][a-z0-9-]*)\)\s+(.+?);;", main_body, re.M)}
+
+    def reachable(bodies):
+        got, seen_fn, stack = set(), set(), list(bodies)
+        while stack:
+            b = stack.pop()
+            got |= verbs_in(b)
+            for fn in set(re.findall(r"\b(_tui_[a-z_]+)\b", b)):
+                if fn in funcs and fn not in seen_fn:
+                    seen_fn.add(fn)
+                    stack.append(funcs[fn])
+        return got
+
+    per_mode = {}
+    for mode in MODES:
+        bodies = [b for tag, b in dispatch.items()
+                  if mode in tag_modes.get(tag, set(MODES))]
+        per_mode[mode] = reachable(bodies)
+
+    union = set().union(*per_mode.values()) if per_mode else set()
+    unreachable = sorted(v for v in comp if v not in union and v not in CLI_ONLY)
+    detail = "・".join(f"{m} {len(per_mode[m] - CLI_ONLY)}" for m in MODES)
+    if not have_marker or not tag_modes:
+        # 標記不見了 —— 有人改了主選單卻沒維護標記，模式門檻就不再被驗證。
+        row("FAIL", "TUI-coverage", "三個模式的聯集涵蓋每個動詞",
+            "cmd_tui_main 裡找不到 @tui-mode 標記 —— 模式門檻無法判定，"
+            "這條檢查會退回「整份檔案出現過什麼」的舊語意（那個語意證明不了可達性）")
+    elif unreachable:
+        row("FAIL", "TUI-coverage", "三個模式的聯集涵蓋每個動詞",
+            "三個模式都到不了：" + " ".join(unreachable) + f"（{detail}）")
     else:
-        row("PASS", "TUI-coverage", "每個動詞都能從選單到達",
-            f"{len(seen)} 個可達，{len(CLI_ONLY & comp)} 個刻意只走命令列")
+        row("PASS", "TUI-coverage", "三個模式的聯集涵蓋每個動詞",
+            f"聯集 {len(union)} 個・各模式可達：{detail}"
+            f"・{len(CLI_ONLY & comp)} 個刻意只走命令列")
 
 
 # ══ DOCS：文件與實作是否一致 ═══════════════════════════════════════════════
