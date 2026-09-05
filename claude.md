@@ -330,7 +330,9 @@ pre-push hook 對這三個 URL 一律拒絕，不接受任何覆寫旗標。
 preflight → 備份（原始碼 + git bundle + 真實 gitdir + mysqldump）
           → 驗證封存（sha256sum / git bundle verify / tar -t）
           → 確認閘門（whiptail Y/n + 輸入確認字串）   ← 在此之前不刪任何東西
-          → 刪除 → 重建前後端 → 三 Git 初始化 → 裝 push guard
+          → 遷移 docker 設定 → 刪除 → 重建前後端 → **驗證重建結果**
+          → 三 Git 初始化（含 submodule absorbgitdirs 與 gitflow 的 dev）
+  （不裝 push guard —— 那是選用的，要的話自己跑 cx git guard install）
 ```
 
 ### 守則
@@ -411,7 +413,7 @@ preflight → 備份（原始碼 + git bundle + 真實 gitdir + mysqldump）
 backend  git init → commit          # submodule 不能加在未出生的 HEAD 上
 frontend git init → commit
 main     git init → git submodule add ./backend → ./frontend → commit
-         → 三個 repo 都裝 push guard
+         → submodule absorbgitdirs（收成標準佈局）→ 三個 repo 各建 dev
 ```
 
 ---
@@ -679,13 +681,18 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 因為 `cx fresh` 會刪掉 `.git`，用 git 當解析器會在流程中途壞掉）。
 `cx install` 之後可在任何地方直接打 `cx`。
 
-### 新增一個動詞時，四個地方要一起改
+### 新增一個動詞時，六個地方要一起改
 
 1. `bin/cmd/<verb>.sh`，定義 `cmd_<verb>_main()`
 2. `cx` 的 `CX_CMD_FILE_OF`（只有「動詞名 ≠ 檔名」時才需要，例如 `up` → `compose.sh`）
 3. `bin/completion/cx.bash` 的 `verbs=`
 4. `bin/cmd/help.sh`
+5. `bin/cmd/tui.sh` 的選單 —— `cx verify tui` 的 `TUI-coverage` 要求每個動詞都到得了，
+   真的不該進選單的話要加進 `bin/lib/verify_meta.py` 的豁免清單並寫明理由
+6. `docs/cx-reference.md` —— `cx verify docs` 的 `DOC-cx-verbs` 會檢查每個動詞
+   都在那份參考裡出現過
 
+漏掉 5 或 6 不是靜默漂移，`cx verify` 會直接 FAIL —— 那是刻意的。
 漏掉第 1 項的後果實際發生過：dispatcher 把 8 個動詞指到一個從未被寫出來的
 `bin/cmd/compose.sh`，於是 `cx up` 回「未知的指令」。
 `cx doctor` 現在會檢查每個對外動詞都找得到實作檔。

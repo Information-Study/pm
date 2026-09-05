@@ -22,7 +22,7 @@ _cx_completion() {
 
     local global_flags='--root --mode --ui --runner --dry-run --yes -y -h --help'
     # 這份清單就是「cx 到底做得到什麼」的權威來源之一 ——
-    # 新增動詞時四個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
+    # 新增動詞時六個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
     #（只有檔名與動詞不同名時才需要）、這裡、以及 bin/cmd/help.sh。
     local verbs='help doctor setup acl lint style scan verify git fresh rename init re-init tui install uninstall code pma php
                  art composer npm db test sonar deploy

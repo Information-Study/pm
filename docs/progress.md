@@ -62,7 +62,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `rename` | ✅ | 把整個範本改成新的專案名；`--dry-run` 先列變更點，**不碰 `.git`**。由 `cx verify cli` 的 `TPL-*` 四項守著一致性 |
 | `tui` `install` `uninstall` `help` | ✅ | |
 | `code` | ✅ | 用 VS Code 開專案根（不是所在的子目錄） |
-| `pma` | ✅ | 開 phpMyAdmin；只有 dev 有，埠從合併後的 compose 設定讀 |
+| `pma` | ✅ | 開 phpMyAdmin；**dev 與 test 兩個模式都有**（prod 刻意沒有），埠從合併後的 compose 設定讀 |
 | `php` | ✅ | 直接跑 php（`cx art` 只涵蓋 artisan），兩條 runner 都支援 |
 | `setup system` | ✅ | 需要 root 的系統套件；有確認閘門，sudo 不可用時只印指令 |
 | `setup native` | ✅ | system → tools → deps 一次做完（2026-09-04 新增） |
@@ -464,7 +464,10 @@ cx deploy apply staging         # 真的跑（會列出目標主機並要求確�
 ### `cx fresh` 的重建階段
 
 備份、驗證封存、確認閘門、刪除都可用且有測過。
-**重建階段與 `--rollback` 仍未實作** —— 打了會得到 `EX_USAGE` 並指向本節。
+> ⚠ 這裡曾經寫著「重建階段與 `--rollback` 仍未實作」。**那已經過期**：
+> `fresh.sh` 的階段表含 rebuild / verify / git-init，`--rollback` 也實作並實跑過
+>（`bin/test/60_fresh.bats` 有「刪除之後可以用 --rollback 回到原狀」的案例）。
+> 同一份文件的其他段落早就這樣寫了 —— 這一行是漏改的。
 
 ---
 

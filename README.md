@@ -203,7 +203,7 @@ xdebug 有裝但預設關閉（常開會讓 ZAP 的時間量測失真）。
 ```bash
 cp ansible/inventory/hosts.yml.example              ansible/inventory/hosts.yml
 cp ansible/inventory/group_vars/staging.yml.example ansible/inventory/group_vars/staging.yml
-ansible-vault create ansible/inventory/group_vars/vault.yml
+ansible-vault create ansible/inventory/group_vars/all/vault.yml
 ```
 
 完整步驟與變數表見 [`ansible/README.md`](ansible/README.md)。
@@ -316,7 +316,7 @@ pm/
 
 ## 拿這個 repo 當新專案的範本
 
-整套工具鏈與「pm」這個名字是**解耦**的：改 `.cxroot` 一個檔，compose 的
+整套工具鏈與「pm」這個名字是**解耦**的：`.cxroot` 是專案身分的來源，compose 的
 project 前綴、SonarQube 的 project 與網路、push guard 的白名單、
 `cx fresh` 的確認字串就全部跟著換。
 

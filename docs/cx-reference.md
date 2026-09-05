@@ -697,10 +697,10 @@ pm
    在對應的遠端真的存在。
 5. `--force` 需要**輸入 `REWRITE HISTORY`** 才會繼續。
 
-detached HEAD 之下會先 `git checkout -q -B <追蹤分支> HEAD` 再推
+detached HEAD 之下會先把子模組接回追蹤分支再推（接不回去就中止，不會硬推）
 （子模組在 `submodule update` 之後預設就是 detached）。
 
-> `cx git sync` 用 `checkout -q -B "$b" "$head"` 而不是 `checkout -q "$b"`。
+> `cx git sync` **只在 detached HEAD 領先追蹤分支時**才用 `checkout -q -B "$b" "$head"`。
 > 後者在「本地分支落後 gitlink」時會靜默把工作區切到舊的 commit，
 > 看起來成功，實際上剛剛的提交不見了。
 
