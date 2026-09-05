@@ -216,6 +216,36 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 
 ---
 
+## 2026-09-05 稽核與修復
+
+對「原始需求是否確實落地」做了一輪逐項查證，找到並修掉 **26 個缺陷**，
+其中三個會讓已宣告完成的功能實際上是壞的：
+
+| # | 缺陷 | 為什麼之前沒被發現 |
+|---|---|---|
+| 1 | **原生部署的 Filament 後台是全壞的** | `nginx_php_prefixes` 只有字面 `/livewire`，而 Livewire v4 的端點前綴由 `APP_KEY` 推導（`/livewire-<hash>/`）。比對不到就掉進 `location /` 被轉給 Nuxt。24.04／26.04 兩次 `failed=0` 的部署都帶著這個缺陷 —— 因為驗證只斷言「攻擊被擋成 403」，從來沒有斷言「正常的 Livewire 請求過得去」 |
+| 2 | **test 模式缺 phpMyAdmin** | 規格明文要求，`docker/env/test.env` 也預留了 `PHPMYADMIN_PORT=18891`，但 service 從來沒被寫出來 |
+| 3 | **`cx setup system` 一路把成功報成失敗** | `_setup_system_have` 少一個 `acl)` 分支，於是 apt 完全成功之後複驗仍判定「裝完還是不可用」 |
+
+新增的機制（讓同一類缺陷下次會被自動抓到）：
+
+* `cx verify` 多了 **cli / docs / tui / waf / acl** 五個範圍。前三個不需要
+  Docker 也不需要 `.env`，在剛 clone 下來的樹上就跑得完
+* `cx style`（Pint + Prettier）與 `cx lint` 的五個範圍（含 `shellcheck`）
+* `cx fresh` 的**重建階段與 `--rollback`** —— 封存的另一半終於存在，
+  而且第一次真的被還原過
+* `cx doctor` 補上文件早就宣稱會做的**埠**與**子模組**檢查
+* TUI 補上 15 個原本到不了的動作
+
+完整的需求追溯與實測結果見 [`acceptance.md`](acceptance.md)。
+
+一句話總結本輪的教訓：**這個專案已知的缺陷有一半以上不是「程式寫錯」，
+而是兩個地方對同一件事的說法不一致，而且沒有任何東西在盯著。**
+所以新增的檢查一律跨檔比對，而且兩邊都從實際的東西推導 ——
+再開一份手打的清單只會變成下一個會漂移的地方。
+
+---
+
 ## 仍未驗證的項目
 
 ### Ansible 真機進度

@@ -156,11 +156,113 @@ cx --root "$SP/fresh-drill" --yes fresh --rollback
 
 | # | 項目 | 指令 | 實測結果 | 日期 |
 |---|---|---|---|---|
-| M1 | TUI 逐頁走過 | `script -q <log> -c 'cx tui'` | 見下方 §7.1 | |
-| M2 | phpMyAdmin 真的能登入並看到資料表 | 瀏覽器開 8891 / 18891 | | |
-| M3 | Filament 後台實際登入並操作 | `cx db admin` → 瀏覽器 | | |
-| M4 | Sanctum SPA 完整登入流程 | 需要前端有登入頁 | | |
-| M5 | 真實跨源 CORS 行為 | 三個模式目前都是同源 | | |
+| M1 | TUI 主選單與子選單畫得出來、進得去、離得開 | `script -q <log> -c 'cx tui'` 配鍵盤序列 | ✅ 主選單 9 項全部渲染；環境／容器／工具三個子選單都進得去並正確顯示內容 | 2026-09-05 |
+| M2 | phpMyAdmin 真的能登入並看到資料表 | 瀏覽器開 8891 / 18891 | ⬜ 只驗到 HTTP 200，沒有真的登入 | |
+| M3 | Filament 後台實際登入並操作 | `cx db admin` → 瀏覽器 | ⬜ 未驗（沒有建立過管理員） | |
+| M4 | Sanctum SPA 完整登入流程 | 需要前端有登入頁 | ⬜ 未驗（前端目前沒有登入頁） | |
+| M5 | 真實跨源 CORS 行為 | 三個模式目前都是同源 | ⬜ 未驗 |  |
+
+> M2–M5 維持「未驗」。`/admin/login` 回 200、`/sanctum/csrf-cookie` 回 204、
+> `/api/user` 未認證回 401 都是自動驗過的，但那不等於「走完一次登入」。
+> 沒跑過的就寫沒跑過。
+
+---
+
+## 6.5 本輪實測結果（2026-09-05）
+
+環境：WSL2 Ubuntu 26.04.1・Docker 29.7.2・Compose v5.5.0・PHP 8.5.4・Node 24.20.0
+三個模式全部從這個工作樹重新 build 並啟動（17 個容器同時運行）。
+
+### `cx verify all`
+
+**通過 70 ・ 失敗 0 ・ 未驗 2**
+
+未驗的兩項是 `waf-block` 與 `waf-livewire` —— 宣告的引擎是 `DetectionOnly`，
+在那個狀態下這兩項沒有意義，所以誠實地 SKIP。把引擎切成 `On` 單獨驗過，兩項都通過
+（見下表），而 `cx scan dast` 的主動探測每次都會涵蓋它們。
+
+### 三條 runner 路徑
+
+| 動詞 | `--runner docker` | `--runner native` |
+|---|---|---|
+| `art --version` | ✅ Laravel 13.30.1 | ✅ Laravel 13.30.1 |
+| `php -v` | ✅ OPcache 8.5.10 | ✅ OPcache 8.5.4 |
+| `composer --version` | ✅ | ✅ |
+| `npm --version` / `npm --backend` | ✅ 11.19.0 | ✅ 11.19.0 |
+| `db status` | ✅ | ✅（需 `CX_DB_HOST=127.0.0.1`，工具會主動說明） |
+| `test back` | ✅ 2 passed | ✅ 2 passed |
+| `test front` | ✅ | ✅ |
+| `scan sca` | ✅ rc=0 | ✅ rc=0（與 docker 路徑同一份 trivy.yaml） |
+
+### Docker 不可用時（`DOCKER_HOST=unix:///nonexistent.sock`）
+
+| 情境 | 期望 | 實測 |
+|---|---|---|
+| `--runner auto` 的 art／composer／npm／scan secrets | 自動退回原生 | ✅ rc=0 |
+| `--runner docker` 的同一批 | **硬失敗**，不可靜默退回 | ✅ rc=3，訊息指向 `--runner native` |
+| `dev up` / `pma` / `sonar` / `scan dast` / `verify runtime` | 可行動的錯誤 | ✅ rc=3 |
+| `doctor` / `verify cli docs tui` / `lint sh` / `git status` / `acl check` | 照常可用 | ✅ |
+
+### 四道防線（`cx scan all`）
+
+| 防線 | 結果 |
+|---|---|
+| ① Quality — Larastan | ✅ 乾淨 |
+| ① Quality — SonarQube scanner | ⬜ 略過（本機沒有 `SONAR_TOKEN`；伺服器本身是 UP 的） |
+| ② SAST — Semgrep | ✅ 無 ERROR 等級 finding |
+| ③ SCA — Trivy / composer audit / npm audit | ✅ 全部乾淨（docker 與 native 兩條路都 rc=0） |
+| ④ DAST — ZAP baseline ×2 | ✅ 無 High risk alert（兩輪真的分別在 DetectionOnly 與 On 之下跑） |
+| ④ DAST — 主動探測 | ✅ 攻擊 6/6 全擋（100%）、正常請求 **0 誤擋**（含 Livewire POST） |
+| 祕密掃描 — gitleaks | ✅ 三個 repo 全歷史乾淨，檔名 `gitleaks-{pm,backend,frontend}.json` |
+
+引擎在探測後**自動還原**成 `docker/env/test.env` 宣告的 `DetectionOnly`（實測確認）。
+
+### WAF（引擎切成 `On` 單獨驗）
+
+| 請求 | 經 WAF 18081 | 直連 edge 18080 |
+|---|---|---|
+| 查詢字串的 XSS（真攻擊） | **403** | 200 |
+| Livewire POST 含 `<script>` + `UNION SELECT` | **419** | 419 |
+
+419 = CSRF token 不符，代表請求**到得了 Laravel**。修正前是 403 vs 419 ——
+也就是 Filament 後台在 WAF 開啟時整個不能用。
+
+### `cx acl`（facl）
+
+| 項目 | 結果 |
+|---|---|
+| `apply` → `check` | ✅ ACL 模型完整 |
+| host 建立的新檔案 | ✅ 繼承 `user:1000:rwx`、`other::---` |
+| **容器內以 root 建立的新檔案** | ✅ 同樣繼承 —— 這正是 ACL 要解決的那個問題 |
+| `user add` / `user rm <其他帳號>` | ✅ 可逆 |
+| `user rm <web/dev 身分>` | ✅ 被擋（rc=2）並指出兩條正路 |
+
+### Ansible
+
+| 項目 | 結果 |
+|---|---|
+| `deploy syntax` | ✅ 三個 playbook |
+| `deploy lint` | ✅ 0 finding／182 檔 |
+| `deploy ping staging` | ✅ pong |
+| `deploy apply staging --tags nginx` | ✅ ok=97 changed=5 **failed=0** |
+| 目標機上渲染出來的 `php_regex` | ✅ 含 `livewire(-[0-9a-zA-Z]+)?` |
+
+> 部署前目標機上那一份（2026-09-05 早上用舊模板部署、當時 failed=0）是
+> `^/(api\|admin\|livewire\|…)(/\|$)` —— 比對不到 `/livewire-<hash>/update`。
+> 也就是說那次「成功」的部署，Filament 後台其實是壞的。這是 N2 的直接證據。
+
+### `cx fresh`
+
+在 scratchpad 的拋棄式副本上（不動真的專案）：
+
+| 項目 | 結果 |
+|---|---|
+| `fresh --mode carryover` | ✅ exit=0 |
+| 重建的後端 | Laravel ^13.17 + Filament ^5.0 + Larastan ^3.0 |
+| 重建的前端 | Nuxt ^4.5.2 + Vue ^3.5.42 |
+| carryover 疊回使用者程式碼 | ✅ 存活 |
+| 三個 Git 初始化 | ✅ 各自 main、各 1 commit、`.gitmodules` 用相對 URL |
+| `fresh --rollback` | ✅ exit=0（兩次），HEAD 與 commit 數都與 MANIFEST 一致 |
 
 ### 7.1 TUI
 

@@ -21,6 +21,18 @@ misconfigurations:
       static target 用官方 nginx 映像，其 master 必須以 root 啟動才能 bind
       並把 worker 降權成 nginx 使用者。dev 與 prod 兩個 target 都已經是 USER node。
     expired_at: 2027-03-31
+  - id: DS-0002
+    paths:
+      - "docker/ansible-target/Dockerfile"
+    statement: >-
+      這個映像的 PID 1 是 systemd —— 它存在的唯一目的就是當「一台真的機器」給
+      Ansible 部署（systemd_service、handler、服務啟動順序都要是真的）。
+      systemd 作為 PID 1 必須是 root，加 USER 之後容器根本起不來。
+      它也**不對外提供服務**：只發布 127.0.0.1:2222 的 sshd 給 ansible 連，
+      而且是本機驗證用的一次性目標，不會出現在任何部署裡。
+      2026-09-05 補上 —— 這個目錄是後來加的，當時漏了對應的抑制條目，
+      於是 cx scan sca 一直回報一個架構上不可能修的 HIGH。
+    expired_at: 2027-03-31
 
 vulnerabilities: []
 
