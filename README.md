@@ -127,7 +127,7 @@ XDEBUG_LOG_LEVEL=7 ./cx dev up -d app
 
 `cx acl` 用 POSIX ACL 讓 web 身分與你**同時**寫得動 `storage/`，而 others 仍然是 `0`。
 setgid 只繼承群組、不繼承權限位元，所以純靠 `chown` 兩邊會互相踩 ——
-完整說明見 [`docs/cx-reference.md`](docs/cx-reference.md) 的 `cx acl` 一節。
+完整說明見 [`docs/cx/cx-reference.md`](docs/cx/cx-reference.md) 的 `cx acl` 一節。
 
 ### 第二階段：測試與掃描
 
@@ -435,7 +435,9 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 | [`docs/guide-developer.md`](docs/guide-developer.md) | **開發者指南**：clone → setup → 三模式 → 日常動詞 → gitflow → 除錯 |
 | [`docs/guide-tester.md`](docs/guide-tester.md) | **測試者指南**：test / verify / scan、報告判讀、放行條件 |
 | [`docs/guide-deployer.md`](docs/guide-deployer.md) | **部署者指南**：主機規劃 → 祕密 → check → apply → 回滾 |
-| [`docs/cx-reference.md`](docs/cx-reference.md) | `cx` 每一個動詞的完整參考 |
+| [`docs/cx/`](docs/cx/README.md) | **給改 `cx` 自己的人**：版面契約、新增動詞、檢查目錄、測試、接手專案 |
+| [`docs/cx/cx-reference.md`](docs/cx/cx-reference.md) | `cx` 每一個動詞的完整參考 |
+| [`docs/cx/onboarding.md`](docs/cx/onboarding.md) | **人員接續專案**：clone 到能跑起來的完整流程 |
 | [`docs/nginx-reference.md`](docs/nginx-reference.md) | Docker 與原生的 nginx 逐項對照（路由／大小／標頭／WAF） |
 | [`docs/docker-reference.md`](docs/docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF |
 | [`docs/ansible-reference.md`](docs/ansible-reference.md) | play 結構、12 個 role、vault、實測踩過的坑 |

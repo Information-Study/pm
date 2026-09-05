@@ -7,7 +7,13 @@
 | [`guide-tester.md`](guide-tester.md) | **測試者指南**：cx test / verify / scan、報告怎麼讀、放行條件 | 品質把關的人 |
 | [`guide-deployer.md`](guide-deployer.md) | **部署者指南**：主機規劃 → 祕密 → check → apply → rollback | 上真機的人 |
 | [`nginx-reference.md`](nginx-reference.md) | **Docker 與原生的 nginx 逐項對照**：路由、大小、逾時、安全標頭、WAF | 改 nginx 或查「為什麼上線才壞」 |
-| [`cx-reference.md`](cx-reference.md) | `cx` 每一個動詞的完整參考：語法、參數、行為、退出碼、陷阱 | 日常操作 |
+| [`cx/README.md`](cx/README.md) | **`cx/` 的索引** —— 給改 `cx` 自己的人 | 要動 cx 的時候 |
+| [`cx/cx-reference.md`](cx/cx-reference.md) | `cx` 每一個動詞的完整參考：語法、參數、行為、退出碼、陷阱 | 日常操作 |
+| [`cx/layout.md`](cx/layout.md) | 目錄版面契約與子模組搬移程序 | 要改版面 |
+| [`cx/adding-a-verb.md`](cx/adding-a-verb.md) | 新增動詞的七個地方與形式要求 | 要加動詞 |
+| [`cx/verify-checks.md`](cx/verify-checks.md) | 檢查 ID → 盯什麼 → 壞掉的症狀 | 看 verify 報告 |
+| [`cx/testing.md`](cx/testing.md) | bats 版面與三種 fixture | 要寫測試 |
+| [`cx/onboarding.md`](cx/onboarding.md) | **人員接續專案**：clone 到能跑起來 | 剛拿到專案 |
 | [`docker-reference.md`](docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF 設定 | 改 compose / Dockerfile 之前 |
 | [`ansible-reference.md`](ansible-reference.md) | play 結構、12 個 role、vault、MySQL 五個坑 | 改 Ansible / 上真機之前 |
 | [`runners.md`](runners.md) | **兩條 runner**：容器與原生各自需要什麼、怎麼一行裝起來、產出為何不可互換 | 沒有 Docker、或要驗證原生路徑 |
@@ -25,7 +31,7 @@
 | 你想做的事 | 讀 |
 |---|---|
 | 第一次拿到這個專案 | `manual.md` §1–§3 |
-| 忘記某個指令怎麼用 | `cx help`，然後 `cx-reference.md` |
+| 忘記某個指令怎麼用 | `cx help`，然後 `cx/cx-reference.md` |
 | 三個模式為什麼可以同時跑 | `manual.md` §4 |
 | 改 `docker-compose.yml` | `docker-reference.md` §1–§2 |
 | 加一個 nginx location | `nginx-reference.md` §2.1，然後 `docker-reference.md` §6 |

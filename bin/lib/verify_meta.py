@@ -503,7 +503,7 @@ def check_docs():
         row("PASS", "DOC-livewire", "Livewire 排除規則用得到的前綴形狀")
 
     # ── cx-reference 要涵蓋每個動詞
-    ref = read_required("docs/cx-reference.md", "DOC-cx-verbs", "cx-reference 涵蓋每個動詞")
+    ref = read_required("docs/cx/cx-reference.md", "DOC-cx-verbs", "cx-reference 涵蓋每個動詞")
     comp = completion_verbs()
     if ref is None:
         pass                        # read_required 已經 row() 過 FAIL
@@ -1044,6 +1044,9 @@ def check_layout_legacy():
             ".json", ".properties", ".conf", ".j2", ".example"}
     skip = {".git", "node_modules", "vendor", ".nuxt", ".output",
             "collections", "reports", ".cx", "legacy", "pm_archive"}
+    # 描述**遷移程序**的文件必須寫得出舊路徑，否則它沒辦法說明要改什麼。
+    # 這是這條檢查唯一的豁免，而且只有一個檔 —— 清單越短越好。
+    skip_files = {"docs/cx/layout.md"}
     hits = []
     for q in ROOT.rglob("*"):
         if not q.is_file():
@@ -1055,6 +1058,8 @@ def check_layout_legacy():
                                                    ".gitignore", "cx", "Dockerfile"):
             continue
         rel = str(q.relative_to(ROOT))
+        if rel in skip_files:
+            continue
         try:
             txt = q.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -1078,7 +1083,8 @@ def check_layout_legacy():
             + " ".join(f"{f}({n})" for f, n in top))
     else:
         row("PASS", "LAY-legacy", "全樹沒有殘留的舊版面路徑",
-            f"{len(LEGACY_LITERALS)} 個字面值都不再出現")
+            f"{len(LEGACY_LITERALS)} 個字面值都不再出現"
+            f"（豁免：{' '.join(sorted(skip_files))} —— 它在描述遷移程序）")
 
 
 def check_layout_ignore():
@@ -1178,7 +1184,11 @@ def check_doc_index():
     東西 —— 它只是讓那份文件沒有人找得到，而這正是本專案已經發生過的事
     （三份角色指南寫完之後，claude.md 的清單裡一份都沒有）。
     """
-    docs = sorted(p.name for p in (ROOT / "docs").glob("*.md"))
+    # ⚠ 必須遞迴。docs/cx/ 出現之後，非遞迴的 glob 會讓那些檔案「安靜地不在
+    #   索引裡」—— 而這條檢查存在的全部理由就是抓「有文件但沒有人找得到」。
+    #   比對用相對於 docs/ 的路徑（docs/cx/layout.md 在索引裡寫成 cx/layout.md），
+    #   不是純檔名 —— 純檔名會讓 docs/README.md 與 docs/cx/README.md 撞名。
+    docs = sorted(str(q.relative_to(ROOT / "docs")) for q in (ROOT / "docs").rglob("*.md"))
     if not docs:
         row("SKIP", "DOC-index", "文件索引涵蓋 docs/ 全部", "找不到 docs/*.md")
         return
@@ -1191,7 +1201,29 @@ def check_doc_index():
         if not exists(src):
             continue
         txt = read(src)
-        missing = [d for d in docs if d not in txt]
+        # 相對路徑或純檔名任一出現即可 —— 索引寫 `cx/layout.md` 或
+        # `[layout](cx/layout.md)` 都算數。
+        #
+        # ⚠ 子目錄有自己的索引（docs/cx/README.md）時，只要上層索引指到那份
+        #   README，底下的檔案就算被涵蓋 —— **順著連結找得到**。
+        #   這條檢查的語意是「文件存在但沒有人找得到」，不是「每一份索引都要
+        #   把每一份文件列一次」。後者會逼使用者導向的根 README 去列七份
+        #   cx 開發文件，那不會讓任何人比較容易找到東西。
+        # ⚠ 判斷必須是「**明確指到那份 README**」（字串 cx/README.md 出現），
+        #   不能放寬成「提到 cx/ 就算」—— 後者到處都是（cx/cx-reference.md
+        #   本身就含有它），於是這個豁免變成永遠成立，等於整條檢查失效。
+        #   實測 2026-09-06：第一版就是這樣寫的，反向測試拿掉連結仍然 PASS。
+        covered_dirs = {
+            str(pathlib.PurePath(d).parent)
+            for d in docs
+            if pathlib.PurePath(d).name == "README.md"
+            and pathlib.PurePath(d).parent.name
+            and d in txt
+        }
+        missing = [d for d in docs
+                   if d not in txt
+                   and pathlib.PurePath(d).name not in txt
+                   and str(pathlib.PurePath(d).parent) not in covered_dirs]
         if missing:
             problems.append(f"{src} 沒有提到：{' '.join(missing)}")
     if problems:
@@ -1281,7 +1313,8 @@ def check_doc_test_count():
         row("SKIP", "DOC-testcount", "文件寫的 bats 案例數與實際相符", "找不到 bats 檔")
         return
     bad = []
-    for rel in ("claude.md", "README.md") + tuple(f"docs/{p.name}" for p in (ROOT / "docs").glob("*.md")):
+    for rel in ("claude.md", "README.md") + tuple(
+            str(q.relative_to(ROOT)) for q in (ROOT / "docs").rglob("*.md")):
         if not exists(rel):
             continue
         txt = read(rel)

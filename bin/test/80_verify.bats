@@ -106,19 +106,20 @@ PHP
 # 而「每個動詞都有文件」這件事不再被驗證。少一列比多一列紅難發現得多。
 
 @test "必填文件被搬走時，DOC-cx-verbs 是 FAIL 而不是整列消失" {
-    mkdir -p "$CX_TEST_ROOT/docs/cx"
-    printf '# ref\n' > "$CX_TEST_ROOT/docs/cx-reference.md"
+    mkdir -p "$CX_TEST_ROOT/docs/cx" "$CX_TEST_ROOT/docs/moved"
+    printf "# ref\n" > "$CX_TEST_ROOT/docs/cx/cx-reference.md"
     run cx_bin verify docs
     assert_out_has "DOC-cx-verbs"
 
-    mv "$CX_TEST_ROOT/docs/cx-reference.md" "$CX_TEST_ROOT/docs/cx/cx-reference.md"
+    # 搬到一個沒有人在讀的位置
+    mv "$CX_TEST_ROOT/docs/cx/cx-reference.md" "$CX_TEST_ROOT/docs/moved/cx-reference.md"
     run cx_bin verify docs
     # 關鍵：那一列必須還在，而且是失敗的
     assert_out_has "DOC-cx-verbs"
     [[ $output == *"✘"*"DOC-cx-verbs"* ]] \
         || _fail_with "檔案搬走了，DOC-cx-verbs 卻沒有變紅：$output"
     # 而且要指出同名檔搬到哪裡去了 —— 「不見了」不夠，要能接著修
-    [[ $output == *"docs/cx/cx-reference.md"* ]] \
+    [[ $output == *"docs/moved/cx-reference.md"* ]] \
         || _fail_with "沒有指出同名檔的新位置：$output"
 }
 

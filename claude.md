@@ -81,7 +81,7 @@
 
    | 你改了什麼 | 要跟著改的 | 抓它的檢查 |
    |---|---|---|
-   | 新增／改名動詞 | `bin/completion/cx.bash`、`bin/cmd/help.sh`、`bin/cmd/tui.sh`、`docs/cx-reference.md` | `CLI-verbs` `CLI-help` `TUI-coverage` `DOC-cx-verbs` |
+   | 新增／改名動詞 | `bin/completion/cx.bash`、`bin/cmd/help.sh`、`bin/cmd/tui.sh`、`docs/cx/cx-reference.md` | `CLI-verbs` `CLI-help` `TUI-coverage` `DOC-cx-verbs` |
    | 新增 `cx git` 子指令 | 同一份 `git.sh` 的 usage、補全、help | `GIT-subs`（四方一致） |
    | 新增 `bin/cmd/*.sh` 或 `bin/lib/*` | `claude.md` §10 的檔案地圖 | `DOC-filemap` |
    | 新增／刪除 `docs/*.md` | `claude.md` §9、`docs/README.md`、`README.md` 的文件表 | `DOC-index` |
@@ -736,7 +736,7 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 因為 `cx fresh` 會刪掉 `.git`，用 git 當解析器會在流程中途壞掉）。
 `cx install` 之後可在任何地方直接打 `cx`。
 
-### 新增一個動詞時，六個地方要一起改
+### 新增一個動詞時，七個地方要一起改
 
 1. `bin/cmd/<verb>.sh`，定義 `cmd_<verb>_main()`
 2. `cx` 的 `CX_CMD_FILE_OF`（只有「動詞名 ≠ 檔名」時才需要，例如 `up` → `compose.sh`）
@@ -744,10 +744,18 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 4. `bin/cmd/help.sh`
 5. `bin/cmd/tui.sh` 的選單 —— `cx verify tui` 的 `TUI-coverage` 要求每個動詞都到得了，
    真的不該進選單的話要加進 `bin/lib/verify_meta.py` 的豁免清單並寫明理由
-6. `docs/cx-reference.md` —— `cx verify docs` 的 `DOC-cx-verbs` 會檢查每個動詞
+6. `docs/cx/cx-reference.md` —— `cx verify docs` 的 `DOC-cx-verbs` 會檢查每個動詞
    都在那份參考裡出現過
+7. `claude.md` §10 的檔案地圖 —— `DOC-filemap` 要求列出每一個 `bin/cmd/*.sh`
+   與 `bin/lib/*.{py,sh}`。⚠ 它用 `\b<stem>\b` 的鬆散比對，所以短的通用單字
+   （`open`、`code`、`test`…）可能因為文件別處剛好有同一個字而**誤過** ——
+   還是要手動加
 
-漏掉 5 或 6 不是靜默漂移，`cx verify` 會直接 FAIL —— 那是刻意的。
+> **每個地方的形式要求**（縮排、regex 契約、哪裡不能用變數展開）在
+> [`docs/cx/adding-a-verb.md`](docs/cx/adding-a-verb.md)。那些原本散在
+> `verify_meta.py` 的註解裡，而寫新動詞的人不會去讀那個檔。
+
+漏掉 5、6、7 不是靜默漂移，`cx verify` 會直接 FAIL —— 那是刻意的。
 漏掉第 1 項的後果實際發生過：dispatcher 把 8 個動詞指到一個從未被寫出來的
 `bin/cmd/compose.sh`，於是 `cx up` 回「未知的指令」。
 `cx doctor` 現在會檢查每個對外動詞都找得到實作檔。
@@ -812,7 +820,13 @@ Nitro 的 top-level await 會變 `ERR_REQUIRE_ASYNC_MODULE`）。上游 pm2#5946
 |---|---|
 | [`docs/README.md`](docs/README.md) | 索引與閱讀順序 |
 | [`docs/manual.md`](docs/manual.md) | 完整操作說明書，從零到三個階段 |
-| [`docs/cx-reference.md`](docs/cx-reference.md) | `cx` 每個動詞的語法、參數、行為、退出碼、陷阱 |
+| [`docs/cx/`](docs/cx/README.md) | **給改 `cx` 自己的人**（索引在 `docs/cx/README.md`） |
+| [`docs/cx/cx-reference.md`](docs/cx/cx-reference.md) | `cx` 每個動詞的語法、參數、行為、退出碼、陷阱 |
+| [`docs/cx/layout.md`](docs/cx/layout.md) | 目錄版面契約（v2 → v3）、`CX_LAYOUT_VERSION`、子模組搬移程序 |
+| [`docs/cx/adding-a-verb.md`](docs/cx/adding-a-verb.md) | 新增動詞的七個地方，**以及每個地方的 regex 契約** |
+| [`docs/cx/verify-checks.md`](docs/cx/verify-checks.md) | 全部檢查 ID → 盯什麼 → 壞掉時的症狀 |
+| [`docs/cx/testing.md`](docs/cx/testing.md) | bats 版面、三種 fixture、「綠」的定義 |
+| [`docs/cx/onboarding.md`](docs/cx/onboarding.md) | **人員接續專案**：clone 到能跑起來 |
 | [`docs/docker-reference.md`](docs/docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF |
 | [`docs/ansible-reference.md`](docs/ansible-reference.md) | play 結構、12 個 role、vault、MySQL 五個坑 |
 | [`docs/runners.md`](docs/runners.md) | 兩條 runner：容器與原生各自獨立、產出為何不可互換 |
