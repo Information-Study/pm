@@ -115,12 +115,25 @@ make_submodule_repo() {             # make_submodule_repo [專案名] [--legacy-
     } > "$CX_TEST_ROOT/.cxroot"
     ln -s "$CX_TEST_REAL_ROOT/bin" "$CX_TEST_ROOT/bin"
     ln -s "$CX_TEST_REAL_ROOT/cx"  "$CX_TEST_ROOT/cx"
-    mkdir -p "$CX_TEST_ROOT"/{docker/legacy,templates/gitignore,docs,reports,ansible,.vscode}
+    mkdir -p "$CX_TEST_ROOT"/{docker/legacy,docs,reports,ansible,.vscode}
+    # templates/ 用 symlink 指到真的那一份 —— scaffold_patch.py 要從這裡把
+    # 範本自己的接線（Filament 面板、routes/api.php、Sanctum migration、
+    # tests/ 的防護、ESLint）裝回去。自己 mkdir 一個空的會讓那一整段變成
+    # 「沒有來源所以什麼都不做」，測試就驗不到重建後系統是否完整。
+    # templates 在 FRESH_PRESERVE 裡，不會被刪，所以 symlink 是安全的。
+    ln -s "$CX_TEST_REAL_ROOT/templates" "$CX_TEST_ROOT/templates"
     : > "$CX_TEST_ROOT/claude.md";   : > "$CX_TEST_ROOT/.gitignore"
     : > "$CX_TEST_ROOT/.env";        : > "$CX_TEST_ROOT/.env.example"
     : > "$CX_TEST_ROOT/.semgrepignore"; : > "$CX_TEST_ROOT/sonar-project.properties"
-    : > "$CX_TEST_ROOT/README.md";   : > "$CX_TEST_ROOT/docker-compose.yml"
-    : > "$CX_TEST_ROOT/.dockerignore"
+    : > "$CX_TEST_ROOT/README.md";   : > "$CX_TEST_ROOT/.dockerignore"
+    # _fresh_verify_rebuild 會斷言根目錄的基礎設施還在，而且 docker-compose.yml
+    # 必須是**現行版面**（引用 docker/compose/）—— 空檔會讓重建後的驗證失敗，
+    # 那是 fixture 不完整，不是產品缺陷。
+    mkdir -p "$CX_TEST_ROOT/docker/compose"
+    printf 'include:\n  - docker/compose/dev.yml\nservices: {}\n' \
+        > "$CX_TEST_ROOT/docker-compose.yml"
+    local m
+    for m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$m.yml"; done
 
     local g=(-c user.email=b@b -c user.name=b) c
     # 子模組要先是完整的 repo（有 commit），submodule add 才加得上去 ——

@@ -176,7 +176,10 @@ setup() {
     run cx_bin --yes init shop
     assert_rc 0
 
-    [ ! -e "$CX_TEST_ROOT/.git/modules" ] || _fail_with ".git/modules 還在 —— 子模組物件庫沒被刪掉"
+    # ⚠ 不可以斷言「.git/modules 不存在」。_fresh_git_init 收尾會跑
+    #   submodule absorbgitdirs，所以新專案**會**有 .git/modules —— 那是刻意的
+    #   （收斂成跟任何人 clone 下來一樣的標準佈局）。真正的不變量是
+    #   「舊歷史一個都不可達」，那由下面三條斷言負責。
     ! git -C "$CX_TEST_ROOT" cat-file -e "$mh^{commit}" 2>/dev/null \
         || _fail_with "主庫的舊 commit 還在"
     ! git -C "$CX_TEST_ROOT/backend" cat-file -e "$bh^{commit}" 2>/dev/null \
@@ -186,6 +189,11 @@ setup() {
 
     [ "$(git -C "$CX_TEST_ROOT" rev-list --count HEAD)" = 1 ] \
         || _fail_with "主庫不是全新歷史"
+    [ "$(git -C "$CX_TEST_ROOT/backend" rev-list --count HEAD)" = 1 ] \
+        || _fail_with "backend 不是全新歷史"
+    # 標準佈局：指標檔 + .git/modules（與 clone 下來的一致）
+    [ -f "$CX_TEST_ROOT/backend/.git" ] \
+        || _fail_with "backend/.git 不是指標檔 —— absorbgitdirs 沒生效"
     grep -q '^CX_PROJECT_NAME=shop$' "$CX_TEST_ROOT/.cxroot" \
         || _fail_with ".cxroot 沒有改名"
 
