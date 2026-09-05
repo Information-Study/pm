@@ -134,6 +134,25 @@ DOCKER_HOST=unix:///nonexistent.sock cx --runner docker composer -V # 硬失敗 
 | certbot 真憑證流程 | 需要有公網 DNS 的機器 | ⬜ 未驗 |
 | 多主機 `serial` / `any_errors_fatal` | 需要多台機器 | ⬜ 未驗 |
 
+### 5.1 前後端分機（2026-09-06 新增）
+
+`web` 拆成 `web_frontend` / `web_backend`，`web` 保留為兩者的 `children` 聯集。
+可驗與不可驗要分開寫：
+
+| 項目 | 怎麼驗 | 狀態 |
+|---|---|---|
+| 群組解析（`web` 真的是兩個子群組的聯集） | `ansible-inventory --graph` | ✅ 2026-09-06 實測 |
+| role gate 真的分開 | 對兩台各求值一次 gate 條件 | ✅ fe 機 `backend=False`、be 機 `frontend=False`，兩台都 `web=True` |
+| A15 斷言與 `deploy_backend` 的 gate 同群組 | `cx verify docs` 的 `ANS-split` | ✅ 雙向對照（改回 `web` 就 FAIL） |
+| `inventory.py` 的不變式與向後相容 | `bin/test/70_project.bats` | ✅ 6 個案例（含只有 `web` 的舊格式） |
+| FPM 走 TCP 時強制 `allowed_clients` | `php` role 的斷言 | ✅ 模板兩條分支都渲染得出來 |
+| `--syntax-check` / `ansible-lint` / `yamllint` | `cx deploy syntax` / `lint` | ✅ 0 finding |
+| **跨主機的 FPM / Nitro 實際流量** | 需要第二台真機 | ⬜ **未驗** |
+
+> ⬜ 那一列是這一項唯一沒跑過的東西，而它是整個功能的重點。
+> 本機能驗的是「設定會不會產生成正確的形狀」；不能驗的是「那個形狀在兩台
+> 真機之間會不會通」。依本專案的規矩，沒跑過的就寫沒跑過。
+
 完整未驗清單見 [`progress.md`](progress.md)。
 
 ---

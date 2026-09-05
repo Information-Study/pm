@@ -239,3 +239,112 @@ YML
     [[ $(git -C "$CX_TEST_ROOT" rev-parse chore/x) == $(git -C "$CX_TEST_ROOT" rev-parse main) ]] \
         || { echo "--from main 沒有生效" >&2; return 1; }
 }
+
+# ── deploy hosts：前後端分機的群組模型 ────────────────────────────────────
+#
+# bin/lib/inventory.py 編碼了全部的部署拓撲不變式（db_primary 剛好一台、
+# 必須在 web_backend 裡、web 是兩個子群組的聯集），但在 2026-09-06 之前
+# **零測試覆蓋**。這些是純函式，不需要 ansible 也不需要主機。
+
+_inv() {                            # _inv <子指令...>
+    CX_PROJECT_NAME=pm python3 "$CX_TEST_REAL_ROOT/bin/lib/inventory.py" \
+        --path "$BATS_TEST_TMPDIR/hosts.yml" "$@"
+}
+# add 做完會自己跑一次 check，而「只加了一台前端」這種**中間狀態**本來就不合法
+#（web_backend 是空的）。那個非 0 是對的行為，不是這幾條案例要測的東西 ——
+# 所以建構拓撲的步驟用這個，最後才明確 run _inv check。
+_inv_q() { _inv "$@" >/dev/null 2>&1 || true; }
+
+@test "deploy hosts：單機拓撲預設一台同時跑前端、後端與資料庫" {
+    _inv_q init --env production
+    _inv_q add solo --ip 10.0.0.1 --user ubuntu
+    run _inv check
+    assert_rc 0
+    run cat "$BATS_TEST_TMPDIR/hosts.yml"
+    assert_out_has "web_frontend" "web_backend" "db_primary"
+}
+
+@test "deploy hosts：web 是兩個子群組的 children 聯集（不是自己列 hosts）" {
+    # 這是整個拆分能成立的關鍵 —— site.yml 裡既有的 groups['web'] gate
+    #（nginx / certbot / healthcheck）因此完全不用改。
+    _inv_q init --env production
+    _inv_q add fe1 --ip 10.0.0.1 --no-be --no-db
+    _inv_q add be1 --ip 10.0.0.2 --no-fe --be --db
+    run python3 -c "
+import yaml, sys
+d = yaml.safe_load(open('$BATS_TEST_TMPDIR/hosts.yml'))
+web = d['all']['children']['web']
+assert 'children' in web, 'web 應該用 children，實際是：%r' % web
+assert set(web['children']) == {'web_frontend', 'web_backend'}, web['children']
+assert 'hosts' not in web, 'web 不應該自己列 hosts'
+print('OK')
+"
+    assert_rc 0
+}
+
+@test "deploy hosts：db_primary 不在 web_backend 裡要回非 0（A15）" {
+    # migration 在 deploy_backend role 內、用 db_primary gate；
+    # deploy_backend 只在 web_backend 跑。對不上就等於沒人跑 migration，
+    # 而且 ansible 全綠。
+    _inv_q init --env production
+    _inv_q add fe1 --ip 10.0.0.1 --no-be --db
+    run _inv check
+    [ "$status" -ne 0 ] || _fail_with "db_primary 不在 web_backend，check 卻通過了"
+    assert_out_has "web_backend"
+}
+
+@test "deploy hosts：真的分機時要警告兩個會讓拓撲不會動的預設值" {
+    _inv_q init --env production
+    _inv_q add fe1 --ip 10.0.0.1 --no-be --no-db
+    _inv_q add be1 --ip 10.0.0.2 --no-fe --be --db
+    run _inv check
+    assert_rc 0
+    # 不警告的話，症狀會是「部署全綠、網站 502」，而原因在兩個沒人動過的預設值上
+    assert_out_has "php_fpm_listen"
+    assert_out_has "frontend_host"
+}
+
+@test "deploy hosts：讀得懂只有 web 的舊格式（向後相容）" {
+    # hosts.yml 不進版控，沒有 diff 會提醒，也沒有還原點 ——
+    # 一個讀不懂舊檔的 load() 會把使用者的主機清單靜默改形狀。
+    cat > "$BATS_TEST_TMPDIR/hosts.yml" <<'YML'
+---
+all:
+  children:
+    production:
+      hosts:
+        old1:
+          ansible_host: 10.0.0.9
+          ansible_user: ubuntu
+    pm_servers:
+      children:
+        production: {}
+    web:
+      hosts:
+        old1: {}
+    db_primary:
+      hosts:
+        old1: {}
+YML
+    run _inv show
+    assert_rc 0
+    # 只有 web 的舊檔讀作「前後端都是」
+    assert_out_has "old1"
+    run _inv check
+    assert_rc 0
+}
+
+@test "deploy hosts：--web 是「兩邊一起」的捷徑，--no-be 仍然覆寫得掉" {
+    _inv_q init --env production
+    _inv_q add h1 --ip 10.0.0.1 --web --no-be --no-db
+    run python3 -c "
+import yaml
+d = yaml.safe_load(open('$BATS_TEST_TMPDIR/hosts.yml'))['all']['children']
+fe = (d.get('web_frontend') or {}).get('hosts') or {}
+be = (d.get('web_backend')  or {}).get('hosts') or {}
+assert 'h1' in fe, '--web 沒有讓它進 web_frontend'
+assert 'h1' not in be, '--no-be 沒有覆寫掉 --web'
+print('OK')
+"
+    assert_rc 0
+}

@@ -84,19 +84,29 @@
     # gate 的。如果 db_primary 那台根本不在 web 群組（也就是不會跑 deploy_backend），
     # migration 就一次都不會執行，而且不會有任何錯誤訊息 —— 網站會停在
     # "Base table or view not found"。這裡先擋下來。
-    - name: 編排 | db_primary 必須同時是 web 群組成員（否則 migration 永遠不會跑，A15）
+    # ⚠ 這條斷言的群組**必須與 deploy_backend 的 gate 是同一個**。
+    #   2026-09-06 把 web 拆成 web_frontend / web_backend 之後，deploy_backend
+    #   改成只在 web_backend 跑 —— 斷言若還盯著 web，「db_primary 在 web 但不在
+    #   web_backend」就會通過，然後 migration 一次都不會執行，而且**沒有任何
+    #   錯誤訊息**：ansible 全綠，網站停在 Base table or view not found。
+    #   verify 的 ANS-split 檢查專門盯這兩個群組名相不相同。
+    #
+    #   web_backend 未定義時落回 web —— 舊的單群組 inventory 仍然合法。
+    - name: 編排 | db_primary 必須同時是 web_backend 成員（否則 migration 永遠不會跑，A15）
       ansible.builtin.assert:
         that:
-          - ((groups['db_primary'] | default([])) | difference(groups['web'] | default([]))) | length == 0
+          - ((groups['db_primary'] | default([])) | difference(groups['web_backend'] | default(groups['web'] | default([])))) | length == 0
         quiet: true
         fail_msg: >-
           db_primary = {{ groups['db_primary'] | default([]) | join(', ') }}，
-          web = {{ groups['web'] | default([]) | join(', ') }}。
-          db_primary 有成員不在 web 裡面。
+          web_backend = {{ groups['web_backend'] | default(groups['web'] | default([])) | join(', ') }}。
+          db_primary 有成員不在 web_backend 裡面。
           migration 寫在 deploy_backend role 內、用 groups['db_primary'] gate（A15：
           serial 之下 run_once 只在當前 batch 生效，等同 no-op，所以不能用 run_once）。
-          deploy_backend 只在 web 群組執行 —— db_primary 不在 web 就等於沒人跑 migration。
-          修正：把 db_primary 那台也放進 web，或改由專用的 db play 執行 migration。
+          deploy_backend 只在 web_backend 群組執行 —— db_primary 不在裡面就等於
+          沒人跑 migration，而且不會有任何錯誤訊息。
+          修正：把 db_primary 那台也放進 web_backend（cx deploy hosts add <名稱> --be），
+          或改由專用的 db play 執行 migration。
 
     # pm2_instances 與 frontend_instances 在 group_vars/all.yml 用 YAML anchor 綁在一起。
     # 環境別的檔案若只覆寫其中一個，PM2 起 N 個 process 但 nginx upstream 只有 M 個
@@ -186,7 +196,9 @@
       ansible.builtin.debug:
         msg:
           - "主機          : {{ inventory_hostname }}（{{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}）"
-          - "角色          : web={{ inventory_hostname in (groups['web'] | default([])) }} db_primary={{ inventory_hostname in (groups['db_primary'] | default([])) }}"
+          - "角色          : frontend={{ inventory_hostname in (groups['web_frontend'] | default(groups['web'] | default([]))) }}
+             backend={{ inventory_hostname in (groups['web_backend'] | default(groups['web'] | default([]))) }}
+             db_primary={{ inventory_hostname in (groups['db_primary'] | default([])) }}"
           - "release_id    : {{ release_id }}"
           - "網域          : {{ app_domain }}（TLS={{ tls_enable }}、certbot_staging={{ certbot_staging }}）"
           - "前端模式      : {{ frontend_mode }}（instances={{ frontend_instances }}、port={{ frontend_port }}+）"
@@ -210,11 +222,11 @@
     # php 在 composer 之前：composer role 會先驗 CLI 有沒有 proc_open（A2）。
     - role: php
       tags: [php, system]
-      when: inventory_hostname in (groups['web'] | default([]))
+      when: inventory_hostname in (groups['web_backend'] | default(groups['web'] | default([])))
 
     - role: composer
       tags: [php, composer, system]
-      when: inventory_hostname in (groups['web'] | default([]))
+      when: inventory_hostname in (groups['web_backend'] | default(groups['web'] | default([])))
 
     # A4：Ubuntu noble 的 mysql-server 是 8.0.x，Debian 的 default-mysql-server
     #     是 MariaDB。要 8.4 LTS 只能走 repo.mysql.com（mysql_repo_source=oracle）。
@@ -230,7 +242,7 @@
     #   而 role 內的 ecosystem 任務會在 static 模式產生空的 app 清單並收掉舊 process。
     - role: nodejs_pm2
       tags: [nodejs, pm2, system]
-      when: inventory_hostname in (groups['web'] | default([]))
+      when: inventory_hostname in (groups['web_frontend'] | default(groups['web'] | default([])))
 
     # A5：nginx 排在 certbot 之前，所以 vhost 一定會在「憑證還不存在」的情況下被寫出來。
     #     nginx role 必須用 ssl-cert 套件的 snakeoil 憑證開機
@@ -258,14 +270,14 @@
     # optimize → 換 current symlink → reload php-fpm → prune 舊 release（A1）。
     - role: deploy_backend
       tags: [deploy, deploy_backend, app]
-      when: inventory_hostname in (groups['web'] | default([]))
+      when: inventory_hostname in (groups['web_backend'] | default(groups['web'] | default([])))
 
     # deploy_frontend 內部：clone → npm ci → 依 frontend_mode build/generate →
     # 換 current symlink → ssr/spa 時 pm2 startOrReload、static 時 reload nginx →
     # prune 舊 release（A1）。
     - role: deploy_frontend
       tags: [deploy, deploy_frontend, app]
-      when: inventory_hostname in (groups['web'] | default([]))
+      when: inventory_hostname in (groups['web_frontend'] | default(groups['web'] | default([])))
 
     - role: healthcheck
       tags: [healthcheck, app]

@@ -1173,8 +1173,22 @@ hosts.yml」，然後叫人離開 cx 自己 `cp` 範例檔。
 | 群組 | 決定什麼 |
 |---|---|
 | `pm_servers` | `site.yml` 的作用對象。所有主機都要在裡面（`common` / `hardening`） |
-| `web` | php-fpm / nginx / node+PM2 / `deploy_backend` / `deploy_frontend` / `healthcheck` |
-| `db_primary` | MySQL，而且**由它執行 `artisan migrate`**。剛好一台，且必須也在 `web` 裡 |
+| `web_frontend` | `nodejs_pm2` / `deploy_frontend` |
+| `web_backend` | `php` / `composer` / `deploy_backend`（**migration 在這裡**） |
+| `web` | 上面兩者的 **`children` 聯集**。`nginx_myguard` / `certbot` / `healthcheck` 對它跑 |
+| `db_primary` | MySQL，而且**由它執行 `artisan migrate`**。剛好一台，且必須也在 `web_backend` 裡 |
+
+`add` 的群組旗標：`--fe` / `--no-fe`、`--be` / `--no-be`、`--db` / `--no-db`，
+以及 `--web` / `--no-web`（前後端一起的捷徑；明確的 `--fe` / `--be` 優先）。
+**第一台預設三個都是**（單機拓撲）；之後加的預設跑前後端但不是 `db_primary`。
+
+> `web` 用 `children` 而不是自己列 hosts —— 這是拆分能成立的關鍵：
+> `site.yml` 裡既有的每一個 `groups['web']` gate 完全不用改，
+> 單機拓撲的行為 100% 不變。
+>
+> 前後端**可以**拆到不同主機，但那是架構變更不是旋鈕（FPM 要改成 TCP，
+> 而它沒有認證機制）。完整清單見 [`guide-deployer.md`](guide-deployer.md) §3.3。
+> `check` 在分機拓撲下會警告兩個會讓那個拓撲不會動的預設值。
 
 `check` 會擋下三種真的會壞的狀況：`db_primary` 是空的、`db_primary` 超過一台、
 `db_primary` 有成員不在 `web`（A15 —— migration 掛在 `web` 的 gate 上，

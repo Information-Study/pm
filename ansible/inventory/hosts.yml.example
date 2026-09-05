@@ -28,10 +28,14 @@
 #
 # ── 群組的意義 ────────────────────────────────────────────────────────────────
 #   pm_servers   site.yml 的作用對象。所有機器都要在裡面（common / hardening 對它跑）。
-#   web          跑 php-fpm / nginx / node+PM2 / deploy_* / healthcheck 的機器。
+#   web_frontend 跑 node+PM2 / deploy_frontend 的機器。
+#   web_backend  跑 php-fpm / composer / deploy_backend 的機器。migration 在這裡。
+#   web          上面兩者的 **children 聯集**。nginx / certbot / healthcheck 對它跑。
+#                ⚠ 用 children 不用 hosts —— site.yml 既有的 groups['web'] gate
+#                因此完全不用改，單機拓撲的行為 100% 不變。
 #   db_primary   跑 MySQL、而且「由它執行 artisan migrate」的機器。剛好一台。
-#                必須同時是 web 成員，否則 deploy_backend 不會在它上面跑，
-#                migration 就一次都不會執行（site.yml 的 preflight play 會擋）。
+#                必須同時是 **web_backend** 成員，否則 deploy_backend 不會在它
+#                上面跑，migration 就一次都不會執行（site.yml 的 preflight 會擋）。
 #   staging /    環境群組。只是拿來套 group_vars/staging.yml、group_vars/production.yml，
 #   production   不影響 role 的執行與否。
 #
@@ -72,12 +76,23 @@ all:
         staging: {}
         # production: {}
 
-    web:
+    web_frontend:
       hosts:
         pm-staging-1: {}
         # pm-prod-1: {}
 
-    # ★ 剛好一台，而且必須也在 web 裡面。
+    web_backend:
+      hosts:
+        pm-staging-1: {}
+        # pm-prod-1: {}
+
+    # ★ children，不是 hosts。site.yml 既有的 groups['web'] gate 因此不用改。
+    web:
+      children:
+        web_frontend: {}
+        web_backend: {}
+
+    # ★ 剛好一台，而且必須也在 web_backend 裡面。
     db_primary:
       hosts:
         pm-staging-1: {}

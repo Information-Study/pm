@@ -61,8 +61,17 @@ def load(path):
         doc = yaml.safe_load(fh) or {}
     children = ((doc.get("all") or {}).get("children") or {})
     env = next((e for e in ENVS if e in children), None)
-    web = set(((children.get("web") or {}).get("hosts") or {}) or {})
     dbp = set(((children.get("db_primary") or {}).get("hosts") or {}) or {})
+    # web_frontend / web_backend 是 2026-09-06 才有的。舊檔只有一個 web ——
+    # 那時前後端一定同機，所以「只有 web」讀作「兩邊都是」。
+    #
+    # ⚠ 向後相容是硬需求，不是禮貌：hosts.yml **不進版控**，沒有 diff 會提醒，
+    #   也沒有還原點。一個讀不懂舊檔的 load() 會把使用者的主機清單靜默改形狀。
+    fe = set(((children.get("web_frontend") or {}).get("hosts") or {}) or {})
+    be = set(((children.get("web_backend") or {}).get("hosts") or {}) or {})
+    web = set(((children.get("web") or {}).get("hosts") or {}) or {})
+    if not fe and not be:
+        fe = be = set(web)
 
     # ⚠ 每台主機要記住**自己**屬於哪個環境群組。
     #   原本只用 next() 取一個 env，然後 render() 把所有主機寫進那一個群組 ——
@@ -82,7 +91,8 @@ def load(path):
                 "user": v.get("ansible_user", ""),
                 "port": v.get("ansible_port"),
                 "key": v.get("ansible_ssh_private_key_file"),
-                "web": name in web,
+                "fe": name in fe,
+                "be": name in be,
                 "db": name in dbp,
             })
     return env, hosts
@@ -99,8 +109,14 @@ def render(env, hosts):
     add("#")
     add("# 群組的意義（來源：ansible/site.yml 的 roles 區塊）：")
     add(f"#   {SERVERS_GROUP}  site.yml 的作用對象，所有主機都要在裡面")
-    add("#   web         php-fpm / nginx / node+PM2 / deploy_* / healthcheck")
-    add("#   db_primary  MySQL + artisan migrate。剛好一台，且必須也在 web 裡")
+    add("#   web_frontend  node+PM2 / deploy_frontend")
+    add("#   web_backend   php-fpm / composer / deploy_backend（migration 在這裡）")
+    add("#   web           上面兩者的 children 聯集。nginx / certbot / healthcheck 對它跑")
+    add("#   db_primary    MySQL + artisan migrate。剛好一台，且必須也在 web_backend 裡")
+    add("#")
+    add("# 單機拓撲：同一台同時在 web_frontend、web_backend、db_primary 裡（預設）。")
+    add("# 要拆機請先看 docs/guide-deployer.md §3.3 —— php_fpm_listen 要改成 TCP，")
+    add("# 而 FPM 沒有認證機制，allowed_clients 與防火牆都要跟著設。")
     add("#")
     add("# ⚠ 一個 inventory 檔 = 一個環境。兩個環境寫進同一個檔會讓 db_primary")
     add("#   變成兩台而被 preflight 擋下（--limit 不會讓 groups 變小）。")
@@ -130,13 +146,28 @@ def render(env, hosts):
     for e in present:
         add(f"        {e}: {{}}")
     add("")
-    add("    web:")
+    add("    web_frontend:")
     add("      hosts:")
     for h in hosts:
-        if h.get("web"):
+        if h.get("fe"):
             add(f"        {h['name']}: {{}}")
     add("")
-    add("    # 剛好一台，而且必須也是 web 成員（A15）")
+    add("    web_backend:")
+    add("      hosts:")
+    for h in hosts:
+        if h.get("be"):
+            add(f"        {h['name']}: {{}}")
+    add("")
+    # ⚠ web 用 children 而不是 hosts。這是整個拆分能成立的關鍵：
+    #   site.yml 裡所有既有的 groups['web'] gate（nginx / certbot / healthcheck）
+    #   完全不用改，單機拓撲（一台同時在兩個群組）的行為 100% 不變。
+    add("    # 兩者的聯集。nginx / certbot / healthcheck 對它跑 —— 不要手動加 hosts。")
+    add("    web:")
+    add("      children:")
+    add("        web_frontend: {}")
+    add("        web_backend: {}")
+    add("")
+    add("    # 剛好一台，而且必須也是 web_backend 成員（A15：migration 在 deploy_backend 內）")
     add("    db_primary:")
     add("      hosts:")
     for h in hosts:
@@ -183,19 +214,42 @@ def problems(env, hosts):
                          "preflight 會因為 db_primary 超過一台而擋下。一個 inventory 檔 = 一個環境，"
                          "請拆成 inventory/staging.yml 與 inventory/production.yml"))
 
-    web = [h["name"] for h in hosts if h.get("web")]
+    fe  = [h["name"] for h in hosts if h.get("fe")]
+    be  = [h["name"] for h in hosts if h.get("be")]
     dbp = [h["name"] for h in hosts if h.get("db")]
-    if not web:
-        out.append(("E", "web 群組是空的 —— 不會有任何機器跑 nginx/php/前端"))
+    web = sorted(set(fe) | set(be))
+
+    if not be:
+        out.append(("E", "web_backend 是空的 —— 不會有任何機器跑 php-fpm、"
+                         "也不會有人執行 migration"))
+    if not fe:
+        out.append(("E", "web_frontend 是空的 —— 不會有任何機器跑 Node/PM2。"
+                         "（frontend_mode=static 也一樣需要一台來 nuxt generate）"))
     if len(dbp) == 0:
         out.append(("E", "db_primary 是空的 —— migration 永遠不會執行"))
     elif len(dbp) > 1:
         out.append(("E", f"db_primary 有 {len(dbp)} 台（{', '.join(dbp)}）—— 必須剛好一台。"
                          " migration 用 groups['db_primary'] 當 gate，對象必須唯一"))
     for d in dbp:
-        if d not in web:
-            out.append(("E", f"{d} 是 db_primary 但不在 web —— deploy_backend 不會在它上面跑，"
-                             "migration 一次都不會執行（site.yml 的 A15 斷言會擋）"))
+        if d not in be:
+            out.append(("E", f"{d} 是 db_primary 但不在 web_backend —— deploy_backend 不會在"
+                             "它上面跑，migration 一次都不會執行，而且**不會有任何錯誤訊息**"
+                             "（site.yml 的 A15 斷言會在連線前擋下）"))
+
+    # ── 真的分機時，兩個預設值會讓那個拓撲直接不會動 ──────────────────
+    # 這兩條是 W 不是 E：檢查看不到 group_vars，所以它只能提醒，不能斷定。
+    # 但不提醒的話，症狀會是「部署全綠、網站 502」，而原因在兩個沒人動過的預設值上。
+    if fe and be and not (set(fe) & set(be)):
+        out.append(("W", "web_frontend 與 web_backend 沒有交集（真的分機）。"
+                         "兩個預設值會讓這個拓撲不會動："))
+        out.append(("W", "  php_fpm_listen 預設是 unix socket —— nginx 在 A 機，"
+                         "socket 在 B 機，連不到。要改成 TCP 並填 php_fpm_allowed_clients"
+                         "（FPM 沒有認證機制，空清單等於對整個網路開放）"))
+        out.append(("W", "  frontend_host 預設是 127.0.0.1 —— Nitro 綁在 loopback，"
+                         "別台的 nginx 連不到。要改成內網位址"))
+        out.append(("W", "  另外還要放行防火牆（hardening_ufw_allowed_tcp_ports）。"
+                         "完整清單見 docs/guide-deployer.md §3.3"))
+
     if len(web) > 1:
         out.append(("W", f"web 有 {len(web)} 台。多台要另外處理：mysql_bind_address 改內網位址、"
                          "db_host 指過去、mysql_app_user_hosts 加上各台內網 IP、"
@@ -210,11 +264,12 @@ def cmd_show(args):
         print(f"沒有 {args.path} —— 跑 cx deploy hosts init", file=sys.stderr)
         return 3
     print(f"環境群組：{env}")
-    print(f"{'主機':<22}{'位址':<24}{'帳號':<12}{'埠':<7}web  db_primary")
+    print(f"{'主機':<22}{'位址':<24}{'帳號':<12}{'埠':<7}前端 後端 db_primary")
     print("-" * 78)
     for h in hosts:
         print(f"{h['name']:<22}{str(h['ip']):<24}{str(h['user'] or '-'):<12}"
-              f"{str(h['port'] or 22):<7}{'✔' if h.get('web') else ' ':<5}"
+              f"{str(h['port'] or 22):<7}{'✔' if h.get('fe') else ' ':<5}"
+              f"{'✔' if h.get('be') else ' ':<5}"
               f"{'✔' if h.get('db') else ''}")
     print()
     for sev, msg in problems(env, hosts):
@@ -262,12 +317,18 @@ def cmd_add(args):
     if any(h["name"] == args.name for h in hosts):
         print(f"已經有這台主機：{args.name}（要改就先 rm）", file=sys.stderr)
         return 2
-    # 第一台預設同時是 web 與 db_primary（單機拓撲，與 hosts.yml.example 一致）
+    # 第一台預設同時跑前端、後端與資料庫（單機拓撲，與 hosts.yml.example 一致）。
+    # 之後加的預設跑前後端但不是 db_primary（那個必須剛好一台）。
     first = not hosts
+    # --web / --no-web 是「兩邊一起」的捷徑。明確的 --fe / --be 優先 ——
+    # `--web --no-be` 讀作「這台在 web 裡，但只跑前端」，那是合理的組合。
+    fe = args.fe if args.fe is not None else args.web
+    be = args.be if args.be is not None else args.web
     hosts.append({
         "name": args.name, "env": new_env, "ip": args.ip, "user": args.user,
         "port": args.port, "key": args.key,
-        "web": True if args.web is None else args.web,
+        "fe": True if fe is None else fe,
+        "be": True if be is None else be,
         "db": (first if args.db is None else args.db),
     })
     save(args.path, env, hosts)
@@ -316,6 +377,12 @@ def main():
     p.add_argument("name"); p.add_argument("--ip", required=True)
     p.add_argument("--user"); p.add_argument("--port", type=int); p.add_argument("--key")
     p.add_argument("--env", choices=ENVS)
+    # --web / --no-web 保留為「兩邊一起」的捷徑：舊的指令列與文件仍然可用，
+    # 而拆機是少數情況，不該讓多數人多打兩個旗標。
+    p.add_argument("--fe", dest="fe", action="store_true", default=None)
+    p.add_argument("--no-fe", dest="fe", action="store_false")
+    p.add_argument("--be", dest="be", action="store_true", default=None)
+    p.add_argument("--no-be", dest="be", action="store_false")
     p.add_argument("--web", dest="web", action="store_true", default=None)
     p.add_argument("--no-web", dest="web", action="store_false")
     p.add_argument("--db", dest="db", action="store_true", default=None)

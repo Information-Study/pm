@@ -118,3 +118,26 @@
       `logrotate --debug` 驗證會讓 play 失敗。
       擇一關掉 —— 建議留 php role 這一份（它知道輪替後要不要 reload FPM）。
     quiet: true
+
+# FPM 的 TCP 監聽沒有認證機制。unix socket 之所以是預設值，正是因為它天然
+# 只有同機存取得到 —— 換成 TCP 就等於把「誰能執行 PHP」這件事完全交給
+# listen.allowed_clients 與防火牆。
+#
+# ⚠ 空的 allowed_clients 在 FPM 的語意裡是「允許所有來源」，不是「拒絕所有」。
+#   所以「忘記填」與「刻意開放」在設定檔上長得一模一樣，而後果差很多。
+#   這條斷言把那個沉默的預設變成一個會停下來的錯誤。
+- name: 斷言 FPM 走 TCP 時有設定 allowed_clients（FPM 沒有認證機制）
+  ansible.builtin.assert:
+    that:
+      - (php_fpm_listen | default(php_fpm_socket)).startswith('/')
+        or ((php_fpm_allowed_clients | default([])) | length) > 0
+    fail_msg: >-
+      php_fpm_listen={{ php_fpm_listen | default(php_fpm_socket) }} 是 TCP，
+      但 php_fpm_allowed_clients 是空的。
+      FPM 對連進來的人不做任何驗證 —— 連得上這個埠就能以
+      {{ php_fpm_user }} 的身分執行 PHP，而空清單在 FPM 的語意裡是
+      「允許所有來源」，不是「拒絕所有」。
+      請填入 nginx 那台的內網位址，並確認 hardening_ufw_allowed_tcp_ports
+      只放行同一組來源。
+      （不打算拆機的話就不要動 php_fpm_listen —— unix socket 天然只有同機可存取。）
+    quiet: true

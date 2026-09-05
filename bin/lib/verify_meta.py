@@ -921,6 +921,41 @@ def check_git_branch_model():
             + f"；讀取端 {len(used)} 個")
 
 
+def check_ansible_split():
+    """A15：migration 的 gate 與 deploy_backend 的 gate 必須是同一個群組。
+
+    migration 寫在 deploy_backend role 內部，用
+        when: inventory_hostname in groups['db_primary']
+    gate（不是 run_once —— serial 之下 run_once 只在當前 batch 生效，等同 no-op）。
+    而 deploy_backend 本身在 play 層有自己的 gate。
+
+    兩者對不上的後果**沒有任何錯誤訊息**：ansible 全綠，網站停在
+    "Base table or view not found"。preflight 的 A15 斷言就是為了擋這件事，
+    但它自己也寫著一個群組名 —— 2026-09-06 把 web 拆成 web_frontend /
+    web_backend 時，如果只改了 role 的 gate 而忘了改斷言，那條斷言會**通過**，
+    然後 migration 一次都不跑。這條檢查盯的就是那個「忘了一起改」。
+    """
+    site = read("ansible/site.yml")
+    if not site:
+        row("SKIP", "ANS-split", "A15 斷言與 deploy_backend 的 gate 同群組", "讀不到 site.yml")
+        return
+    m = re.search(r"role:\s*deploy_backend\b.*?when:\s*inventory_hostname in \(groups\['(\w+)'\]",
+                  site, re.S)
+    a = re.search(r"groups\['db_primary'\][^\n]*?\|\s*difference\(groups\['(\w+)'\]", site, re.S)
+    gate = m.group(1) if m else None
+    asserted = a.group(1) if a else None
+    if not gate or not asserted:
+        row("SKIP", "ANS-split", "A15 斷言與 deploy_backend 的 gate 同群組",
+            f"剖析不到（gate={gate or '無'} 斷言={asserted or '無'}）")
+    elif gate != asserted:
+        row("FAIL", "ANS-split", "A15 斷言與 deploy_backend 的 gate 同群組",
+            f"deploy_backend 的 gate 是 groups['{gate}']，但 preflight 斷言的是 "
+            f"groups['{asserted}'] —— 不一致時 migration 永遠不會執行，"
+            "而且 ansible 會全綠")
+    else:
+        row("PASS", "ANS-split", "A15 斷言與 deploy_backend 的 gate 同群組", gate)
+
+
 def check_doc_index():
     """宣稱是「完整清單」的文件索引，必須真的完整。
 
@@ -1168,6 +1203,7 @@ def main():
         check_tui()
     if "docs" in families:
         check_docs()
+        check_ansible_split()
         check_doc_index()
         check_doc_filemap()
         check_doc_verify_scopes()

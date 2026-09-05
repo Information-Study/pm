@@ -251,6 +251,20 @@ php_fpm_process_idle_timeout: "10s"
 php_fpm_request_terminate_timeout: "60s"
 php_fpm_request_slowlog_timeout: "10s"
 php_fpm_listen_backlog: 511
+
+# ── FPM 的監聽端點 ────────────────────────────────────────────────────────
+#
+# 預設是 unix socket，而那**不只是效能選擇** —— socket 天然只有同一台機器
+# 存取得到，這是「nginx 與 PHP 必須同機」這個限制的來源，也是它安全的來源。
+#
+# 要把 PHP 拆到別台（web_frontend 與 web_backend 分開）就必須改成 TCP，
+# 例如 "0.0.0.0:9000"。此時 php_fpm_allowed_clients **必填** ——
+# FPM 對連進來的人**不做任何驗證**：連得上這個埠就能以 php_fpm_user 的身分
+# 執行 PHP。空清單在 FPM 的語意裡是「允許所有來源」，所以 role 有一條斷言
+# 會擋下「TCP 但沒填 allowed_clients」的組合。
+php_fpm_listen: "{{ php_fpm_socket }}"
+# 只在 TCP 之下有意義。填 nginx 那台的內網位址（逗號分隔或 YAML 清單）。
+php_fpm_allowed_clients: []
 # clear_env=yes 是安全預設；但這樣 child 連 PATH 都沒有，exec 類呼叫會找不到執行檔，
 # 所以顯式補一個最小 PATH。
 php_fpm_clear_env: "yes"

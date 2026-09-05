@@ -135,11 +135,21 @@ role 在哪台跑**的東西。
 | 群組 | 誰在上面跑 |
 |---|---|
 | `pm_servers` | `site.yml` 的作用對象。**所有**主機都要在裡面（`common`、`hardening`） |
-| `web` | `php`、`composer`、`nodejs_pm2`、`nginx_myguard`、`certbot`、`deploy_backend`、`deploy_frontend`、`healthcheck` |
-| `db_primary` | `mysql`，而且**由它執行 `artisan migrate`** |
-| `staging` / `production` | 環境群組。只負責套用 `group_vars/staging.yml`、`group_vars/production.yml`，不影響 role 的執行與否 |
+| `web_frontend` | `nodejs_pm2`、`deploy_frontend` |
+| `web_backend` | `php`、`composer`、`deploy_backend`（**migration 在這裡**） |
+| `web` | 上面兩者的 **`children` 聯集**。`nginx_myguard`、`certbot`、`healthcheck` 對它跑 |
+| `db_primary` | `mysql`，而且**由它執行 `artisan migrate`**。剛好一台，必須也在 `web_backend` 裡 |
+| `staging` / `production` | 環境群組。只負責套用 `group_vars/*.yml`，不影響 role 的執行與否 |
 
-### 3.2 A15：`db_primary` 剛好一台，而且必須也在 `web`
+> **`web` 是 `children` 聯集，不是自己列 hosts。** 這是整個拆分能成立的關鍵 ——
+> `site.yml` 裡既有的每一個 `groups['web']` gate 完全不用改，
+> 單機拓撲（一台同時在兩個子群組裡）的行為 100% 不變。
+> `cx deploy hosts` 產生的檔案就是這個形狀，`bin/test/70_project.bats` 有案例釘住。
+
+**預設是單機**：`cx deploy hosts add <名稱> --ip <IP>` 加的第一台同時進
+`web_frontend`、`web_backend` 與 `db_primary`。
+
+### 3.2 A15：`db_primary` 剛好一台，而且必須也在 `web_backend`
 
 migration 寫在 `deploy_backend` role 內部，gate 是：
 
@@ -150,47 +160,78 @@ when: inventory_hostname in groups['db_primary']
 **不是 `run_once`**，因為 `serial` 一旦不是 `100%`，`run_once` 的作用域就變成
 「當前 batch」—— batch 1 跑一次、batch 2 再跑一次，兩次都宣稱自己是 run_once。
 
-而 `deploy_backend` 只在 `web` 群組執行。所以如果 `db_primary` 那台不在 `web`，
-**migration 一次都不會執行，而且不會有任何錯誤訊息** —— 網站會停在
-`Base table or view not found`。
+而 `deploy_backend` 只在 `web_backend` 群組執行。所以如果 `db_primary` 那台不在
+`web_backend`，**migration 一次都不會執行，而且不會有任何錯誤訊息** ——
+網站會停在 `Base table or view not found`。
 
 `site.yml` 的 preflight play 有一條專門的斷言擋這件事，`cx deploy hosts check`
 在還沒連線之前也會擋。兩道都有，是因為第二道的訊息比較早出現、比較便宜。
 
+> ⚠ **那條斷言自己也寫著一個群組名。** 2026-09-06 把 `web` 拆開時，如果只改了
+> role 的 gate 而忘了改斷言，斷言會**通過**，然後 migration 一次都不跑。
+> `cx verify docs` 的 **`ANS-split`** 檢查專門盯這兩個群組名相不相同。
+
 `db_primary` 也**不能超過一台**：gate 的對象必須唯一，兩台就會跑兩次 migrate。
 這也是為什麼**一個 inventory 檔只能放一個環境**：`groups` 是「整份 inventory」的
-視角，`--limit` 不會讓它變小 —— 把 staging 與 production 各一台資料庫寫進同一個
-檔，即使下了 `--limit staging` 也一樣會被擋下。
+視角，`--limit` 不會讓它變小。
 
-### 3.3 ⚠ nginx / 前端 / 後端**不能**拆到不同主機
+### 3.3 前端與後端**可以**拆到不同主機（2026-09-06 起）
 
-這不是設定問題，是目前的架構事實：
+```bash
+cx deploy hosts init --env production
+cx deploy hosts add pm-fe-1 --ip 10.0.0.1 --no-be --no-db    # 只跑前端
+cx deploy hosts add pm-be-1 --ip 10.0.0.2 --no-fe --be --db  # 跑後端與資料庫
+cx deploy hosts check --ansible
+```
 
-| 限制 | 來源 |
+> 這一節在 2026-09-06 之前寫著「**不能**拆」，並列出四個原因。
+> 逐一查證之後，其中**兩個已經是變數了**（那份敘述過期了）：
+
+| 原因 | 現況 |
 |---|---|
-| php-fpm 監聽 **unix socket**，nginx 只連得到同一台的 PHP | `ansible/roles/php/templates/pool.conf.j2` 的 `listen = {{ php_fpm_socket }}`，值是 `/run/php/php<版本>-fpm-<slug>.sock` |
-| 前端 PM2 綁 **127.0.0.1** | `ansible/roles/deploy_frontend/defaults/main.yml` 的 `frontend_host: "127.0.0.1"` |
+| ① php-fpm 監聽 unix socket | **真的需要改** —— 但現在是 `php_fpm_listen` 這個變數 |
+| ② 前端 PM2 綁 `127.0.0.1` | **已經是變數** `frontend_host`，而且完整接到 `HOST` 與 `NITRO_HOST` |
+| ③ nginx 的 `fastcgi_pass` 與前端 upstream | **已經是變數** `nginx_fastcgi_pass` / `frontend_host` |
+| ④ 網路、防火牆、FPM 沒有認證機制 | 真的是成本，見下 |
 
-也就是說：**`web` 群組裡的每一台，都必須自己跑一整套 nginx + php-fpm + Node/PM2。**
-`web` 可以有多台（水平擴充），但你不能把 nginx 放 A 機、PHP 放 B 機、前端放 C 機。
+拆機必須設定的四個值：
 
-要真的拆開，得動的是這四件事，而且它們是架構變更、不是旋鈕：
+```yaml
+# group_vars/production.yml
+php_fpm_listen: "0.0.0.0:9000"          # ① 從 unix socket 換成 TCP
+php_fpm_allowed_clients: ["10.0.0.1"]   # ④ nginx 那台的內網位址
+frontend_host: "10.0.0.1"               # ② Nitro 綁在別台連得到的介面上
+nginx_fastcgi_pass: "10.0.0.2:9000"     # ③ nginx 指向後端那台的 FPM
+hardening_ufw_allowed_tcp_ports: [22, 80, 443, 9000]   # ④ 放行 9000（限內網）
+```
 
-1. `pool.conf.j2` 的 `listen` 改成 TCP（例如 `0.0.0.0:9000`），並補上
-   `listen.allowed_clients`，否則 FPM 對整個網路開放；
-2. `frontend_host` 改成內網位址，讓 Nitro 綁在別台連得到的介面上；
-3. nginx 的 `fastcgi_pass` 與前端 upstream 改指向遠端主機；
-4. 處理三者之間的網路、防火牆與（FPM 沒有認證機制這件事帶來的）存取控制。
+> ⚠ **第 ④ 點是真正的成本，不是設定的麻煩。**
+> **FPM 對連進來的人不做任何驗證** —— 連得上 9000 就能以 `php_fpm_user` 的身分
+> 執行 PHP。`listen.allowed_clients` 是唯一的存取控制，而且它是**取代**而非附加：
+> 空清單在 FPM 的語意裡是「**允許所有來源**」，不是「拒絕所有」。
+> 也就是說「忘記填」與「刻意開放」在設定檔上長得一模一樣。
+> `php` role 有一條斷言會擋下「TCP 但 `allowed_clients` 為空」的組合，
+> `cx deploy hosts check` 在分機拓撲下也會警告這兩個預設值。
+>
+> unix socket 之所以是預設，正是因為它天然只有同機可存取。**沒有要拆機就不要動它。**
 
-第 4 點是真正的成本：unix socket 之所以是預設，正是因為它天然只有同機可存取。
+**已驗證到哪裡**（本專案的規矩是「沒跑過的就寫沒跑過」）：
 
-### 3.4 可以拆的是資料庫層 —— 但 `db_primary` 仍必須在 `web` 裡
+| 項目 | 狀態 |
+|---|---|
+| 群組解析（`web` 真的是兩個子群組的聯集） | ✅ `ansible-inventory --graph` 實測 |
+| role gate 真的分開（fe 機 `backend=False`、be 機 `frontend=False`） | ✅ 條件求值實測 |
+| `inventory.py` 的不變式與向後相容 | ✅ `bin/test/70_project.bats` 6 個案例 |
+| `--syntax-check` / `ansible-lint` / `yamllint` | ✅ |
+| **跨主機的 FPM / Nitro 實際流量** | ⬜ **未驗** —— 需要第二台真機 |
 
-支援的拓撲是「多台 `web`，其中一台**兼任** `db_primary`」：
+### 3.4 可以拆的是資料庫層### 3.4 資料庫層 —— `db_primary` 仍必須在 `web_backend` 裡
+
+支援的拓撲是「多台 `web_backend`，其中一台**兼任** `db_primary`」：
 
 ```
-web = [pm-prod-web-1, pm-prod-web-2]
-db_primary = [pm-prod-web-1]        ← 這台同時跑 MySQL 與 artisan migrate
+web_backend = [pm-prod-be-1, pm-prod-be-2]
+db_primary  = [pm-prod-be-1]        ← 這台同時跑 MySQL 與 artisan migrate
 ```
 
 要讓 web-2 連得到資料庫，另外要處理（`hosts.yml.example` 檔尾有完整寫法）：
@@ -203,7 +244,7 @@ db_primary = [pm-prod-web-1]        ← 這台同時跑 MySQL 與 artisan migrat
 | `deploy_serial: 1` | 一台一台換，避免同時全掛（migration 不受影響 —— 它是群組 gate，不是 `run_once`） |
 | `hardening_ufw_allowed_tcp_ports` | 開了 ufw 的話要放行內網 3306 |
 
-「完全獨立的 DB 主機（不在 `web` 裡）」目前**不支援**：那樣 migration 就沒有人跑。
+「完全獨立的 DB 主機（不在 `web_backend` 裡）」目前**不支援**：那樣 migration 就沒有人跑。
 真要做，得把 migration 拆成一個獨立的 play 讓 DB 主機執行 —— `site.yml` 的
 A15 斷言訊息裡就寫了這個方向。
 
