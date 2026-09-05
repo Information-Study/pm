@@ -86,6 +86,8 @@ _sonar_down() {
     cx_dc down "$@"
 }
 
+_sonar_url() { printf 'http://127.0.0.1:%s' "$(_sonar_port)"; }
+
 _sonar_token() {
     local port out
     port=$(_sonar_port)
@@ -93,6 +95,26 @@ _sonar_token() {
     cx_ensure_host_dirs "$CX_ROOT/.cx"
 
     cx_step "產生 SonarQube 分析 token"
+
+    # 沒有 TTY 就先講清楚，不要讓 `read </dev/tty` 自己去撞。
+    # 那樣得到的是一句裸的 bash 錯誤：
+    #     /dev/tty: No such device or address
+    # 對「我只是想在 CI 或腳本裡跑 cx scan code」的人完全沒有指路作用。
+    # 2026-09-05 在非互動環境跑 cx sonar token 時實際看到這個訊息。
+    # ⚠ 判準必須是「真的開得起來」，不是 [[ -r /dev/tty ]]。
+    # 沒有控制終端機時 /dev/tty 這個節點仍然存在、權限也讀得到，
+    # -r 會回 true，然後下面的 read 照樣撞上
+    #     /dev/tty: No such device or address
+    # 第一版就是這樣寫的，測起來會「看起來有防呆」。
+    if ! { : </dev/tty; } 2>/dev/null; then
+        cx_error "產生 token 需要終端機（要輸入 SonarQube 管理者帳密）"
+        cx_dim "  非互動環境請改用預先產生好的 token："
+        cx_dim "    export SONAR_TOKEN=<token>          # cx scan code 會直接讀這個"
+        cx_dim "    或寫進 $CX_ROOT/.cx/sonar-token"
+        cx_dim "  token 在網頁產生： $( _sonar_url )/account/security"
+        return "$EX_PRECOND"
+    fi
+
     cx_dim "  SonarQube 不允許用預設密碼呼叫 API，第一次要先到網頁改密碼。"
     printf '  管理者帳號 [admin]: ' >&2
     local user pass name
