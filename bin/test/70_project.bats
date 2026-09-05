@@ -60,3 +60,99 @@ setup() {
     run grep "^project=" "$arc/MANIFEST.txt"
     assert_out_has "project=shop5"
 }
+
+# ── cx rename ────────────────────────────────────────────────────────────────
+#
+# rename 會改寫專案身分。fixture 用完整的檔案集（不是 symlink 到真的樹），
+# 否則 sed -i 會改到真正的專案。_rename_fixture 只造出 rename 會碰的那幾個檔。
+_rename_fixture() {                 # _rename_fixture <目前的名字>
+    local n=${1:?}
+    make_root "$n" >/dev/null
+    printf 'PROJECT_SLUG=%s\nIMAGE_PREFIX=%s\n' "$n" "$n" > "$CX_TEST_ROOT/.env"
+    cp "$CX_TEST_ROOT/.env" "$CX_TEST_ROOT/.env.example"
+    printf 'sonar.projectKey=%s\nsonar.projectName=%s\n' "$n" "$n" \
+        > "$CX_TEST_ROOT/sonar-project.properties"
+    mkdir -p "$CX_TEST_ROOT/ansible/inventory/group_vars/all" \
+             "$CX_TEST_ROOT/ansible/roles/demo/defaults" \
+             "$CX_TEST_ROOT/ansible/playbooks"
+    cat > "$CX_TEST_ROOT/ansible/inventory/group_vars/all/main.yml" <<YML
+ansible_managed: "來源：$n 專案的 ansible/"
+app_name: "$n"
+app_slug: "$n"
+db_name: &db_name "$n"
+db_user: &db_user "$n"
+app_repo: "https://github.com/Org/$n.git"
+backend_repo: "https://github.com/Org/$n-backend.git"
+YML
+    printf -- '- name: %s | 部署\n  hosts: %s_servers\n' "$n" "$n" \
+        > "$CX_TEST_ROOT/ansible/site.yml"
+    printf 'app_slug: "%s"\n' "$n" > "$CX_TEST_ROOT/ansible/roles/demo/defaults/main.yml"
+    # deploy.sh 是 symlink 進來的真檔，rename 會想改它 —— 換成本地副本，
+    # 否則測試會 sed 到真正的 bin/cmd/deploy.sh。
+    rm -f "$CX_TEST_ROOT/bin"
+    mkdir -p "$CX_TEST_ROOT/bin/cmd"
+    cp -r "$CX_TEST_REAL_ROOT/bin/lib" "$CX_TEST_REAL_ROOT/bin/completion" "$CX_TEST_ROOT/bin/"
+    cp "$CX_TEST_REAL_ROOT"/bin/cmd/*.sh "$CX_TEST_ROOT/bin/cmd/"
+    printf 'cmd_deploy_main() { : ; }\n# --list-hosts %s_servers\n' "$n" \
+        > "$CX_TEST_ROOT/bin/cmd/deploy.sh"
+}
+
+@test "rename 拒絕不合法的名稱（會被拼成網路名與 MySQL 帳號名）" {
+    _rename_fixture old1
+    for bad in "Shop" "9shop" "a" "sh op" "shop!" ""; do
+        run cx_raw --root "$CX_TEST_ROOT" --yes rename "$bad"
+        [[ $status -eq 2 ]] || {
+            printf '名稱 %q 應被拒絕（EX_USAGE=2），實際 rc=%s\n' "$bad" "$status" >&2
+            return 1; }
+    done
+}
+
+@test "rename 拒絕改成同一個名字" {
+    _rename_fixture old2
+    run cx_raw --root "$CX_TEST_ROOT" --yes rename old2
+    assert_rc 2
+}
+
+@test "rename 的 dry-run 列出變更點但一個位元組都不改" {
+    _rename_fixture old3
+    local before after
+    before=$(find "$CX_TEST_ROOT" -type f ! -path '*/bin/*' -printf '%p %s\n' | sort | sha256sum)
+    run cx_raw --root "$CX_TEST_ROOT" --dry-run rename shop
+    assert_rc 0
+    assert_out_has ".cxroot" ".env" "sonar-project.properties" "dry-run"
+    after=$(find "$CX_TEST_ROOT" -type f ! -path '*/bin/*' -printf '%p %s\n' | sort | sha256sum)
+    [[ $before == "$after" ]] || { echo "dry-run 改到檔案了" >&2; return 1; }
+}
+
+@test "rename 真的改名之後，每一個身分來源都跟著走" {
+    _rename_fixture old4
+    run cx_raw --root "$CX_TEST_ROOT" --yes rename shop
+    assert_rc 0
+    run grep -h '^CX_PROJECT_NAME=' "$CX_TEST_ROOT/.cxroot"
+    assert_out_has "CX_PROJECT_NAME=shop"
+    run grep -h '^CX_REPO_BACKEND=' "$CX_TEST_ROOT/.cxroot"
+    assert_out_has "shop-backend"
+    run cat "$CX_TEST_ROOT/.env"
+    assert_out_has "PROJECT_SLUG=shop" "IMAGE_PREFIX=shop"
+    assert_out_lacks "=old4"
+    run cat "$CX_TEST_ROOT/sonar-project.properties"
+    assert_out_has "sonar.projectKey=shop"
+    run cat "$CX_TEST_ROOT/ansible/inventory/group_vars/all/main.yml"
+    assert_out_has 'app_slug: "shop"' 'db_name: &db_name "shop"' "Org/shop-backend.git" "來源：shop 專案的"
+    assert_out_lacks "old4"
+    run cat "$CX_TEST_ROOT/ansible/site.yml"
+    assert_out_has "hosts: shop_servers" "name: shop |"
+    run cat "$CX_TEST_ROOT/ansible/roles/demo/defaults/main.yml"
+    assert_out_has 'app_slug: "shop"'
+}
+
+@test "rename 不碰 .git" {
+    _rename_fixture old5
+    mkdir -p "$CX_TEST_ROOT/.git"
+    printf 'sentinel\n' > "$CX_TEST_ROOT/.git/HEAD"
+    run cx_raw --root "$CX_TEST_ROOT" --yes rename shop
+    assert_rc 0
+    [[ -f $CX_TEST_ROOT/.git/HEAD ]] || { echo ".git 被動到了" >&2; return 1; }
+    run cat "$CX_TEST_ROOT/.git/HEAD"
+    assert_out_has "sentinel"
+}

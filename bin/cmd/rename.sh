@@ -63,7 +63,10 @@ _rename_plan_file() {                   # _rename_plan_file <檔案> <old> <new>
 cmd_rename_main() {
     local new=${1:-}
     case $new in
-        ''|-h|--help) _rename_usage; return "$EX_USAGE" ;;
+        # 明確要說明 → 0；忘了給參數 → EX_USAGE。全庫其他動詞都是這個慣例
+        # （bin/test/00_dispatch.bats 的「每個動詞的 --help」正是在守這件事）。
+        -h|--help) _rename_usage; return "$EX_OK" ;;
+        '')        _rename_usage; return "$EX_USAGE" ;;
     esac
     shift
     (( $# == 0 )) || { cx_error "多餘的參數：$*"; _rename_usage; return "$EX_USAGE"; }

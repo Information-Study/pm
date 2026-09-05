@@ -41,6 +41,17 @@ def read(rel):
         return ""
 
 
+def exists(rel):
+    """檔案在不在。
+
+    ⚠ 不要用 `read(rel) is None` 判斷 —— read() 對不存在的檔回的是**空字串**，
+    那個判斷永遠是 False。2026-09-05 因此讓 LNT-* 與 TPL-* 在一棵剛 clone、
+    還沒跑過 cx setup 的樹上全部報 FAIL，而 cli/docs/tui 三個範圍的合約
+    正是「在什麼都沒裝的樹上也要跑得完」。缺檔案是 SKIP，不是 FAIL。
+    """
+    return (ROOT / rel).is_file()
+
+
 # ══ 共用：從實際的東西推導出「動詞」這個集合 ═══════════════════════════════
 
 def completion_verbs():
@@ -469,6 +480,16 @@ def check_bats_wiring():
         row("PASS", "CLI-bats", "cx 行為測試的接線", f"{len(tests)} 支 .bats")
 
 
+def _eslint_cx_row():
+    """cx lint js 有沒有真的接上 ESLint —— 這一項與 frontend/ 在不在無關。"""
+    lint = read("bin/cmd/lint.sh")
+    if "_lint_js_eslint" in lint and re.search(r"js\)\s+_lint_one _lint_js_eslint", lint):
+        row("PASS", "LNT-eslint-cx", "cx lint js 真的會跑 ESLint", "js 與 all 兩個分支都接了")
+    else:
+        row("FAIL", "LNT-eslint-cx", "cx lint js 真的會跑 ESLint",
+            "bin/cmd/lint.sh 的 js 分支沒有呼叫 _lint_js_eslint —— 只會跑 Prettier")
+
+
 def check_eslint_wiring():
     """ESLint 的四個零件必須同時在位。
 
@@ -482,8 +503,21 @@ def check_eslint_wiring():
     三件事同時發生，而 `cx lint js` 只會安靜地少跑一半 —— 它不會說
     「ESLint 不見了」，只會回報 Prettier 的結果然後印「靜態檢查通過」。
     """
+    # 判準用 nuxt.config.ts 而不是 package.json：ESLint 的接線是**Nuxt 專案**
+    # 才有意義的東西，而 package.json 隨便一個 stub 都有（bats 的 fixture 就是
+    # 一行 {"name":"bats-frontend"}）。沒有 nuxt.config.ts 就沒有 Nuxt 專案，
+    # 這三項無從檢查 —— 那是 SKIP，不是 FAIL。
+    nuxt_cfg = next((f for f in ("frontend/nuxt.config.ts", "frontend/nuxt.config.js",
+                                 "frontend/nuxt.config.mjs") if exists(f)), None)
+    if not nuxt_cfg:
+        why = "這棵樹沒有 frontend/nuxt.config.*（不是 Nuxt 專案）"
+        row("SKIP", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在", why)
+        row("SKIP", "LNT-eslint-dep", "frontend 有 eslint 與 @nuxt/eslint", why)
+        row("SKIP", "LNT-eslint-mod", "nuxt.config 的 modules 含 @nuxt/eslint", why)
+        _eslint_cx_row()
+        return
     cfg = read("frontend/eslint.config.mjs")
-    if cfg is None:
+    if not exists("frontend/eslint.config.mjs"):
         row("FAIL", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在",
             "檔案不存在（cx fresh --mode carryover 不會把它帶回來）")
     elif ".nuxt/eslint.config.mjs" not in cfg:
@@ -493,9 +527,7 @@ def check_eslint_wiring():
         row("PASS", "LNT-eslint-cfg", "frontend/eslint.config.mjs 存在", "並 extend .nuxt 的產生設定")
 
     pkg = read("frontend/package.json")
-    if pkg is None:
-        row("SKIP", "LNT-eslint-dep", "frontend 有 eslint 與 @nuxt/eslint", "讀不到 package.json")
-    else:
+    if True:
         try:
             dev = (json.loads(pkg).get("devDependencies") or {})
         except ValueError:
@@ -508,19 +540,14 @@ def check_eslint_wiring():
             row("PASS", "LNT-eslint-dep", "frontend 有 eslint 與 @nuxt/eslint",
                 " ".join(f"{d}@{dev[d]}" for d in ("eslint", "@nuxt/eslint")))
 
-    nc = read("frontend/nuxt.config.ts") or ""
+    nc = read(nuxt_cfg)
     if "'@nuxt/eslint'" in nc or '"@nuxt/eslint"' in nc:
         row("PASS", "LNT-eslint-mod", "nuxt.config 的 modules 含 @nuxt/eslint", "")
     else:
         row("FAIL", "LNT-eslint-mod", "nuxt.config 的 modules 含 @nuxt/eslint",
             "少了它就不會產生 .nuxt/eslint.config.mjs，eslint.config.mjs 的 import 會失敗")
 
-    lint = read("bin/cmd/lint.sh") or ""
-    if "_lint_js_eslint" in lint and re.search(r"js\)\s+_lint_one _lint_js_eslint", lint):
-        row("PASS", "LNT-eslint-cx", "cx lint js 真的會跑 ESLint", "js 與 all 兩個分支都接了")
-    else:
-        row("FAIL", "LNT-eslint-cx", "cx lint js 真的會跑 ESLint",
-            "bin/cmd/lint.sh 的 js 分支沒有呼叫 _lint_js_eslint —— 只會跑 Prettier")
+    _eslint_cx_row()
 
 
 def _project_name():
@@ -554,7 +581,7 @@ def check_template_identity():
         return
 
     env = read(".env")
-    if env is None:
+    if not exists(".env"):
         row("SKIP", "TPL-env", ".env 的 slug 與 .cxroot 一致", "沒有 .env（跑 cx setup env）")
     else:
         bad = []
@@ -571,7 +598,7 @@ def check_template_identity():
             row("PASS", "TPL-env", ".env 的 slug 與 .cxroot 一致", want)
 
     sonar = read("sonar-project.properties")
-    if sonar is None:
+    if not exists("sonar-project.properties"):
         row("SKIP", "TPL-sonar", "sonar-project.properties 與 .cxroot 一致", "檔案不存在")
     else:
         bad = []
@@ -587,7 +614,7 @@ def check_template_identity():
             row("PASS", "TPL-sonar", "sonar-project.properties 與 .cxroot 一致", want)
 
     gv = read("ansible/inventory/group_vars/all/main.yml")
-    if gv is None:
+    if not exists("ansible/inventory/group_vars/all/main.yml"):
         row("SKIP", "TPL-ansible", "group_vars 的 app_slug 與 .cxroot 一致", "讀不到 group_vars")
     else:
         m = re.search(r'^app_slug:\s*"?([^"\s]+)"?', gv, re.M)
