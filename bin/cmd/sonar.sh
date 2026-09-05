@@ -38,12 +38,11 @@ TXT
 }
 
 _sonar_args() {
-    local f
     CX_DC_ARGS=(--project-directory "$CX_ROOT" -p "$CX_SONAR_PROJECT"
                 -f "$CX_ROOT/docker/compose/sonar.yml")
-    for f in "$CX_ROOT/.env"; do
-        [[ -f $f ]] && CX_DC_ARGS+=(--env-file "$f")
-    done
+    # sonar 是獨立 project，只吃根目錄的 .env（沒有 docker/env/sonar.env）。
+    # 這裡原本是一個只有一個元素的 for 迴圈 —— 多模式那條路留下來的殘骸。
+    [[ -f $CX_ROOT/.env ]] && CX_DC_ARGS+=(--env-file "$CX_ROOT/.env")
     CX_DC_MODE=sonar
 }
 

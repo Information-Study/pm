@@ -343,7 +343,31 @@ _setup_tool_gitleaks() {
     _setup_gh_release_tarball gitleaks/gitleaks 'linux_x64\.tar\.gz$' 'checksums\.txt$' gitleaks
 }
 
-CX_SETUP_TOOLS='composer node ansible trivy gitleaks semgrep'
+# ShellCheck 的 release 與其他幾個不同：資產是 .tar.xz、執行檔在一層子目錄底下、
+# 而且**沒有提供校驗檔**。所以不能用 _setup_gh_release_tarball，要自己來。
+_setup_tool_shellcheck() {
+    cx_have shellcheck && {
+        cx_ok "shellcheck 已存在：$(shellcheck --version 2>/dev/null | awk '/^version:/{print $2}')"
+        return 0; }
+    cx_info "安裝 shellcheck"
+    local tmp json url
+    tmp=$(mktemp -d) || return 1
+    trap 'rm -rf "${tmp:-}"' RETURN
+    json=$(curl -4 -fsSL "https://api.github.com/repos/koalaman/shellcheck/releases/latest") || return 1
+    url=$(printf '%s' "$json" | grep -oE '"browser_download_url": *"[^"]+"' \
+          | cut -d'"' -f4 | grep -E 'linux\.x86_64\.tar\.xz$' | head -1)
+    [[ -n $url ]] || { cx_error "shellcheck：找不到 linux.x86_64 資產"; return 1; }
+    _setup_fetch "$url" "$tmp/a.tar.xz" || return 1
+    # 上游不出校驗檔，所以這裡沒有 SHA 核對 —— 明講，不要假裝有。
+    cx_warn "shellcheck 的 release 沒有提供校驗檔，本次無 SHA256 核對"
+    cx_run tar -xJf "$tmp/a.tar.xz" -C "$tmp" || return 1
+    local bin; bin=$(find "$tmp" -type f -name shellcheck -perm -u+x | head -1)
+    [[ -n $bin ]] || { cx_error "壓縮檔裡沒有 shellcheck"; return 1; }
+    cx_run install -Dm 0755 "$bin" "$CX_LOCAL_BIN/shellcheck" || return 1
+    cx_ok "shellcheck → $CX_LOCAL_BIN/shellcheck"
+}
+
+CX_SETUP_TOOLS='composer node ansible trivy gitleaks semgrep shellcheck'
 
 # ── 需要 root 的系統工具 ────────────────────────────────────────────────────
 #
@@ -356,7 +380,7 @@ CX_SETUP_TOOLS='composer node ansible trivy gitleaks semgrep'
 #   2. sudo 不可用（沒密碼、非互動）時，把「你該自己貼哪一行」印出來，
 #      而不是丟一個 permission denied 就結束。
 # 這是紅線 2 的延伸：會改變系統狀態的動作都要看得見、可預期。
-CX_SETUP_SYSTEM_TOOLS='php nginx git docker mysql-client php-sqlite acl'
+CX_SETUP_SYSTEM_TOOLS='php nginx git docker mysql-client php-sqlite acl jq'
 
 # 工具 → apt 套件名。php 相關的要帶版本號，所以用函式而不是靜態表。
 _setup_pkgs_for() {
@@ -372,6 +396,9 @@ _setup_pkgs_for() {
         # cx acl 需要 setfacl/getfacl。Ansible 的 become_user 交接也要它，
         # 所以目標機的 common role 早就會裝 —— 開發機這邊本來沒有。
         acl)          printf 'acl\n' ;;
+        # docs/reports.md 與 reports/README.md 的範例都用 jq 看掃描報告，
+        # 但它從來不在任何安裝清單裡 —— 照文件做的人會卡在 command not found。
+        jq)           printf 'jq\n' ;;
         docker)       printf 'docker.io docker-compose-v2\n' ;;
         *) return 1 ;;
     esac
@@ -391,6 +418,7 @@ _setup_system_have() {
         # 安裝後的複驗迴圈判定「裝完之後仍然不可用」→ EX_FAIL，
         # 連帶讓 cx setup native 的階段①中斷。
         acl)          cx_have setfacl && cx_have getfacl ;;
+        jq)           cx_have jq ;;
         docker)       cx_have docker ;;
         *) return 1 ;;
     esac

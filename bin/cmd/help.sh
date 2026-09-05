@@ -22,6 +22,7 @@ cx — pm 專案統一入口
                             〔含 compose v2〕/ mysql-client / php-sqlite / acl）。
                             sudo 不可用時只印指令並回傳 3，不會替你輸入密碼
     setup tools [名稱...]   免 root 安裝 composer / node〔含 npm〕/ ansible /
+                            shellcheck ／
                             trivy / gitleaks / semgrep 到 ~/.local（核對 SHA256）
     setup deps              backend 的 composer install + npm ci + vite build，
                             frontend 的 npm ci
@@ -51,6 +52,9 @@ cx — pm 專案統一入口
     npm --backend <參數>  在 backend/ 執行（Laravel 端的 Vite 資產）
   db status|shell|migrate|fresh|seed|dump|restore|admin|wait
   pma [--url]       開啟 phpMyAdmin（只有 dev 模式有）
+  style [範圍]      程式碼風格，**會改檔案**：PHP 用 Pint、前端用 Prettier
+                    範圍：php / js / all（預設 all）；--check 只檢查不改
+                    兩個工具都已隨既有相依裝好，不需要另外安裝
   code [路徑]       用 VS Code 開啟專案（預設開專案根）
 
 ── 第二階段：測試與掃描 ─────────────────────────────────────────────────────
@@ -99,7 +103,10 @@ cx — pm 專案統一入口
 
 ── 其他 ─────────────────────────────────────────────────────────────────────
   tui               互動選單（預設動詞）—— 可切換模式／runner、整備環境、自訂選單
-  lint [目錄]       Ansible 靜態檢查（沒裝 ansible 時的替代品）
+  lint [範圍] [目錄] 靜態檢查，**不改檔案**（CI 與提交前用這個）
+                    範圍：ansible / php / js / sh / all（預設 all）
+                    ansible 那一支是 --syntax-check 的替代品，不是等價物 ——
+                    ansible 裝好之後請改用 cx deploy lint
   fresh             清理與重建（備份 → 驗證 → 確認閘門 → 刪除 → 重建）
   install [--rc]    建立 ~/.local/bin/cx symlink + 註冊 bash 補全
   uninstall         移除（需確認）

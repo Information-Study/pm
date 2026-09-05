@@ -455,8 +455,12 @@ _scan_waf_engine() {
     local engine=$1 rc=0
     # 用 test 模式的合併設定重建 waf 這一個 service。--wait 確保 healthy 之後才回來，
     # 否則下一步的 ZAP 會打在還沒載入新規則的 nginx 上。
-    ( export MODSEC_RULE_ENGINE="$engine"
-      CX_MODE=test cx_compose_init test
+    # 用 subshell 隔離：cx_compose_init 會改 CX_DC_ARGS 與 CX_DC_MODE，
+    # 而呼叫者（可能是 dev 模式的 cx scan）之後還要用自己的那一份。
+    # 前綴賦值 `VAR=x func` 對**函式**而言在 bash 裡會殘留到函式回傳之後，
+    # 所以這裡明確 export 而不是靠前綴。
+    ( export MODSEC_RULE_ENGINE="$engine" CX_MODE=test
+      cx_compose_init test
       cx_dc up -d --wait waf ) >/dev/null 2>&1 || rc=$?
     return "$rc"
 }

@@ -51,6 +51,7 @@ cmd_install_main() {
     if (( do_rc )); then
         local rc="$HOME/.bashrc"
         if grep -qF "$CX_RC_BEGIN" "$rc" 2>/dev/null; then
+            # shellcheck disable=SC2088  # 這是給人看的字串，不是要展開的路徑
             cx_ok "~/.bashrc 已有 cx 區塊"
         else
             cx_confirm "寫入 ~/.bashrc" \
@@ -150,6 +151,7 @@ $( (( do_rc )) && printf '  ~/.bashrc 中的 cx 區塊（會先備份為 .bashrc
                 fi
             fi
         else
+            # shellcheck disable=SC2088  # 同上，顯示用字串
             cx_dim "~/.bashrc 沒有 cx 區塊"
         fi
     fi
