@@ -56,9 +56,25 @@ TXT
 _VF_PASS=0; _VF_FAIL=0; _VF_SKIP=0
 _VF_ROWS=()
 
+# --quiet：只印總結。
+#
+# ⚠ 這個旗標原本 parser 收得下（quiet=1）但**沒有任何地方讀它** ——
+#   也就是說 usage 宣傳了一個沒有效果的旗標。CLI-flags 那個檢查只驗
+#   「parser 接不接受」，接受但不做事它看不出來。
+#   FAIL 一律照印：安靜模式的用途是少看雜訊，不是把壞消息藏起來。
+_VF_QUIET=0
+
 _vf() {
     # _vf <PASS|FAIL|SKIP> <編號> <標題> [備註]
     local st=$1 id=$2 title=$3 note=${4:-}
+    if (( _VF_QUIET )) && [[ $st != FAIL ]]; then
+        case $st in
+            PASS) _VF_PASS=$((_VF_PASS + 1)) ;;
+            SKIP) _VF_SKIP=$((_VF_SKIP + 1)) ;;
+        esac
+        _VF_ROWS+=("$st|$id|$title|$note")
+        return 0
+    fi
     case $st in
         PASS) _VF_PASS=$((_VF_PASS + 1)); printf '%s✔%s %-10s %s\n' "$C_GRN" "$C_RST" "$id" "$title" >&2 ;;
         FAIL) _VF_FAIL=$((_VF_FAIL + 1)); printf '%s✘%s %-10s %s\n' "$C_RED" "$C_RST" "$id" "$title" >&2
@@ -420,7 +436,7 @@ cmd_verify_main() {
             -h|--help|help) _verify_usage; return 0 ;;
             --report) report=$(cx_resolve "${2:?--report 需要路徑}"); shift 2 ;;
             --report=*) report=$(cx_resolve "${1#*=}"); shift ;;
-            --quiet) quiet=1; shift ;;
+            --quiet) quiet=1; _VF_QUIET=1; shift ;;
             static|runtime|ansible|app|cli|docs|tui|waf|acl|all) scopes+=("$1"); shift ;;
             *) cx_error "未知的範圍：$1"; _verify_usage; return "$EX_USAGE" ;;
         esac

@@ -30,6 +30,14 @@ cx deploy <子指令> [參數...]
   rollback [限制]   playbooks/rollback.yml（互動式，需輸入 yes）
 
 其他
+  hosts <子指令>    主機清單（ansible/inventory/hosts.yml，不進版控）
+      init          建立空的 hosts.yml
+      add <名稱> --ip <IP> [--user u] [--port n] [--key 路徑]
+                    [--env staging|production] [--no-web] [--db|--no-db]
+      rm <名稱>     移除一台
+      show          列出目前的主機與群組
+      check         驗證結構與 A15（可加 --ansible 讓 ansible 自己也剖析一次）
+      edit          用編輯器直接開（不經過產生器，註解會保留）
   galaxy            安裝 requirements.yml 的 collections
   vars              印出合併後的變數（--limit 的第一台主機）
 
@@ -350,6 +358,38 @@ _deploy_reject_flag() {
     exit "$EX_USAGE"
 }
 
+# ── 主機清單 ────────────────────────────────────────────────────────────────
+#
+# hosts.yml 是 cx deploy 每一個動詞都需要、卻是**唯一沒有工具幫忙產生**的檔案。
+# 原本從選單走到部署那一步會撞牆，訊息只說「缺少 ansible/inventory/hosts.yml」，
+# 然後叫人離開 cx 自己去 cp 範例檔。
+#
+# 群組模型（來源：ansible/site.yml 的 roles 區塊）與可拆分的邊界寫在
+# docs/ansible-reference.md；產生與驗證的邏輯在 bin/lib/inventory.py。
+_deploy_hosts() {
+    local sub=${1:-show}; shift || true
+    local inv="$CX_ROOT/ansible/inventory/hosts.yml"
+    local py="$CX_ROOT/bin/lib/inventory.py"
+
+    case $sub in
+        -h|--help) _deploy_usage; return 0 ;;
+        edit)
+            [[ -f $inv ]] || { cx_error "還沒有 $inv"; cx_dim "  先跑： cx deploy hosts init"; return "$EX_PRECOND"; }
+            # 走編輯器這條路不經過產生器，所以手寫的註解會保留
+            if cx_have code && [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-}${WSL_DISTRO_NAME:-} ]]; then
+                cx_run code --wait "$inv"
+            else
+                cx_run "${EDITOR:-${VISUAL:-vi}}" "$inv"
+            fi
+            cx_info "存檔後驗證一次："
+            cx_run python3 "$py" --path "$inv" check --ansible ;;
+        init|show|check|add|rm)
+            cx_run python3 "$py" --path "$inv" "$sub" "$@" ;;
+        *) cx_error "hosts: 未知子指令 $sub（init|add|rm|show|check|edit）"
+           return "$EX_USAGE" ;;
+    esac
+}
+
 cmd_deploy_main() {
     local sub=${1:-}
     [[ $# -gt 0 ]] && shift
@@ -359,6 +399,7 @@ cmd_deploy_main() {
         syntax)   _deploy_syntax ;;
         lint)     _deploy_lint ;;
         galaxy)   _deploy_galaxy ;;
+        hosts)    _deploy_hosts "$@" ;;
         # 第一個參數是主機樣式（limit），**其餘原樣轉給 ansible**。
         # 原本這裡只傳 "${1:-}"，第二個之後全部被丟掉 ——
         # `cx deploy check staging -e php_repo_source=distro` 會安靜地用預設值跑完，

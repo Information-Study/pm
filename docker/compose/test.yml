@@ -85,7 +85,6 @@ services:
 
   # ── ModSecurity + OWASP CRS 反向代理 ──────────────────────────────────────
   waf:
-    # ModSecurity 的請求 body 緩衝是 MODSEC_REQ_BODY_LIMIT（約 12.5MB）/請求
     pids_limit: 256
     mem_limit: 512m
     image: ${WAF_IMAGE:-owasp/modsecurity-crs:4.28.0-nginx-alpine-202608131208}
@@ -112,8 +111,28 @@ services:
       MODSEC_AUDIT_LOG_FORMAT: JSON
       MODSEC_AUDIT_LOG_TYPE: Serial
       MODSEC_REQ_BODY_ACCESS: "On"
-      MODSEC_RESP_BODY_ACCESS: "On"
-      MODSEC_REQ_BODY_LIMIT: "13107200"
+      # ⚠ A16：這條鏈的大小順序不可以反過來。
+      #
+      #   PHP upload_max_filesize ≤ nginx client_max_body_size ≤ WAF body limit
+      #
+      #   原本 MODSEC_REQ_BODY_LIMIT 是 13107200（12.5MB），而 edge 的
+      #   client_max_body_size 是 **64m**（docker/edge/nginx.conf:29）——
+      #   順序整個反過來。後果：12.5MB 到 64MB 之間的上傳會先通過 edge，
+      #   再被 WAF 以 SecRequestBodyLimitAction Reject 擋成 413，
+      #   而錯誤訊息只會指向 ModSecurity，完全看不出是兩個限制設反了。
+      #
+      #   原生側（ansible/roles/nginx_myguard/defaults/main.yml:42-53、296）
+      #   一直是從 app_max_upload_mb 推導出這條鏈並在 A16 明文要求
+      #   「waf_request_body_limit 必須 > nginx_client_max_body_size」——
+      #   也就是說兩條路徑對同一件事的規則不一致，而 Docker 這邊是錯的那一邊。
+      #   67108864 = 64MB，與 edge 相等；NOFILES 給 4MB（Livewire 的元件快照
+      #   很容易破 1MB，ModSecurity 預設的 131072 對 Filament 太小）。
+      MODSEC_REQ_BODY_LIMIT: "67108864"
+      MODSEC_REQ_BODY_NOFILES_LIMIT: "4194304"
+      # 與原生側對齊（waf_response_body_access 預設 Off）。
+      # 開著會讓 ModSecurity 緩衝回應內容 —— 成本高，而且超過
+      # SecResponseBodyLimit 的回應會被截斷；兩條路徑不該有不同的行為。
+      MODSEC_RESP_BODY_ACCESS: "Off"
       PARANOIA: ${MODSEC_PARANOIA:-1}
       ANOMALY_INBOUND: ${MODSEC_ANOMALY_INBOUND:-5}
       ANOMALY_OUTBOUND: ${MODSEC_ANOMALY_OUTBOUND:-4}

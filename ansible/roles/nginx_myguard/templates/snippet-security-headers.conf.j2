@@ -27,6 +27,14 @@ add_header Permissions-Policy "{{ nginx_permissions_policy }}" always;
 {% if (nginx_coop | default('')) | length > 0 %}
 add_header Cross-Origin-Opener-Policy "{{ nginx_coop }}" always;
 {% endif %}
+{# COEP/CORP 與 Docker 的 pm-security-headers.inc 對齊。原本這裡只有 COOP，
+   於是同一組跨來源隔離設定在兩條路徑上不一樣。 #}
+{% if (nginx_coep | default('')) | length > 0 %}
+add_header Cross-Origin-Embedder-Policy "{{ nginx_coep }}" always;
+{% endif %}
+{% if (nginx_corp | default('')) | length > 0 %}
+add_header Cross-Origin-Resource-Policy "{{ nginx_corp }}" always;
+{% endif %}
 {% if (nginx_csp | default('')) | length > 0 %}
 {% if nginx_csp_report_only | default(false) | bool %}
 # Report-Only：先觀察 CSP 違規報告，確認不會弄壞 Filament/Alpine 與 Nuxt 的

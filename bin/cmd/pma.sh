@@ -16,7 +16,7 @@ _pma_usage() {
   --url         只印出網址（給腳本用，不開瀏覽器）
   --no-open     印出網址與狀態，但不開瀏覽器
 
-phpMyAdmin 只在 dev 模式提供（test / prod 刻意不放管理介面）。
+phpMyAdmin 在 dev 與 test 兩個模式提供（prod 刻意不放管理介面，D13）。
 登入資訊來自 .env 的 DB_USERNAME / DB_PASSWORD。
 TXT
 }

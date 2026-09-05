@@ -292,6 +292,71 @@ login shell 生效）。連鎖反應：composer / node / ansible-galaxy 全部�
 
 ---
 
+## 2026-09-05（第二輪）新增功能與抓到的缺陷
+
+這一輪的起點是四份 TUI 的使用回報。**其中三份的根因是同一個缺陷**，
+而那個缺陷本身不在被回報的功能裡。
+
+### 一個缺陷解釋了三份回報
+
+回報說「執行錯誤時沒有錯誤訊息」「沒有 acl 選單」「git 缺少 pull」。
+前兩者其實一直都在（`tui.sh` 有 `_tui_acl`，也有 pull）。所以先查為什麼看不到：
+
+```
+cx --ui dialog tui   （機器上沒裝 dialog）→ 零輸出、exit 0
+```
+
+`_cx_dlg` 執行 `dialog` 得到 127 → `_tui_menu` 的 `if` 為假 → 回傳 1 →
+`cmd_tui_main` 的 while 當成「使用者選了離開」→ 正常結束。
+**使用者面對一個不抱怨也不做事的指令，於是合理推論「選單裡沒有那些功能」。**
+
+修法是把「使用者取消」與「後端壞了」分開（0/1/255 vs 其餘），
+並讓 `cx_ui_init` 在明確指定的後端不存在時當場報錯。
+
+### 這一輪抓到的其他缺陷
+
+| # | 缺陷 | 為什麼之前沒被發現 |
+|---|---|---|
+| R-1 | **`cx fresh` 會刪掉根目錄的 `docker-compose.yml` 與 `.dockerignore`** —— `_fresh_delete` 迴圈跑的是 `FRESH_DELETE` **加上** `FRESH_MIGRATE`，而後者含那兩個檔 | 舊註解寫「Phase 2 會重寫根目錄那兩份」，遷移做完之後那句就過期了。實測 `cx fresh --phase delete` 之後 `cx dev config` 回 EX_PRECOND「缺少 base compose」——**一個「重建成可以直接跑的新專案」的動詞，交出來的樹是不能跑的** |
+| R-2 | **`cx git commit` 把失敗報成成功** —— 每個 `cx_run git add/commit` 都沒有接退出碼，然後無條件印 ✔ | 實測：pre-commit hook 失敗時印「✔ 主庫已提交（4 項，含 gitlink）」、exit 0，而 repo 裡一個 commit 都沒有 |
+| R-3 | **骨架產生之後，範本自己的保護整組消失** —— `cx init shop` 產出的專案 `cx verify cli` 有 9 個 FAIL，其中 6 個是測試資料庫 guard 與 ESLint | `composer create-project` / `nuxi init` 產生的是**框架的**骨架。GRD-wire 的說明早就寫過同一件事，只是當時說的是 carryover，實際上 scaffold 更嚴重（連檔案都不存在） |
+| R-4 | **WAF 的 body 上限比 nginx 小**（Docker 12.5MB < edge 64m），A16 的順序反了 | 原生側從 `app_max_upload_mb` 推導整條鏈並明文要求這個順序 —— 兩條路徑對同一件事的規則不一致，而 Docker 是錯的那一邊 |
+| R-5 | **Docker 少了四個 PHP 前綴**（`/filament` `/login` `/logout` `/broadcasting`）與 `/images/` | 實測都回 Nitro 的 404。`/login` `/logout` 是 Laravel 預設的 auth 路由名，`/broadcasting/auth` 是 Echo 的授權端點，`/images/` 是 Filament 的資產路徑 |
+| R-6 | **`^~ /admin` 會吃掉 `/admino`** —— `^~` 是純前綴，原生的 `(/|$)` 不會 | 邊界差異，比清單差異更難發現 |
+| R-7 | **CSP / COEP / CORP 只有 Docker 有** —— 原生的 `nginx_csp` 是空字串 | 正好是反過來的：正式機才是真的會被打的那一邊 |
+| R-8 | 我自己在修 TUI 時引進的回歸：用 `2>&1 \| tee` 抓輸出會讓子行程的 stdout/stderr 變成 pipe，而 `common.sh` 的顏色是看 `[[ -t 2 ]]` | 選單裡跑的每個指令都失去紅✘綠✔，**反而更難看出哪裡失敗**。改用 `script -qec` 給真的 pty（實測顏色保留、退出碼原樣帶回） |
+
+### 新增的功能
+
+| 動詞 | 做什麼 |
+|---|---|
+| `cx init <名稱>` / `cx re-init` | 把範本設定成新專案。**幾乎沒有自己的邏輯** —— 依序呼叫 `cx rename`（必須在前）、`cx fresh`、`cx git remote-init/remote-set`。閘門用 `INIT <新名字>` 而不是 fresh 的 `DESTROY <舊名字>` |
+| `cx deploy hosts` | inventory 的產生與驗證（init/add/rm/show/check/edit）。`check` 擋 A15 的三種違反 |
+| `cx git feature start/finish/list` | gitflow。從 dev 開、合回 dev（`--no-ff`），不推送也不刪分支 |
+| `cx git config identity/editor/show` | 三個 repo 一起設，或 `--global`。editor 會拒絕 `true`/`false`/`:`/`cat` 這類 no-op |
+| `cx git commit --repo` | 只提交 main / backend / frontend 其中一個 |
+| `cx git remote-set` | 指到現成的 remote，不經過 gh |
+
+### 新增的檢查
+
+| id | 守什麼 |
+|---|---|
+| `A13-parity` | `docker/edge` 的 PHP 前綴 ⊇ `group_vars` 的 `nginx_php_prefixes` |
+| `A16` | WAF 的 body 上限 ≥ edge 的 `client_max_body_size`（跨檔） |
+
+### ⚠ 誠實說明：哪些東西**不能**拆到不同主機
+
+使用者要求「把 nginx、前端、後端、資料庫部署到不同或相同主機」。
+實際檢查後：**nginx / 前端 / 後端必須在同一台**，這不是設定問題而是架構事實 ——
+`php_fpm_socket` 是 unix socket，前端 PM2 綁 `127.0.0.1:3000`。
+要拆得改成 TCP + 內網授權 + upstream 指到遠端，那是架構變更。
+
+**可以**拆的是資料庫層：多台 `web` + 其中一台兼 `db_primary`
+（A15 要求 `db_primary` 剛好一台且必須也在 `web`，因為 migration 掛在 `web` 的 gate 上）。
+`cx deploy hosts check` 會擋下違反，並提醒多台 web 要一併處理的四件事。
+
+---
+
 ## 仍未驗證的項目
 
 ### Ansible 真機進度

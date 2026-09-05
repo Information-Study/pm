@@ -706,6 +706,89 @@ detached HEAD 之下會先 `git checkout -q -B <追蹤分支> HEAD` 再推
 
 ---
 
+## `cx git` 的 gitflow、單一 repo 與設定
+
+### 分支模型只有一個來源
+
+`.cxroot` 的兩行：
+
+```
+CX_GIT_MAIN_BRANCH=main      # 發布線
+CX_GIT_DEV_BRANCH=dev        # 開發主線
+```
+
+`git.sh` 原本有**六處寫死 `main`**。現在 `_git_main_branch` / `_git_dev_branch`
+是唯一來源，`branch delete` 也會拒絕刪掉這兩條（`_git_is_protected_branch`）。
+
+### feature：從 dev 開，合回 dev
+
+```bash
+cx git feature start login      # 建立 feature/login（三個 repo，從 dev 開）
+cx git feature list
+cx git feature finish           # 合回 dev（--no-ff）；不推送、不刪分支
+```
+
+`finish` 刻意**不做**推送與刪分支：那兩件事各自有自己的閘門，混進來會讓
+`finish` 變成一個「一次做了三件不可逆的事」的動詞。合併完會告訴你下一步。
+
+只做 feature 這一條線。release / hotfix 牽涉版本號與 tag，而本專案目前沒有
+版本號策略 —— 做一半的 release 流程比沒有更糟。
+
+### branch 的起點與範圍
+
+```bash
+cx git branch new fix/x                    # 預設從 dev 開
+cx git branch new fix/x --from main        # 指定起點
+cx git branch new fix/x --repo backend     # 只在某一個 repo
+```
+
+原本是裸的 `switch -c <名稱>`（沒有起點），也就是「從你現在剛好在的地方開」——
+gitflow 之下 feature 必須從 dev 開，而「現在剛好在哪」不是可重現的東西。
+
+### 只提交一個 repo
+
+```bash
+cx git commit --repo frontend -m "fix(ui): …"
+```
+
+`--repo` 吃 `main` / `backend` / `frontend` / `all`（預設 `all`）。
+只提交子模組時會提醒你主庫的 gitlink 還指向舊的 commit，並給出補上的指令。
+
+> ⚠ 2026-09-05 之前，`cx git commit` 的每一步都**沒有接退出碼**，然後無條件印
+> `✔ 已提交`。實測：pre-commit hook 失敗時它印「✔ 主庫已提交（4 項，含
+> gitlink）」並回傳 0，而 repo 裡一個 commit 都沒有。現在每一步都會接，
+> 失敗時回 `EX_FAIL` 並指向 git 自己的訊息。
+
+### git 身分與編輯器
+
+```bash
+cx git config show                                    # 三個 repo 目前的設定
+cx git config identity --name "你的名字" --email you@example.com
+cx git config identity --name … --email … --global    # 寫進 ~/.gitconfig
+cx git config editor "code --wait"
+```
+
+`cx git commit` 會先檢查身分 —— 沒有的話 `git commit` 會失敗，而那個失敗
+原本是被吞掉的。
+
+`editor` 會拒絕 `true` / `false` / `:` / `cat` 這類 no-op：把它們寫進
+`core.editor` 的後果是**commit 訊息永遠是空的**，而 git 只會說
+「Aborting commit due to empty commit message」，完全指不到原因。
+（本機實測遇過 `GIT_EDITOR=true` 的環境。）
+
+### 指到現成的遠端
+
+```bash
+cx git remote-init                       # 用 gh 建立三個 repo 並接上
+cx git remote-set git@github.com:me/shop.git   # 指到已經存在的
+```
+
+`remote-set` 只做 set-url + 補 fetch refspec 那一半，不建立 repo。
+只給主庫 URL 時，backend / frontend 由同一個目錄推導。
+位址不在推送白名單（由 `.cxroot` 推導）時它會先警告，而不是等到 push 才擋。
+
+---
+
 ## `cx git` 的驗證紀錄（2026-09-04）
 
 每一條都是對**真實遠端**（`github.com/Information-Study/*`）實跑的，
@@ -827,6 +910,118 @@ cx fresh --rollback [--from <封存目錄>]
 > 子模組的 gitdir 是這一步的坑：`backend/.git` 是一個 32 bytes 的**指標檔**
 > （`gitdir: ../.git/modules/backend`），真正的 gitdir 在別的地方。
 > 只還原 src tar 的話，`backend/` 會是一棵沒有 git 的普通目錄。
+
+---
+
+## `cx init` / `cx re-init` — 把範本變成一個新專案
+
+```bash
+cx --dry-run init shop --org my-org        # 先看會做什麼
+cx init shop --org my-org --gh             # 改名 → 重建 → 用 gh 建三個 repo
+cx init shop --remote git@github.com:me/shop.git
+cx re-init --mode carryover                # 名字不變，重建骨架但留下自己的程式碼
+```
+
+### 它幾乎沒有自己的邏輯，而那是刻意的
+
+`cx init` 只做三件事：把名字改對、按正確順序呼叫既有的動詞、在最前面問一次。
+
+| 步驟 | 由誰做 |
+|---|---|
+| 改寫專案身分 | `cx rename <新名稱> [--org]` |
+| 刪 `.git`、重建骨架、重新連結 submodule、`git init` | `cx fresh --mode scaffold\|carryover` |
+| 建立或接上遠端 | `cx git remote-init`（gh）或 `cx git remote-set <URL>` |
+
+破壞性邏輯、封存與 rollback 全都在 `cx fresh` —— 那是本專案唯一經過對抗式
+稽核與實跑驗證的那一份。再寫一份「其實差不多」的流程，等於讓保護各自演化然後分岔。
+
+### 順序不可調換
+
+**`rename` 必須在 `fresh` 之前。** `_fresh_git_init` 會用 `.cxroot` 的
+`CX_REPO_BACKEND` / `CX_REPO_FRONTEND` 重新產生 `.gitmodules`；反過來做的話，
+`.gitmodules` 會帶著範本的舊名字被寫進新專案的**第一個 commit**。
+
+實測（2026-09-05，`cx init shop --org my-org`）：
+
+```
+CX_PROJECT_NAME=shop ・ CX_GH_ORG=my-org ・ CX_REPO_BACKEND=shop-backend
+.gitmodules → url = ../shop-backend.git    ← 新名字，證明順序是對的
+主庫 commit 數：1（全新歷史）
+```
+
+### 確認閘門與 `cx fresh` 的不一樣
+
+`cx fresh` 要你打 `DESTROY <目前的專案名>`。在 init 的情境裡那個名字還是**範本的**
+名字 —— 讓人打 `DESTROY pm` 而他其實想建立 `shop`，是在問錯的問題。
+所以 init 要求的是 `INIT <新名字>`（`re-init` 則是 `RE-INIT <目前的名字>`），
+並且額外列出 fresh 的清單裡沒有的損失：`.env` 的密碼、
+`ansible/inventory/hosts.yml`、以及仍叫舊名字的容器與 volume。
+
+### 骨架產生之後會自動裝回「範本自己的東西」
+
+`composer create-project` 與 `nuxi init` 產生的是**框架的**骨架，
+裡面沒有本專案加上去的保護。所以重建的最後一步會跑 `bin/lib/scaffold_patch.py`，
+把這兩組裝回去：
+
+| 裝回什麼 | 少了會怎樣 |
+|---|---|
+| `tests/bootstrap.php`、`tests/DatabaseSafetyGuard.php`、`TestCase.php` 的 `createApplication()` 覆寫、`phpunit.xml` 的 `bootstrap=` | 測試資料庫的 hard guard 整組消失 |
+| `eslint.config.mjs`、兩個 devDependency、`nuxt.config` 的 `modules` | 前端沒有 ESLint 基線 |
+
+> 這一步是 2026-09-05 補的：在它之前，`cx init shop` 產出的專案跑
+> `cx verify cli` 有 **9 個 FAIL**，其中 6 個就是上面這兩組。
+> `GRD-wire` 的說明裡早就寫過同一件事會發生 —— 只是當時說的是 carryover，
+> 實際上 scaffold 更嚴重（連檔案都不存在）。
+>
+> 每個動作都是冪等的：連跑兩次第二次會說「已經是最新狀態」。
+
+---
+
+## `cx deploy hosts` — Ansible 主機清單
+
+```bash
+cx deploy hosts init                                   # 建立空的 hosts.yml
+cx deploy hosts add web-1 --ip 203.0.113.11 --user ubuntu
+cx deploy hosts add web-2 --ip 203.0.113.12 --user ubuntu   # 第二台預設不是 db_primary
+cx deploy hosts show
+cx deploy hosts check --ansible                        # 結構 + A15 + 讓 ansible 自己剖析
+cx deploy hosts rm web-2
+cx deploy hosts edit                                   # 用編輯器直接開（註解會保留）
+```
+
+`ansible/inventory/hosts.yml` 是 `cx deploy` 每一個動詞都需要、卻是**唯一沒有
+工具幫忙產生**的檔案。原本從選單走到部署那一步會撞牆，訊息只說「缺少
+hosts.yml」，然後叫人離開 cx 自己 `cp` 範例檔。
+
+### 群組模型（來源：`ansible/site.yml` 的 roles 區塊）
+
+| 群組 | 決定什麼 |
+|---|---|
+| `pm_servers` | `site.yml` 的作用對象。所有主機都要在裡面（`common` / `hardening`） |
+| `web` | php-fpm / nginx / node+PM2 / `deploy_backend` / `deploy_frontend` / `healthcheck` |
+| `db_primary` | MySQL，而且**由它執行 `artisan migrate`**。剛好一台，且必須也在 `web` 裡 |
+
+`check` 會擋下三種真的會壞的狀況：`db_primary` 是空的、`db_primary` 超過一台、
+`db_primary` 有成員不在 `web`（A15 —— migration 掛在 `web` 的 gate 上，
+不在 `web` 就一次都不會跑，而 `site.yml` 的 preflight 也會擋）。
+
+### ⚠ 哪些東西**不能**拆到不同主機
+
+nginx、前端、後端目前**必須在同一台**。這不是設定問題，是架構事實：
+
+* `php_fpm_socket` 是 **unix socket**（`ansible/roles/php/templates/pool.conf.j2`），
+  nginx 只連得到同一台的 PHP
+* 前端 PM2 綁 `127.0.0.1:3000`（`deploy_frontend/defaults/main.yml`）
+
+要真的拆開，得把 php-fpm 改成 TCP、PM2 綁到內網位址、nginx 的 upstream 指到
+遠端主機，並處理三者之間的網路與授權 —— 那是架構變更，不是這個工具的範圍。
+
+**可以**拆的是資料庫：多台 `web` + 其中一台兼 `db_primary`。
+那個拓撲要另外處理 `mysql_bind_address`、`db_host`、`mysql_app_user_hosts`
+與 `deploy_serial`，`hosts.yml.example` 的檔尾有完整寫法，`check` 也會提醒。
+
+> `add` / `rm` 會**重新產生**整個檔案，所以手寫的註解會消失（結構與值會保留）。
+> 要手寫請用 `cx deploy hosts edit`，那條路徑不經過產生器。
 
 ---
 

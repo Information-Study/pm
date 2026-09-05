@@ -48,7 +48,7 @@ cx test all            # 後端 PHPUnit + 前端型別檢查
 | MySQL | 127.0.0.1:3306 | 127.0.0.1:13306 | **不發布** | `D13`、`D7` |
 | phpMyAdmin | 8891 | **18891** | **無** | `check_prod_closed` |
 | ModSecurity WAF | — | 18081 | — | `waf-*` |
-| xdebug | 有（`debug`） | 有（`develop`） | **無**（build 斷言） | `D12`、`rt-*` |
+| xdebug | 有（`debug`） | 裝了但預設 `off`（`docker/env/test.env` 的 `XDEBUG_MODE=off`；`cx test coverage` 會臨時打開） | **無**（build 斷言） | `D12`、`rt-*` |
 | `display_errors` | On | **Off** | **Off** | `zz-mode-*.ini` |
 | `APP_DEBUG` | true | false | false | `docker/env/*.env` |
 | 原始碼掛載 | bind mount | 烘進映像 | 烘進映像 | `D14` |

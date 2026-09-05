@@ -29,7 +29,7 @@ readonly _RENAME_RE='^[a-z][a-z0-9_-]{1,30}$'
 
 _rename_usage() {
     cat >&2 <<EOF
-用法：cx rename <新名稱>
+用法：cx rename <新名稱> [--org <GitHub 組織>]
 
   把整個範本從目前的專案名改成 <新名稱>。會列出所有變更點並要求確認。
 
@@ -69,7 +69,20 @@ cmd_rename_main() {
         '')        _rename_usage; return "$EX_USAGE" ;;
     esac
     shift
-    (( $# == 0 )) || { cx_error "多餘的參數：$*"; _rename_usage; return "$EX_USAGE"; }
+    # --org：CX_GH_ORG 是**唯一**一個改名時一定要換、而 rename 原本不碰的欄位。
+    # 放在這裡而不是讓 cx init 自己 sed .cxroot，是為了讓 .cxroot 只有一個寫入者。
+    local org=''
+    while (( $# )); do
+        case $1 in
+            --org) [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--org 需要值"
+                   org=$2; shift 2 ;;
+            *) cx_error "多餘的參數：$1"; _rename_usage; return "$EX_USAGE" ;;
+        esac
+    done
+    if [[ -n $org ]]; then
+        [[ $org =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] \
+            || cx_die "$EX_USAGE" "GitHub 組織名不合法：$org"
+    fi
 
     local old
     old=$(cx_project)
@@ -121,6 +134,14 @@ cmd_rename_main() {
     if (( ${#role_files[@]} )); then
         printf '  %-46s %s\n' "ansible/roles/*、site.yml 的 play 名稱" "${#role_files[@]} 個檔" >&2
         targets+=(--roles)
+    fi
+
+    if [[ -n $org ]]; then
+        local cur_org=${CX_GH_ORG:-}
+        if [[ $cur_org != "$org" ]]; then
+            printf '  %-46s %s\n' ".cxroot 的 CX_GH_ORG" "$cur_org → $org" >&2
+            targets+=(--org)
+        fi
     fi
 
     (( ${#targets[@]} )) || { cx_warn "沒有任何檔案需要變更"; return "$EX_OK"; }
@@ -176,6 +197,8 @@ cmd_rename_main() {
                 cx_run sed -i -e "s|^  hosts: $old_grp\$|  hosts: $new_grp|" "$CX_ROOT/$f" ;;
             bin/cmd/deploy.sh)
                 cx_run sed -i -e "s|\\b$old_grp\\b|$new_grp|g" "$CX_ROOT/$f" ;;
+            --org)
+                cx_run sed -i -e "s|^CX_GH_ORG=.*$|CX_GH_ORG=$org|" "$CX_ROOT/.cxroot" ;;
             --roles)
                 local rf
                 for rf in "${role_files[@]}"; do

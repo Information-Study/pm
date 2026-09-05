@@ -126,10 +126,21 @@ nginx_real_ip_header: "X-Forwarded-For"
 nginx_x_frame_options: "SAMEORIGIN"
 nginx_referrer_policy: "strict-origin-when-cross-origin"
 nginx_coop: "same-origin"
+# COEP/CORP：Docker 側一直有，原生側連變數都沒有。
+nginx_coep: "credentialless"
+nginx_corp: "same-origin"
 nginx_permissions_policy: "geolocation=(), microphone=(), camera=(), payment=(), usb=()"
 # CSP 預設不開：Nuxt 的 hydration payload 與 Filament/Alpine 都有 inline script，
 # 隨手加一條 default-src 'self' 會直接把後台弄壞。要開請先在 staging 用 Report-Only。
-nginx_csp: ""
+# 與 Docker 的 docker/edge/conf.d/pm-security-headers.inc 逐字相同。
+# 原本是空字串 —— 也就是 Docker 有完整的 CSP、正式機一條都沒有，
+# 而那正好是反過來的（正式機才是真的會被打的那一邊）。
+# 要分階段導入可以用 nginx_csp_report_only（模板已支援 Report-Only）。
+nginx_csp: >-
+  default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval';
+  style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;
+  font-src 'self' data:; connect-src 'self' ws: wss:;
+  frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'
 # HSTS 只有在 nginx_tls_is_real 為真（拿到 Let's Encrypt 憑證）時才會輸出。
 # 用 snakeoil 期間送 HSTS 會把使用者釘死在一張不受信任的憑證上。
 nginx_hsts_enabled: true

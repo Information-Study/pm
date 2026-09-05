@@ -7,13 +7,27 @@
 #   在確認閘門通過之前，不刪除任何東西。
 
 # ── 保留：不動 ────────────────────────────────────────────────
+#
+# ⚠ docker-compose.yml 與 .dockerignore 在 2026-09-05 之前是列在 FRESH_MIGRATE
+#   裡的，而 _fresh_delete 會把 FRESH_DELETE **加上** FRESH_MIGRATE 一起刪掉。
+#   當時的註解寫「Phase 2 會重寫根目錄那兩份」—— 那句話在遷移進行中是對的，
+#   遷移完成之後就過期了：**根目錄的 docker-compose.yml 現在就是 Phase 2 的那一份**。
+#   後果是 cx fresh 跑完之後 docker/legacy/ 有一份 .orig 副本，而根目錄什麼都沒有，
+#   於是每一個 compose 動詞都死在「缺少 base compose」——
+#   一個「重建成可以直接跑的新專案」的動詞，交出來的樹是不能跑的。
+#   2026-09-05 實測確認（cx fresh --phase delete 之後 cx dev config → EX_PRECOND）。
 FRESH_PRESERVE=(
     bin cx .cxroot templates docs claude.md
     .vscode reports ansible .env .env.example .gitignore
     docker sonar-project.properties .semgrepignore
+    docker-compose.yml .dockerignore
 )
 # ── 遷移：搬到 docker/ 之後才刪除原處（使用者要求保留 docker 自定義設定）──
-FRESH_MIGRATE=( php nuxt docker-compose.yml .dockerignore )
+#
+# 只剩下真正屬於**舊版面**的那兩個目錄。它們在現在的樹上早就不存在了
+# （遷移在 Phase 2 就做完），保留這一段是為了讓還停在舊版面的 checkout
+# 也能一次升上來 —— 不存在時整段是 no-op。
+FRESH_MIGRATE=( php nuxt )
 # ── carryover 要疊回去的「應用層」目錄 ────────────────────────
 # 一行一個，不用空白分隔的字串 —— 後者只能靠字詞分割展開，目錄名含空白就裂開。
 # 骨架檔（config/、bootstrap/、package.json、nuxt.config）刻意**不在**這裡：
@@ -241,14 +255,9 @@ _fresh_migrate() {
         done
     done
 
-    # 舊 compose 與 dockerignore 留一份參考（Phase 2 會重寫根目錄那兩份）
-    local src dst
-    for src in docker-compose.yml:docker-compose.yml.orig .dockerignore:dockerignore.orig; do
-        dst=${src#*:}; src=${src%%:*}
-        [[ -f $CX_ROOT/$src ]] || continue
-        _fresh_step "$src → docker/legacy/" -- \
-            cp -a "$CX_ROOT/$src" "$CX_ROOT/docker/legacy/$dst" || return $?
-    done
+    # 這裡曾經把 docker-compose.yml 與 .dockerignore 複製到 docker/legacy/ ——
+    # 那是為了在「刪掉原處」之前留一份參考。現在那兩個檔改成保留（見
+    # FRESH_PRESERVE 的說明），所以複製一份 .orig 只會讓人以為根目錄那份會被換掉。
 
     # 舊腳本也留一份，方便對照
     for f in init.sh refresh.sh README.md; do
@@ -263,8 +272,18 @@ _fresh_migrate() {
 # ---------------------------------------------------------------------------
 # 確認閘門
 # ---------------------------------------------------------------------------
+# ⚠ 閘門必須知道 mode。
+#
+#   scaffold 與 carryover 的差別是**你自己寫的程式碼會不會回來**，
+#   而那是這兩個模式之間唯一真正重要的差異。原本的閘門完全沒提到模式 ——
+#   於是 `cx fresh --mode scaffold` 會用一段跟 carryover 一模一樣的文字，
+#   問你要不要刪掉 backend/ 與 frontend/，然後**不告訴你它不會疊回來**。
+#
+#   claude.md 早就寫著 scaffold「需額外輸入 NO CARRYOVER」，但那個閘門
+#   從來沒有存在過（2026-09-05 稽核發現）。與其把文件改成符合現況，
+#   不如把現況改成符合文件 —— 因為文件描述的才是對的行為。
 _fresh_gate() {
-    local A=$1
+    local A=$1 mode=${2:-carryover}
     local body msg_db
 
     msg_db=$(sed -n 's/^db_dump=//p' "$A/MANIFEST.txt" | head -1)
@@ -292,6 +311,14 @@ _fresh_gate() {
   $A
 
 保留不動：bin/ cx .cxroot templates/ docs/ claude.md docker/ .vscode/
+          docker-compose.yml .dockerignore ansible/ .env
+
+重建模式：$mode
+$( [[ $mode == scaffold ]] \
+     && printf '%s' "  ⚠ scaffold —— 只產生全新骨架。你自己寫的程式碼（app/ routes/
+     tests/ pages/ components/ …）**不會**被疊回去，只會留在上面那份封存裡。" \
+     || printf '%s' "  carryover —— 產生全新骨架之後，會把 app/ routes/ tests/ 等
+     從封存疊回去。" )
 
 此操作不可逆。確定要繼續嗎？
 TXT
@@ -300,6 +327,12 @@ TXT
     cx_ask_typed "最終確認" \
         "請輸入下列字串以確認刪除：\n\n    DESTROY $(cx_project)\n" \
         "DESTROY $(cx_project)" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+    # scaffold 是唯一會**默默丟掉使用者程式碼**的模式，所以多要一個 token。
+    if [[ $mode == scaffold ]]; then
+        cx_ask_typed "scaffold 確認" \
+            "scaffold 不會把你的程式碼疊回去。\n\n請輸入：\n\n    NO CARRYOVER\n" \
+            "NO CARRYOVER" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+    fi
     return 0
 }
 
@@ -554,6 +587,19 @@ _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
     fi
     _fresh_rebuild_backend  || return 1
     _fresh_rebuild_frontend || return 1
+
+    # ── 把「範本自己擁有的東西」裝回去 ──────────────────────────────────────
+    #
+    # composer create-project 與 nuxi init 產生的是**框架的**骨架，
+    # 裡面當然沒有本專案加上去的保護。少了這一步，cx init 交出來的新專案會：
+    #   * 沒有測試資料庫的 hard guard（phpunit.xml 的 bootstrap= 也會被寫回
+    #     vendor/autoload.php —— 檔案在不在都無所謂了，因為沒有人呼叫它）
+    #   * 沒有 ESLint 基線
+    # 2026-09-05 實測：修這一段之前，cx init shop 產出的專案 cx verify cli
+    # 有 9 個 FAIL，其中 6 個就是這兩組。
+    cx_step "裝回範本自有的設定（測試防護 / ESLint）"
+    cx_run python3 "$CX_ROOT/bin/lib/scaffold_patch.py" --root "$CX_ROOT" \
+        || { cx_error "範本設定裝回失敗"; return 1; }
     [[ $mode == carryover ]] && { _fresh_carryover "$A" || return 1; }
     return 0
 }
@@ -595,6 +641,22 @@ _fresh_verify_rebuild() {           # _fresh_verify_rebuild <mode> <archive>
         grep -q "\"$pkg\"" "$CX_ROOT/backend/composer.json" 2>/dev/null \
             && cx_ok "composer.json 含 $pkg" || { cx_error "composer.json 缺少 $pkg"; fail=1; }
     done
+
+    # ── 根目錄的基礎設施 ────────────────────────────────────────────────
+    # 少了這一段，「重建完成」可以在**沒有 docker-compose.yml** 的情況下宣告成功，
+    # 而使用者要到下一次 cx dev up 才發現整個 compose 都不能用。
+    # 這正是 2026-09-05 抓到的那個缺陷會走的路徑。
+    for f in docker-compose.yml .dockerignore docker/compose/dev.yml \
+             docker/compose/test.yml docker/compose/prod.yml; do
+        [[ -f $CX_ROOT/$f ]] && cx_ok "存在：$f" || { cx_error "缺少：$f"; fail=1; }
+    done
+    # 而且要是**現行**那一份（引用 docker/compose/），不是舊版面留下來的
+    if grep -q 'docker/compose/' "$CX_ROOT/docker-compose.yml" 2>/dev/null; then
+        cx_ok "docker-compose.yml 是現行版面（引用 docker/compose/）"
+    else
+        cx_error "docker-compose.yml 不是現行版面 —— 沒有引用 docker/compose/"
+        fail=1
+    fi
 
     # ── 不該有的殘留 ────────────────────────────────────────────────────
     # 前一次半途失敗留下的 .git 會讓 git submodule add 報
@@ -947,7 +1009,7 @@ cmd_fresh_main() {
         # .dockerignore / README.md 複製成 docker/legacy/*.orig —— 那是三個
         # 進版控的檔案。於是使用者在確認畫面按取消，畫面印「未變更任何檔案」，
         # git status 卻多出三個 M。訊息說謊比動到檔案更糟。
-        _fresh_gate "$A" || { _fresh_state_clear; return "$EX_ABORT"; }
+        _fresh_gate "$A" "$mode" || { _fresh_state_clear; return "$EX_ABORT"; }
     else
         # resume：沿用上一次的封存
         A=${from:-$prev_arc}
