@@ -47,7 +47,7 @@ _cx_completion() {
         # --mode 在 fresh 底下的意義完全不同（備份策略，不是 compose 模式）
         --mode)
             if [[ $verb == fresh ]]; then
-                COMPREPLY=($(compgen -W 'backup-only carryover scaffold' -- "$cur"))
+                COMPREPLY=($(compgen -W 'backup-only git-only carryover scaffold' -- "$cur"))
             else
                 COMPREPLY=($(compgen -W 'dev test prod' -- "$cur"))
             fi

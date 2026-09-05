@@ -146,6 +146,8 @@ cmd_help_main() {
     fresh --phase preflight   只做前置檢查，完全不動任何東西
     fresh --resume-from rebuild --from <封存>  重建失敗後接續（不重跑破壞性流程）
     fresh --mode backup-only  只封存
+    fresh --mode git-only     只抹掉 git 紀錄並重新 init 三個 repo；
+                              **程式碼原封不動**，不重建骨架
     fresh --mode scaffold     全新骨架
     fresh --mode carryover    全新骨架 + 把你的程式碼疊回去（預設）
     fresh --rollback          從封存還原（預設用 LATEST）

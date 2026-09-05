@@ -1005,7 +1005,7 @@ cx git remote-set git@github.com:me/shop.git   # 指到已經存在的
 ```
 cx fresh [--phase preflight|backup|migrate|delete|rebuild|verify|git-init|all]
          [--resume-from rebuild|verify|git-init]
-         [--mode backup-only|carryover(預設)|scaffold] [--rollback] [--from <封存目錄>]
+         [--mode backup-only|git-only|carryover(預設)|scaffold] [--rollback] [--from <封存目錄>]
 ```
 
 流程：**preflight → 備份 → 驗證封存 → 確認閘門 → 遷移 → 刪除 → 重建 → 驗證重建 → 三 Git 初始化**。
@@ -1030,6 +1030,26 @@ cx fresh [--phase preflight|backup|migrate|delete|rebuild|verify|git-init|all]
 | 模式 | 做什麼 |
 |---|---|
 | `backup-only` | 只封存，不刪也不建 |
+| `git-only` | 只抹掉 git 紀錄（`.git` / `.gitmodules` / 兩個子模組的 `.git`）並重新 init 三個 repo。**程式碼原封不動**，不重建骨架 |
+
+#### `--mode git-only` —— 「這份程式碼要當新專案的起點，但我不要它的歷史」
+
+跑的是同一條 phase machine，只是 `delete` 那一格換一份清單、並跳過
+`migrate` / `rebuild` / `verify` 三格：
+
+```
+preflight → 封存 → 驗證封存 → 閘門 → 刪三個 .git 與 .gitmodules → 三 Git 初始化
+```
+
+封存、驗證封存、確認閘門、`--rollback` 四道保護**完全共用** ——
+這正是它是一個 mode 而不是一個新動詞的理由。再寫一份「其實差不多」的流程，
+等於讓那四道各自演化然後分岔（`bin/cmd/init.sh` 開頭記過同一個教訓）。
+
+**會被重新產生的**（那是 git 初始化的一部分，不是重建）：
+`.gitmodules`、`backend/.gitignore`、`frontend/.gitignore`
+（兩個子模組都是 PUBLIC repo，忽略規則不能少）。閘門的清單裡有寫。
+
+**不會**自動建立遠端 —— 要的話跑 `cx git remote-init` 或 `cx git remote-set`。
 | `scaffold` | 全新骨架：`composer create-project laravel/laravel` + `filament/filament:^5.0` + `larastan:^3.0`，以及 `nuxi init --template minimal` |
 | `carryover` | 全新骨架，再從封存的 src tar 把**應用層**目錄疊回去（預設） |
 

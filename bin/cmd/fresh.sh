@@ -45,6 +45,18 @@ _fresh_keep_dirs() {                # _fresh_keep_dirs <backend|frontend>
 # ── 刪除：確認後移除 ──────────────────────────────────────────
 FRESH_DELETE=( .git .gitmodules backend frontend init.sh refresh.sh README.md )
 
+# ── git-only：只抹 git 紀錄，程式碼原封不動 ──────────────────────────────
+#
+# 使用者要的「crash」有兩種語意，而它們的差別很大：
+#   * 完整重建（fresh 的 scaffold / carryover）—— 連前後端一起重生成骨架
+#   * 只抹 git —— 「這份程式碼要變成一個新專案的起點，但我不要它的歷史」
+#
+# 後者刻意**不新增動詞**。init.sh:4-12 記過這個教訓：再寫一份「其實差不多」
+# 的流程，等於讓封存、驗證封存、確認閘門、rollback 那四道保護各自演化然後分岔。
+# 所以它是 fresh 的一個 mode，走同一條 phase machine，只是 delete 那一格
+# 換一份清單、並跳過 migrate / rebuild / verify 三格。
+FRESH_DELETE_GIT_ONLY=( .git .gitmodules )
+
 # ── 本機暫存：分類為「已知」，但**不屬於範本** ────────────────────
 #
 # .gitignore 已經忽略 /.cx-*.sh|py|txt，所以它們不會進版控。但 cx fresh 是
@@ -83,8 +95,10 @@ _fresh_usage() {
           重建失敗之後接續用，不必重跑破壞性流程。
           需要知道用哪一份封存：給 --from <目錄>，或讓 .cx/fresh.state 還在
 
-  --mode  backup-only | carryover | scaffold    （預設 carryover）
+  --mode  backup-only | git-only | carryover | scaffold    （預設 carryover）
           backup-only  只封存，不刪也不建
+          git-only     只抹掉 git 紀錄（.git / .gitmodules / 子模組的 .git）
+                       並重新初始化三個 repo。**程式碼原封不動**，不重建骨架
           scaffold     全新骨架（Nuxt 4 + Laravel 13 + Filament v5 + Larastan）
           carryover    全新骨架，再把你自己的程式碼從封存疊回去
                        （骨架檔用新版的 —— 那正是重建的目的）
@@ -352,6 +366,44 @@ _fresh_gate() {
         *)                      msg_db="✔ $msg_db" ;;
     esac
 
+    # git-only 刪的東西與其他模式完全不同，所以閘門文字也必須完全不同。
+    # ⚠ 這不是「順便講清楚」——「閘門說謊比動到檔案更糟」是本檔既有的原則
+    #   （見 _fresh_gate 排在 _fresh_migrate 之前的理由）。一份說「即將刪除
+    #   backend/ 與 frontend/」的確認畫面，配上一個其實不會刪它們的操作，
+    #   會讓下一次真的要刪的時候沒有人相信那份清單。
+    if [[ $mode == git-only ]]; then
+        body=$(cat <<TXT
+即將永久刪除下列項目：
+
+  .git/            主庫 git 歷史（$(sed -n 's/^main_commits=//p' "$A/MANIFEST.txt" | head -1) commits）
+  .gitmodules      子模組設定
+  backend/.git     子模組指標檔（$(sed -n 's/^backend_commits=//p' "$A/MANIFEST.txt" | head -1) commits 的歷史隨主庫 .git/modules/ 一起消失）
+  frontend/.git    子模組指標檔（$(sed -n 's/^frontend_commits=//p' "$A/MANIFEST.txt" | head -1) commits）
+
+**你的程式碼原封不動。** backend/ 與 frontend/ 底下的程式碼完全不會被碰，
+也不會重建骨架 —— 這個模式只做「抹掉歷史，重新開始記錄」。
+
+會被**重新產生**的（那是 git 初始化的一部分，不是重建）：
+  .gitmodules              submodule add 產生
+  backend/.gitignore       從 templates/gitignore/ 複製
+  frontend/.gitignore      （兩個子模組都是 PUBLIC repo，忽略規則不能少）
+
+資料庫備份狀態：$msg_db
+
+封存位置（在專案外，刪除不會波及）：
+  $A
+
+之後會重新 git init 三個 repo，並建立 $(_git_main_branch 2>/dev/null || echo main) 與 $(_git_dev_branch 2>/dev/null || echo dev) 兩條線。
+遠端**不會**自動建立 —— 要的話跑 cx git remote-init 或 cx git remote-set。
+
+此操作不可逆（歷史撤不回來，但程式碼還在）。確定要繼續嗎？
+TXT
+)
+        cx_confirm --danger "cx fresh --mode git-only — 抹除 git 紀錄" "$body"             || { cx_error "使用者取消，未變更任何檔案"; return 1; }
+        cx_ask_typed "最終確認"             "請輸入下列字串以確認抹除 git 紀錄：\n\n    DESTROY $(cx_project)\n"             "DESTROY $(cx_project)" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+        return 0
+    fi
+
     body=$(cat <<TXT
 即將永久刪除下列項目：
 
@@ -396,9 +448,33 @@ TXT
 # ---------------------------------------------------------------------------
 # 刪除
 # ---------------------------------------------------------------------------
-_fresh_delete() {
+_fresh_delete() {                   # _fresh_delete [模式]
+    local mode=${1:-carryover}
     cx_step "刪除"
     local t
+    if [[ $mode == git-only ]]; then
+        for t in "${FRESH_DELETE_GIT_ONLY[@]}"; do
+            _fresh_nuke "$CX_ROOT/$t" || return 1
+        done
+        # 子模組的真實物件庫在 .git/modules/ 底下，隨主庫的 .git 一起消失。
+        # 但 backend/.git 與 frontend/.git 是**指標檔**，指向剛被刪掉的地方 ——
+        # 留著的話 git submodule add 會說 "already exists in the index"
+        # 或直接把一個壞掉的指標加進新的 repo。
+        local c
+        for c in backend frontend; do
+            [[ -e $CX_ROOT/$c/.git ]] && { _fresh_nuke "$CX_ROOT/$c/.git" || return 1; }
+        done
+        if (( CX_DRY_RUN )); then
+            cx_dim "  [dry-run] 略過刪除後的斷言（實際上什麼都沒刪）"
+        else
+            [[ ! -e $CX_ROOT/.gitmodules ]] || { cx_error ".gitmodules 仍存在"; return 1; }
+            [[ ! -e $CX_ROOT/.git ]]        || { cx_error ".git 仍存在"; return 1; }
+            [[ ! -e $CX_ROOT/backend/.git ]]  || { cx_error "backend/.git 仍存在"; return 1; }
+            [[ ! -e $CX_ROOT/frontend/.git ]] || { cx_error "frontend/.git 仍存在"; return 1; }
+        fi
+        cx_ok "斷言通過：三個 .git 與 .gitmodules 皆已移除（程式碼原封不動）"
+        return 0
+    fi
     for t in "${FRESH_DELETE[@]}" "${FRESH_MIGRATE[@]}"; do
         # docker-compose.yml 與 .dockerignore 已複製到 docker/legacy/，原處刪除
         _fresh_nuke "$CX_ROOT/$t" || return 1
@@ -1014,8 +1090,8 @@ cmd_fresh_main() {
     (( floor <= ceiling )) || cx_die "$EX_USAGE" \
         "--resume-from $resume 比 --phase $phase 還晚，沒有東西可以跑"
     case $mode in
-        backup-only|carryover|scaffold) : ;;
-        *) cx_die "$EX_USAGE" "未知的 mode：$mode（backup-only|carryover|scaffold）" ;;
+        backup-only|git-only|carryover|scaffold) : ;;
+        *) cx_die "$EX_USAGE" "未知的 mode：$mode（backup-only|git-only|carryover|scaffold）" ;;
     esac
 
     # archive.sh 要在這裡就載入，不能等到下面 —— 底下 --rollback 會呼叫
@@ -1107,7 +1183,10 @@ cmd_fresh_main() {
     fi
 
     # ── 2 migrate ───────────────────────────────────────────────────────
-    if (( floor <= 2 && ceiling >= 2 )); then
+    # git-only 不碰任何非 git 的檔案，所以遷移舊版面的 docker 設定與它無關。
+    if [[ $mode == git-only ]]; then
+        cx_dim "  git-only：略過 migrate（不動任何非 git 的檔案）"
+    elif (( floor <= 2 && ceiling >= 2 )); then
         # migrate 的 rc 一定要檢查。閘門已經過了，這裡是不可逆點的另一邊 ——
         # 遷移失敗卻繼續 _fresh_delete，等於把 docker 自定義設定連同原處
         # 一起刪掉，而 docker/legacy/ 底下沒有可用的副本。
@@ -1127,12 +1206,16 @@ cmd_fresh_main() {
         # delete 這一格因此讀作「已進入」而非「已完成」—— 它是唯一不可逆的階段，
         # 而麵包屑存在的意義就是撐過「死在階段中間」。
         _fresh_state_write delete "$A"
-        _fresh_delete || { _fresh_recovery_note "$A" "刪除失敗"; return "$EX_FAIL"; }
+        _fresh_delete "$mode" || { _fresh_recovery_note "$A" "刪除失敗"; return "$EX_FAIL"; }
     fi
     (( ceiling >= 4 )) || { cx_ok "delete 階段完成"; cx_info "封存：$A"; return 0; }
 
     # ── 4 rebuild ───────────────────────────────────────────────────────
-    if (( floor <= 4 )); then
+    # git-only 沒有重建骨架，所以也沒有東西要 rebuild 或 verify ——
+    # 那兩格檢查的全部內容都是「新產生的骨架完不完整」。
+    if [[ $mode == git-only ]]; then
+        cx_dim "  git-only：略過 rebuild 與 verify（沒有產生新骨架）"
+    elif (( floor <= 4 )); then
         if ! _fresh_rebuild "$mode" "$A"; then
             _fresh_recovery_note "$A" "重建失敗（mode=$mode）"
             _fresh_offer_rollback "$A" "重建失敗"
@@ -1143,7 +1226,9 @@ cmd_fresh_main() {
     (( ceiling >= 5 )) || { cx_ok "rebuild 階段完成"; cx_info "封存：$A"; return 0; }
 
     # ── 5 verify（重建之後、git-init 之前）───────────────────────────────
-    if (( floor <= 5 )); then
+    if [[ $mode == git-only ]]; then
+        :
+    elif (( floor <= 5 )); then
         if ! _fresh_verify_rebuild "$mode" "$A"; then
             _fresh_recovery_note "$A" "重建結果驗證失敗"
             cx_error "重建的結果不完整 —— **不會**繼續 git-init"

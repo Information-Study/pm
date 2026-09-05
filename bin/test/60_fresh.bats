@@ -77,3 +77,79 @@ setup() {
     [ -f "$CX_TEST_ROOT/backend/artisan" ]
     [ -f "$CX_TEST_ROOT/frontend/nuxt.config.ts" ]
 }
+
+# ── git-only：只抹 git 紀錄，程式碼原封不動 ────────────────────────────────
+#
+# 這個模式的全部價值就在「原封不動」四個字。所以第一條案例比對的是
+# **除了 git 以外的整棵樹**的指紋 —— 少了它，一個把 backend/ 也刪掉的
+# 實作照樣會通過「有沒有重新 init」那種檢查。
+
+@test "git-only 不動任何非 git 基礎設施的檔案（使用者的程式碼原封不動）" {
+    # 先放一些「使用者的程式碼」進去
+    mkdir -p "$CX_TEST_ROOT/backend/app" "$CX_TEST_ROOT/frontend/pages"
+    echo 'my business logic' > "$CX_TEST_ROOT/backend/app/Service.php"
+    echo 'my page'           > "$CX_TEST_ROOT/frontend/pages/index.vue"
+    echo 'my infra'          > "$CX_TEST_ROOT/docker-compose.yml"
+    local g=(-c user.email=b@b -c user.name=b)
+    git -C "$CX_TEST_ROOT" "${g[@]}" add -A 2>/dev/null || true
+    git -C "$CX_TEST_ROOT" "${g[@]}" commit -q -m 'user code' 2>/dev/null || true
+
+    # ⚠ 排除的三類都是 git 基礎設施，重新 init 本來就會重建它們：
+    #     .git/            物件庫
+    #     .gitmodules      submodule add 重新產生
+    #     */.gitignore     從 templates/gitignore/ 複製（子模組是 PUBLIC repo）
+    #   還有 .cx/ —— 那是 cx 自己的執行期狀態（鎖檔、fresh 麵包屑）。
+    #   把它們算進「不動」的定義，測到的就不是這個模式的承諾了。
+    local snap
+    snap() {
+        (cd "$CX_TEST_ROOT" && find . \
+            -path ./.git -prune -o -path './*/.git' -prune -o -path ./.cx -prune -o \
+            -name .gitignore -prune -o -name .gitmodules -prune -o \
+            -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null)
+    }
+    local before; before=$(snap)
+
+    run cx_bin --yes fresh --mode git-only
+    assert_rc 0
+
+    local after; after=$(snap)
+    if [ "$before" != "$after" ]; then
+        _fail_with "git-only 動到了非 git 基礎設施的檔案：
+$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true)"
+    fi
+    [ "$(cat "$CX_TEST_ROOT/backend/app/Service.php")" = 'my business logic' ] \
+        || _fail_with "使用者的後端程式碼被動過"
+    [ "$(cat "$CX_TEST_ROOT/frontend/pages/index.vue")" = 'my page' ] \
+        || _fail_with "使用者的前端程式碼被動過"
+    [ "$(cat "$CX_TEST_ROOT/docker-compose.yml")" = 'my infra' ] \
+        || _fail_with "基礎設施檔被重建了（那是 scaffold 才該做的事）"
+}
+
+@test "git-only 之後三個 repo 都是全新的（歷史只有一個 commit）" {
+    run cx_bin --yes fresh --mode git-only
+    assert_rc 0
+    local r n
+    for r in "" /backend /frontend; do
+        [ -e "$CX_TEST_ROOT$r/.git" ] || _fail_with "$r 沒有重新 init"
+        n=$(git -C "$CX_TEST_ROOT$r" rev-list --count HEAD 2>/dev/null || echo 0)
+        [ "$n" = "1" ] || _fail_with "$r 的歷史有 $n 個 commit，不是全新的"
+    done
+}
+
+@test "git-only 之後兩條線都在（flow-init 的拓撲）" {
+    run cx_bin --yes fresh --mode git-only
+    assert_rc 0
+    local r
+    for r in "" /backend /frontend; do
+        git -C "$CX_TEST_ROOT$r" show-ref --verify --quiet refs/heads/main \
+            || _fail_with "$r 沒有 main"
+        git -C "$CX_TEST_ROOT$r" show-ref --verify --quiet refs/heads/dev \
+            || _fail_with "$r 沒有 dev"
+    done
+}
+
+@test "git-only 的 dry-run 什麼都不動" {
+    local before; before=$(tree_digest)
+    run cx_bin --dry-run --yes fresh --mode git-only
+    [ "$before" = "$(tree_digest)" ] || _fail_with "dry-run 動到了檔案樹"
+}
