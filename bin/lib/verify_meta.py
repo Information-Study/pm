@@ -929,10 +929,14 @@ def check_doc_verify_scopes():
     if not scopes:
         row("SKIP", "DOC-verify-scopes", "help 的 verify 範圍涵蓋實作", "剖析不到 verify.sh 的範圍")
         return
-    # 取「verify」那一段的說明區塊：從 verify 行起，直到下一個頂層動詞行
-    #（兩個空白 + 動詞名）為止。窗口寫死幾行會在說明變長時默默失效。
+    # ⚠ 只能拿「範圍清單」那幾行當比對來源，不能拿整個 verify 說明區塊。
+    #   區塊裡還有散文（例如「刻意不含 runtime / waf / acl」），那些字一樣是子字串，
+    #   於是從清單裡拿掉 acl 之後檢查仍然通過 —— 反向測試當場抓到這件事。
+    #   一條抓不到缺漏的檢查，比沒有檢查更糟：它會讓人以為這件事被守住了。
     hm = re.search(r"^  verify .*?(?=^  [a-z]|\Z)", hs, re.S | re.M)
-    hay = hm.group(0) if hm else hs
+    blk = hm.group(0) if hm else hs
+    lm = re.search(r"範圍[：:]\s*\n(.*?)(?=^\s*不給範圍|^\s*（|\Z)", blk, re.S | re.M)
+    hay = lm.group(1) if lm else blk
     missing = sorted(x for x in scopes if x not in hay)
     if missing:
         row("FAIL", "DOC-verify-scopes", "help 的 verify 範圍涵蓋實作",

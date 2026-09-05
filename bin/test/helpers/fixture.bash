@@ -66,12 +66,26 @@ CXR
     ln -s "$CX_TEST_REAL_ROOT/bin" "$CX_TEST_ROOT/bin"
     ln -s "$CX_TEST_REAL_ROOT/cx"  "$CX_TEST_ROOT/cx"
     # fresh 會找這些
-    mkdir -p "$CX_TEST_ROOT"/{docker/legacy,templates/gitignore,docs,reports,ansible,.vscode}
+    mkdir -p "$CX_TEST_ROOT"/{docker/legacy,docs,reports,ansible,.vscode}
     : > "$CX_TEST_ROOT/claude.md"; : > "$CX_TEST_ROOT/.gitignore"
     : > "$CX_TEST_ROOT/.env"; : > "$CX_TEST_ROOT/.env.example"
     : > "$CX_TEST_ROOT/.semgrepignore"; : > "$CX_TEST_ROOT/sonar-project.properties"
-    : > "$CX_TEST_ROOT/README.md"; : > "$CX_TEST_ROOT/docker-compose.yml"
-    : > "$CX_TEST_ROOT/.dockerignore"
+    : > "$CX_TEST_ROOT/README.md"; : > "$CX_TEST_ROOT/.dockerignore"
+    # ⚠ 下面兩樣是 2026-09-05 補的，因為「重建」那個案例平常會 skip，
+    #   一旦真的用 CX_TEST_NETWORK=1 跑就會失敗 —— 而失敗的是 fixture 不完整，
+    #   不是產品缺陷。skip 讓這件事藏了很久，正好是本專案 SKIP≠PASS 教條在講的。
+    #
+    #   _fresh_verify_rebuild 會斷言根目錄的基礎設施還在，而且 docker-compose.yml
+    #   必須是**現行版面**（引用 docker/compose/）—— 空檔過不了。
+    mkdir -p "$CX_TEST_ROOT/docker/compose"
+    printf 'include:\n  - docker/compose/dev.yml\nservices: {}\n' \
+        > "$CX_TEST_ROOT/docker-compose.yml"
+    local _m
+    for _m in dev test prod; do printf 'services: {}\n' > "$CX_TEST_ROOT/docker/compose/$_m.yml"; done
+    #   templates/ 指到真的那一份：scaffold_patch.py 要從那裡把範本自己的接線
+    #  （Filament 面板、routes/api.php、Sanctum migration、測試防護、ESLint）裝回去。
+    #   自己 mkdir 一個空的等於那一整段不執行，重建後系統是否完整就驗不到。
+    ln -s "$CX_TEST_REAL_ROOT/templates" "$CX_TEST_ROOT/templates"
 
     local c
     for c in . backend frontend; do
