@@ -203,7 +203,9 @@ _tui_git() {
         pull     "三個 repo 一起更新（主庫先、子模組後）" \
         sync     "子模組 checkout 追蹤分支" \
         branch   "分支：列出／建立／切換／刪除" \
-        commit   "提交（子模組先、主庫 gitlink 後）" \
+        feature  "gitflow：從 dev 開 feature／合回 dev" \
+        commit   "提交（可指定單一 repo）" \
+        config   "git 身分與編輯器（三個 repo 一起設）" \
         push     "⚠ 推送（白名單 + 祕密掃描 + 子模組順序）" \
         guard    "push guard：狀態／安裝／移除" \
         scan     "推送前祕密掃描"); do
@@ -212,11 +214,96 @@ _tui_git() {
             guard)  _tui_git_guard ;;
             scan)   _tui_run git scan-secrets ;;
             branch) _tui_git_branch ;;
+            feature) _tui_git_feature ;;
+            config) _tui_git_config ;;
             commit) _tui_git_commit ;;
             push)   cx_confirm "推送" \
                         "會把三個 repo 推到遠端（子模組先、主庫後）。\n\n推送前會先跑祕密掃描與白名單檢查。" \
                         && _tui_run git push ;;
             *)      _tui_run git "$c" ;;
+        esac
+    done
+}
+
+# 主機設定：inventory 是 cx deploy 唯一沒有工具幫忙產生的必要檔案。
+# 選單這一項存在的理由，就是讓「從全新 clone 走到部署」不需要離開 cx。
+_tui_deploy_hosts() {
+    local c
+    while c=$(_tui_menu "主機設定（ansible/inventory/hosts.yml）" "返回" \
+        show  "列出目前的主機與群組" \
+        add   "新增一台主機" \
+        rm    "移除一台主機" \
+        init  "建立空的 hosts.yml" \
+        check "驗證結構與 A15（db_primary 必須剛好一台且在 web 裡）" \
+        edit  "用編輯器直接開（註解會保留）"); do
+        case $c in
+            '<') return 0 ;;
+            add)
+                local name ip user
+                name=$(_tui_ask "新增主機" "inventory 裡的名稱（例：web-1）：") || continue
+                [[ -n $name ]] || continue
+                ip=$(_tui_ask "新增主機" "IP 或 DNS 名稱：") || continue
+                [[ -n $ip ]] || continue
+                user=$(_tui_ask "新增主機" "SSH 帳號（有 sudo；不是 deploy_user）：" "ubuntu") || user=''
+                local -a a=(deploy hosts add "$name" --ip "$ip")
+                [[ -n $user ]] && a+=(--user "$user")
+                _tui_run "${a[@]}" ;;
+            rm)
+                local name
+                name=$(_tui_ask "移除主機" "要移除哪一台？") || continue
+                [[ -n $name ]] || continue
+                _tui_run deploy hosts rm "$name" ;;
+            check) _tui_run deploy hosts check --ansible ;;
+            *)     _tui_run deploy hosts "$c" ;;
+        esac
+    done
+}
+
+# gitflow：feature 一律從 dev 開、合回 dev。
+_tui_git_feature() {
+    local c
+    while c=$(_tui_menu "gitflow — feature" "返回" \
+        list   "列出各 repo 的 feature/*" \
+        start  "從 dev 開一個新的 feature" \
+        finish "把目前的 feature 合回 dev（不推送、不刪分支）"); do
+        case $c in
+            '<') return 0 ;;
+            start)
+                local n; n=$(_tui_ask "新 feature" "名稱（會變成 feature/<名稱>）：") || continue
+                [[ -n $n ]] || continue
+                _tui_run git feature start "$n" ;;
+            finish) _tui_run git feature finish ;;
+            *)      _tui_run git feature "$c" ;;
+        esac
+    done
+}
+
+# git 身分與編輯器。沒有身分的話 commit 會失敗，
+# 而 cx git commit 的前置檢查就是叫人來這裡。
+_tui_git_config() {
+    local c
+    while c=$(_tui_menu "Git 設定" "返回" \
+        show     "目前三個 repo 的 user / editor" \
+        identity "設定 user.name 與 user.email" \
+        editor   "設定 core.editor"); do
+        case $c in
+            '<') return 0 ;;
+            identity)
+                local n e g
+                n=$(_tui_ask "git 身分" "user.name：" "$(git config --global user.name 2>/dev/null)") || continue
+                e=$(_tui_ask "git 身分" "user.email：" "$(git config --global user.email 2>/dev/null)") || continue
+                [[ -n $n && -n $e ]] || continue
+                local -a a=(git config identity --name "$n" --email "$e")
+                cx_confirm "寫進 ~/.gitconfig？" \
+                    "選「是」寫成全域設定（--global）。\n選「否」只寫這三個 repo。" \
+                    && a+=(--global)
+                _tui_run "${a[@]}" ;;
+            editor)
+                local ed
+                ed=$(_tui_ask "git 編輯器" "core.editor（例：code --wait、nano、vim）：") || continue
+                [[ -n $ed ]] || continue
+                _tui_run git config editor "$ed" ;;
+            *) _tui_run git config "$c" ;;
         esac
     done
 }
@@ -319,6 +406,7 @@ _tui_env() {
         acl    "檔案權限（POSIX ACL）" \
         fresh  "⚠ 清理與重建專案" \
         rename "⚠ 把整個範本改成新的專案名" \
+        init   "⚠ 把範本設定成新專案（改名 → 重建 → 接遠端）" \
         status "三個 repo 的狀態"); do
         case $c in
             '<')     return 0 ;;
@@ -330,6 +418,7 @@ _tui_env() {
             acl)     _tui_acl ;;
             fresh)   _tui_fresh ;;
             rename)  _tui_rename ;;
+            init)    _tui_init ;;
             *)       _tui_run "$c" ;;
         esac
     done
@@ -420,6 +509,47 @@ _tui_acl_user() {
             rm)     _tui_run acl user rm "$who" ;;
         esac
     done
+}
+
+# init 是全專案破壞性最強的動作（改名 + 刪 .git + 重建骨架）。
+# 與 _tui_rename 同樣的節奏：先跑 dry-run 把計畫攤開，再問要不要真的做，
+# 而且**不加 --yes** —— cx init 自己的 typed gate（INIT <名字>）仍然會問。
+_tui_init() {
+    local c
+    c=$(_tui_menu "把範本設定成新專案" "返回" \
+        init    "改名 → 重建 → 接遠端（給全新的專案）" \
+        re-init "不改名，只重建一次") || return 0
+    [[ $c == '<' ]] && return 0
+    local mode
+    mode=$(_tui_menu "重建模式" "返回" \
+        scaffold  "全新骨架（你自己寫的程式碼不會回來）" \
+        carryover "全新骨架 + 把 app/ routes/ tests/ 疊回去") || return 0
+    [[ $mode == '<' ]] && return 0
+    local org
+    org=$(_tui_ask "GitHub 組織" "CX_GH_ORG（可留空，之後再設）：" "${CX_GH_ORG:-}") || org=''
+    # 兩個分支刻意各自把動詞寫成**字面**（而不是組進一個 args 陣列再展開）：
+    # verify_meta.py 的 TUI-coverage 是靠字面參數判斷「這個動詞從選單到得了」，
+    # 變數展開它看不見 —— 而那個檢查存在的理由，正是不讓動詞悄悄變成孤兒。
+    local -a tail=(--mode "$mode")
+    [[ -n $org ]] && tail+=(--org "$org")
+    local body="上面是 dry-run 的計畫。
+
+這會刪掉 .git 與前後端目前的內容，**不可逆**。
+cx init 自己還會要求你打一次確認字串。
+
+繼續嗎？"
+    if [[ $c == init ]]; then
+        local name
+        name=$(_tui_ask "新專案名稱" "小寫開頭，只能有小寫英數與 - _：") || return 0
+        [[ -n $name ]] || return 0
+        _tui_run --dry-run init "$name" "${tail[@]}"
+        cx_confirm --danger "真的要執行嗎？" "$body" || return 0
+        _tui_run init "$name" "${tail[@]}"
+    else
+        _tui_run --dry-run re-init "${tail[@]}"
+        cx_confirm --danger "真的要執行嗎？" "$body" || return 0
+        _tui_run re-init "${tail[@]}"
+    fi
 }
 
 # rename 會改寫專案身分（.cxroot / .env / group_vars…）。
@@ -546,6 +676,7 @@ _tui_db_restore() {
 _tui_deploy() {
     local c
     while c=$(_tui_menu "部署（Ansible）" "返回" \
+        hosts  "主機設定（inventory）—— 沒有它，下面每一項都會撞牆" \
         syntax "ansible-playbook --syntax-check" \
         lint   "ansible-lint + yamllint" \
         galaxy   "安裝 requirements.yml 的 collections" \
@@ -558,6 +689,7 @@ _tui_deploy() {
         rollback "⚠ 互動式回滾"); do
         case $c in
             '<')          return 0 ;;
+            hosts)        _tui_deploy_hosts ;;
             facts)        _tui_deploy_limit facts "主機名稱（必填，來自 inventory）" ;;
             vars|check|apply|app|rollback)
                           _tui_deploy_limit "$c" "限制範圍（留空 = staging）" ;;

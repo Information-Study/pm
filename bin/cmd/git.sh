@@ -9,14 +9,21 @@ _git_usage() {
   fetch                 三個 repo 一起 fetch --prune（唯讀，不動工作區）
   pull [--allow-merge]  三個 repo 一起更新（主庫先、子模組後；預設只允許快轉）
   sync                  子模組 checkout 追蹤分支（解決 clone 後 detached HEAD）
-  commit [-m <訊息>]    提交（子模組先、主庫 gitlink 後）；未給 -m 會引導產生
+  commit [-m <訊息>] [--repo main|backend|frontend|all]
+                        提交（子模組先、主庫 gitlink 後）；未給 -m 會引導產生
   save [-m <訊息>]      commit 的別名
+  config identity|editor|show   git 身分與編輯器（三個 repo 一起設，或 --global）
+  feature start <名稱>  從 dev 開 feature/<名稱>（gitflow）
+  feature finish [名稱] 合回 dev（不推送、不刪分支）
+  feature list          列出各 repo 的 feature/*
   branch list           列出三個 repo 的分支與同步狀態
-  branch new <名稱>     在三個 repo 建立並切換到同名分支
+  branch new <名稱> [--repo …] [--from <ref>]
+                        建立並切換到同名分支（預設從 dev 開）
   branch switch <名稱>  切換三個 repo 到指定分支
   branch delete <名稱>  刪除分支（需確認；拒絕刪除當前分支與 main）
   guard install|status|remove
-  remote-init               用 gh 建立 Information-Study 的三個 public repo
+  remote-set <URL...>       指到現成的 remote（不經過 gh）
+  remote-init               用 gh 建立三個 public repo
                             （要乾跑用全域旗標： cx --dry-run git remote-init）
   scan-secrets          祕密掃描（推送前自動執行）
   push                  推送（白名單 + 祕密掃描 + 子模組先於主庫）
@@ -86,6 +93,7 @@ cmd_git_main() {
         commit|save)   _git_commit "$@" ;;
         config)        _git_config "$@" ;;
         branch)        _git_branch "$@" ;;
+        feature)       _git_feature "$@" ;;
         guard)         case ${1:-status} in
                            install) cx_guard_install ;;
                            status)  cx_guard_status ;;
@@ -93,6 +101,7 @@ cmd_git_main() {
                            *) cx_die "$EX_USAGE" "guard: 未知子指令 ${1:-}" ;;
                        esac ;;
         remote-init)   _git_remote_init "$@" ;;
+        remote-set)    _git_remote_set "$@" ;;
         scan-secrets)  _git_scan_secrets ;;
         push)          _git_push "$@" ;;
         -h|--help)     _git_usage ;;
@@ -506,19 +515,114 @@ _git_compose_message() {
 # ---------------------------------------------------------------------------
 # 分支：三個 repo 同進同出
 # ---------------------------------------------------------------------------
+# --repo 與 --from 由這裡統一解析，再交給下面三個實作。
+# 解析結果放進兩個 global：把它們當參數傳會讓每個實作的簽章都變長，
+# 而這三個函式本來就只從這裡進得去。
+_GIT_BRANCH_REPO=all
+_GIT_BRANCH_FROM=''
+_git_branch_parse_opts() {          # 回傳剩下的位置參數（用 _GIT_BRANCH_ARGS）
+    _GIT_BRANCH_REPO=all; _GIT_BRANCH_FROM=''
+    _GIT_BRANCH_ARGS=()
+    while (( $# )); do
+        case $1 in
+            --repo) [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--repo 需要值"
+                    _GIT_BRANCH_REPO=$2; shift 2 ;;
+            --from) [[ -n ${2:-} ]] || cx_die "$EX_USAGE" "--from 需要 ref"
+                    _GIT_BRANCH_FROM=$2; shift 2 ;;
+            *)      _GIT_BRANCH_ARGS+=("$1"); shift ;;
+        esac
+    done
+    _git_repos_order "$_GIT_BRANCH_REPO" >/dev/null
+}
+
 _git_branch() {
     local sub=${1:-list}; shift || true
     case $sub in
         list)   _git_branch_list ;;
         -h|--help) _git_usage; return 0 ;;
-        new)    [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "branch new 需要名稱"
-                _git_branch_new "$1" ;;
-        switch) [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "branch switch 需要名稱"
-                _git_branch_switch "$1" ;;
-        delete) [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "branch delete 需要名稱"
-                _git_branch_delete "$1" ;;
+        new|switch|delete)
+                _git_branch_parse_opts "$@"
+                [[ -n ${_GIT_BRANCH_ARGS[0]:-} ]] \
+                    || cx_die "$EX_USAGE" "branch $sub 需要名稱"
+                "_git_branch_$sub" "${_GIT_BRANCH_ARGS[0]}" ;;
         *)      cx_die "$EX_USAGE" "branch: 未知子指令 $sub（list|new|switch|delete）" ;;
     esac
+}
+
+# ── gitflow ─────────────────────────────────────────────────────────────────
+#
+# 只做 feature 這一條線。release/hotfix 牽涉到版本號與 tag，那是另一個決定，
+# 而且本專案目前沒有版本號策略 —— 做一半的 release 流程比沒有更糟。
+#
+# feature 一律從 dev 開、合回 dev。main 只由 release/hotfix 碰，
+# 所以這裡完全不動 main。
+_git_feature() {
+    local sub=${1:-}; shift || true
+    local dev; dev=$(_git_dev_branch)
+    case $sub in
+        start)
+            [[ -n ${1:-} ]] || cx_die "$EX_USAGE" "feature start 需要名稱（例：cx git feature start login）"
+            local n=$1; shift
+            [[ $n == feature/* ]] || n="feature/$n"
+            cx_info "從 $dev 開新的 feature：$n"
+            _GIT_BRANCH_REPO=all _GIT_BRANCH_FROM=$dev _git_branch_new "$n" ;;
+        finish)
+            local cur; cur=$(git -C "$CX_ROOT" branch --show-current 2>/dev/null || echo '')
+            local n=${1:-$cur}
+            [[ -n $n ]] || cx_die "$EX_USAGE" "feature finish 需要名稱，或先切到那個分支上"
+            [[ $n == feature/* ]] || n="feature/$n"
+            _git_feature_finish "$n" "$dev" ;;
+        list)
+            local r slug
+            while read -r r; do
+                slug=$(_git_repo_slug "$r")
+                printf '\n%s%s%s\n' "$C_BLU" "$slug" "$C_RST"
+                git -C "$r" for-each-ref --format='  %(refname:short)' 'refs/heads/feature/*' 2>/dev/null \
+                    || true
+            done < <(_git_repos_order all)
+            printf '\n' ;;
+        -h|--help|'') cx_dim "cx git feature start <名稱> | finish [名稱] | list" ;;
+        *) cx_die "$EX_USAGE" "feature: 未知子指令 $sub（start|finish|list）" ;;
+    esac
+}
+
+# 合回 dev。**不推送**、也不刪分支 —— 那兩件事各自有自己的閘門，
+# 混進來會讓 finish 變成一個「做了三件不可逆的事」的動詞。
+_git_feature_finish() {             # _git_feature_finish <分支> <dev>
+    local n=$1 dev=$2 r slug
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        git -C "$r" show-ref --verify --quiet "refs/heads/$n" \
+            || cx_die "$EX_PRECOND" "$slug 沒有分支 $n"
+        [[ -z $(git -C "$r" status --porcelain) ]] \
+            || cx_die "$EX_PRECOND" "$slug 有未提交變更 —— 先 cx git commit"
+        git -C "$r" show-ref --verify --quiet "refs/heads/$dev" \
+            || cx_die "$EX_PRECOND" "$slug 沒有 $dev 分支（先 cx git branch new $dev）"
+    done < <(_git_repos_order all)
+
+    cx_confirm "把 $n 合併回 $dev" \
+"三個 repo 都會：切到 $dev → merge --no-ff $n
+
+**不會**推送，也**不會**刪掉 $n。
+推送請用 cx git push；刪分支請用 cx git branch delete $n。
+
+繼續嗎？" || return "$EX_ABORT"
+
+    cx_step "合併 $n → $dev"
+    # 主庫先切（submodule.recurse 會順便動子模組，子模組必須最後才生效）
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        cx_run git -C "$r" switch "$dev" || { cx_error "$slug 切到 $dev 失敗"; return "$EX_FAIL"; }
+    done < <(_git_repos_super_first all)
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        cx_run git -C "$r" merge --no-ff -m "Merge $n into $dev" "$n" \
+            || { cx_error "$slug 合併失敗 —— 解完衝突後自己 git commit，不要再跑一次 finish"
+                 return "$EX_FAIL"; }
+        cx_ok "$slug：$n → $dev"
+    done < <(_git_repos_order all)
+    _git_assert_no_detached || return "$EX_FAIL"
+    cx_info "已合併。推送： cx git push；刪掉 feature： cx git branch delete $n"
 }
 
 _git_branch_list() {
@@ -552,13 +656,22 @@ _git_branch_check_name() {
 
 _git_branch_new() {
     local n=$1; _git_branch_check_name "$n"
+    local repo=${_GIT_BRANCH_REPO:-all}
+    # 起點：--from > dev > 目前所在的 commit。
+    # 原本是 `switch -c "$n"`（沒有起點），也就是「從你現在剛好在的地方開」——
+    # gitflow 之下 feature 必須從 dev 開，而「現在剛好在哪」不是可重現的東西。
+    local base=${_GIT_BRANCH_FROM:-}
     local r slug dirty=0
     while read -r r; do
         slug=$(_git_repo_slug "$r")
         [[ -n $(git -C "$r" status --porcelain) ]] && { cx_warn "$slug 有未提交變更"; dirty=1; }
         git -C "$r" show-ref --verify --quiet "refs/heads/$n" \
             && cx_die "$EX_PRECOND" "$slug 已經有分支 $n"
-    done < <(_git_repos_order)
+        if [[ -n $base ]]; then
+            git -C "$r" rev-parse --verify --quiet "$base^{commit}" >/dev/null \
+                || cx_die "$EX_PRECOND" "$slug 沒有起點 $base"
+        fi
+    done < <(_git_repos_order "$repo")
     (( dirty )) && { cx_confirm "有未提交變更" \
         "上列 repo 有未提交變更。\n\ngit 會把它們一起帶到新分支 $n。\n\n繼續嗎？" \
         || return "$EX_ABORT"; }
@@ -568,11 +681,17 @@ _git_branch_new() {
     # 所以子模組的 switch 必須排在後面才不會被覆蓋成 detached。
     while read -r r; do
         slug=$(_git_repo_slug "$r")
-        cx_run git -C "$r" switch -c "$n"
-        cx_ok "$slug → $n"
-    done < <(_git_repos_super_first)
+        if [[ -n $base ]]; then
+            cx_run git -C "$r" switch -c "$n" "$base" \
+                || { cx_error "$slug 建立分支失敗"; return "$EX_FAIL"; }
+        else
+            cx_run git -C "$r" switch -c "$n" \
+                || { cx_error "$slug 建立分支失敗"; return "$EX_FAIL"; }
+        fi
+        cx_ok "$slug → $n${base:+（從 $base）}"
+    done < <(_git_repos_super_first "$repo")
     _git_assert_no_detached || return "$EX_FAIL"
-    cx_info "三個 repo 都在 $n。提交請用： cx git commit"
+    cx_info "已在 $n。提交請用： cx git commit"
 }
 
 _git_branch_switch() {
@@ -622,7 +741,9 @@ _git_assert_no_detached() {
 
 _git_branch_delete() {
     local n=$1; _git_branch_check_name "$n"
-    [[ $n == main || $n == master ]] && cx_die "$EX_USAGE" "拒絕刪除 $n"
+    [[ $n == master ]] && cx_die "$EX_USAGE" "拒絕刪除 $n"
+    _git_is_protected_branch "$n" \
+        && cx_die "$EX_USAGE" "拒絕刪除受保護的分支 $n（gitflow 的 $(_git_main_branch) / $(_git_dev_branch)）"
     local r slug cur
     while read -r r; do
         slug=$(_git_repo_slug "$r")
@@ -920,6 +1041,58 @@ _git_pull() {
 # ---------------------------------------------------------------------------
 # 建立 GitHub 遠端
 # ---------------------------------------------------------------------------
+# 指定現成的 remote（不經過 gh）。
+#
+# 與 remote-init 分開而不是加旗標：那一支的職責是「建立 repo」，這一支是
+# 「指到已經存在的 repo」。混在一起的話，`--url` 到底要不要建 repo 會變成
+# 一個需要讀原始碼才知道的問題。
+#
+# ⚠ guard.sh 的推送白名單是從 .cxroot 的 CX_GH_ORG/CX_REPO_* 推導的。
+#   指到白名單以外的位址時，cx git push 會擋 —— 這裡先講清楚，
+#   不要等到推的時候才發現。
+_git_remote_set() {
+    local main_url=${1:-} be_url=${2:-} fe_url=${3:-}
+    [[ -n $main_url ]] || cx_die "$EX_USAGE" \
+        "用法：cx git remote-set <主庫URL> [backend URL] [frontend URL]
+  只給主庫 URL 時，backend/frontend 會用同一個目錄推導：
+    https://host/org/proj.git → https://host/org/proj-backend.git / -frontend.git"
+    # 由主庫 URL 推導另外兩個
+    if [[ -z $be_url || -z $fe_url ]]; then
+        local base=${main_url%.git}
+        be_url=${be_url:-"${base%/*}/$CX_REPO_BACKEND.git"}
+        fe_url=${fe_url:-"${base%/*}/$CX_REPO_FRONTEND.git"}
+    fi
+    cx_step "設定 remote"
+    local r slug url
+    while read -r r; do
+        slug=$(_git_repo_slug "$r")
+        case $slug in
+            "$CX_REPO_BACKEND")  url=$be_url ;;
+            "$CX_REPO_FRONTEND") url=$fe_url ;;
+            *)                   url=$main_url ;;
+        esac
+        [[ -d $r/.git || -f $r/.git ]] || { cx_warn "$slug 還不是 git repo，略過"; continue; }
+        if git -C "$r" remote get-url origin >/dev/null 2>&1; then
+            cx_run git -C "$r" remote set-url origin "$url" || return "$EX_FAIL"
+        else
+            cx_run git -C "$r" remote add origin "$url" || return "$EX_FAIL"
+        fi
+        # 與 remote-init 同一個坑：submodule add 建的 origin 沒有 fetch refspec，
+        # 少了它 push -u 建不出 refs/remotes/origin/*，status 看不到 ahead/behind。
+        if [[ -z $(git -C "$r" config --get remote.origin.fetch || true) ]]; then
+            cx_run git -C "$r" config --add remote.origin.fetch \
+                '+refs/heads/*:refs/remotes/origin/*'
+        fi
+        cx_ok "$slug → $url"
+    done < <(_git_repos_order all)
+
+    if ! printf '%s' "$main_url" | grep -qE "$(cx_guard_allow_re 2>/dev/null || echo 'github\.com')"; then
+        cx_warn "這個位址不在推送白名單內 —— cx git push 會擋下"
+        cx_dim "  白名單由 .cxroot 的 CX_GH_ORG / CX_REPO_* 推導（見 bin/lib/guard.sh）"
+        cx_dim "  要推到這裡：改 .cxroot 的 CX_GH_ORG，或用原生 git push"
+    fi
+}
+
 _git_remote_init() {
     cx_have gh || cx_die "$EX_PRECOND" "找不到 gh CLI"
     gh auth status >/dev/null 2>&1 || cx_die "$EX_PRECOND" "gh 未登入（gh auth login）"

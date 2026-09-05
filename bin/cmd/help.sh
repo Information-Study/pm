@@ -110,6 +110,9 @@ cmd_help_main() {
                     範圍：ansible / php / js / sh / all（預設 all）
                     ansible 那一支是 --syntax-check 的替代品，不是等價物 ——
                     ansible 裝好之後請改用 cx deploy lint
+  init <新專案名>   把範本設定成新專案：改名 → 重建 → 接遠端（不可逆，有閘門）
+                    --org <組織> --gh | --remote <URL> --mode scaffold|carryover
+  re-init           同樣的重建流程但不改名（重來一次）
   rename <新名稱>   把整個範本改成新的專案名（.cxroot / .env / sonar /
                     group_vars / site.yml + deploy.sh 的群組名）。不碰 .git。
                     先跑 cx --dry-run rename <新名稱> 看變更點

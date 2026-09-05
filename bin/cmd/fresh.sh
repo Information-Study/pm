@@ -563,6 +563,19 @@ _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
     fi
     _fresh_rebuild_backend  || return 1
     _fresh_rebuild_frontend || return 1
+
+    # ── 把「範本自己擁有的東西」裝回去 ──────────────────────────────────────
+    #
+    # composer create-project 與 nuxi init 產生的是**框架的**骨架，
+    # 裡面當然沒有本專案加上去的保護。少了這一步，cx init 交出來的新專案會：
+    #   * 沒有測試資料庫的 hard guard（phpunit.xml 的 bootstrap= 也會被寫回
+    #     vendor/autoload.php —— 檔案在不在都無所謂了，因為沒有人呼叫它）
+    #   * 沒有 ESLint 基線
+    # 2026-09-05 實測：修這一段之前，cx init shop 產出的專案 cx verify cli
+    # 有 9 個 FAIL，其中 6 個就是這兩組。
+    cx_step "裝回範本自有的設定（測試防護 / ESLint）"
+    cx_run python3 "$CX_ROOT/bin/lib/scaffold_patch.py" --root "$CX_ROOT" \
+        || { cx_error "範本設定裝回失敗"; return 1; }
     [[ $mode == carryover ]] && { _fresh_carryover "$A" || return 1; }
     return 0
 }

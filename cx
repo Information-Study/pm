@@ -127,6 +127,8 @@ declare -A CX_CMD_FILE_OF=(
     # test 不在這裡 —— 它有自己的檔，因為 cx test 同時是「test 模式的 compose」
     # 與「跑測試套件」兩件事（cx test up 與 cx test back）。
     [dev]=compose [prod]=compose
+    # re-init 與 init 是同一支：差別只有「吃不吃新名字」這個位置參數。
+    [re-init]=init
 )
 
 verb=${1:-tui}
