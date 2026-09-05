@@ -272,8 +272,18 @@ _fresh_migrate() {
 # ---------------------------------------------------------------------------
 # 確認閘門
 # ---------------------------------------------------------------------------
+# ⚠ 閘門必須知道 mode。
+#
+#   scaffold 與 carryover 的差別是**你自己寫的程式碼會不會回來**，
+#   而那是這兩個模式之間唯一真正重要的差異。原本的閘門完全沒提到模式 ——
+#   於是 `cx fresh --mode scaffold` 會用一段跟 carryover 一模一樣的文字，
+#   問你要不要刪掉 backend/ 與 frontend/，然後**不告訴你它不會疊回來**。
+#
+#   claude.md 早就寫著 scaffold「需額外輸入 NO CARRYOVER」，但那個閘門
+#   從來沒有存在過（2026-09-05 稽核發現）。與其把文件改成符合現況，
+#   不如把現況改成符合文件 —— 因為文件描述的才是對的行為。
 _fresh_gate() {
-    local A=$1
+    local A=$1 mode=${2:-carryover}
     local body msg_db
 
     msg_db=$(sed -n 's/^db_dump=//p' "$A/MANIFEST.txt" | head -1)
@@ -301,6 +311,14 @@ _fresh_gate() {
   $A
 
 保留不動：bin/ cx .cxroot templates/ docs/ claude.md docker/ .vscode/
+          docker-compose.yml .dockerignore ansible/ .env
+
+重建模式：$mode
+$( [[ $mode == scaffold ]] \
+     && printf '%s' "  ⚠ scaffold —— 只產生全新骨架。你自己寫的程式碼（app/ routes/
+     tests/ pages/ components/ …）**不會**被疊回去，只會留在上面那份封存裡。" \
+     || printf '%s' "  carryover —— 產生全新骨架之後，會把 app/ routes/ tests/ 等
+     從封存疊回去。" )
 
 此操作不可逆。確定要繼續嗎？
 TXT
@@ -309,6 +327,12 @@ TXT
     cx_ask_typed "最終確認" \
         "請輸入下列字串以確認刪除：\n\n    DESTROY $(cx_project)\n" \
         "DESTROY $(cx_project)" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+    # scaffold 是唯一會**默默丟掉使用者程式碼**的模式，所以多要一個 token。
+    if [[ $mode == scaffold ]]; then
+        cx_ask_typed "scaffold 確認" \
+            "scaffold 不會把你的程式碼疊回去。\n\n請輸入：\n\n    NO CARRYOVER\n" \
+            "NO CARRYOVER" || { cx_error "確認失敗，未變更任何檔案"; return 1; }
+    fi
     return 0
 }
 
@@ -985,7 +1009,7 @@ cmd_fresh_main() {
         # .dockerignore / README.md 複製成 docker/legacy/*.orig —— 那是三個
         # 進版控的檔案。於是使用者在確認畫面按取消，畫面印「未變更任何檔案」，
         # git status 卻多出三個 M。訊息說謊比動到檔案更糟。
-        _fresh_gate "$A" || { _fresh_state_clear; return "$EX_ABORT"; }
+        _fresh_gate "$A" "$mode" || { _fresh_state_clear; return "$EX_ABORT"; }
     else
         # resume：沿用上一次的封存
         A=${from:-$prev_arc}

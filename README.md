@@ -395,7 +395,11 @@ $EDITOR .cxroot            # 專案名、GitHub 組織、三個 repo 名
 | 文件 | 內容 |
 |---|---|
 | [`docs/manual.md`](docs/manual.md) | **完整操作說明書**，從零開始到三個階段全流程 |
+| [`docs/guide-developer.md`](docs/guide-developer.md) | **開發者指南**：clone → setup → 三模式 → 日常動詞 → gitflow → 除錯 |
+| [`docs/guide-tester.md`](docs/guide-tester.md) | **測試者指南**：test / verify / scan、報告判讀、放行條件 |
+| [`docs/guide-deployer.md`](docs/guide-deployer.md) | **部署者指南**：主機規劃 → 祕密 → check → apply → 回滾 |
 | [`docs/cx-reference.md`](docs/cx-reference.md) | `cx` 每一個動詞的完整參考 |
+| [`docs/nginx-reference.md`](docs/nginx-reference.md) | Docker 與原生的 nginx 逐項對照（路由／大小／標頭／WAF） |
 | [`docs/docker-reference.md`](docs/docker-reference.md) | 合併鏈、三模式差異、多階段映像、edge / WAF |
 | [`docs/ansible-reference.md`](docs/ansible-reference.md) | play 結構、12 個 role、vault、實測踩過的坑 |
 | [`docs/runners.md`](docs/runners.md) | 兩條 runner：容器與原生各自獨立運作 |
