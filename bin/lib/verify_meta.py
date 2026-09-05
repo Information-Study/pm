@@ -641,6 +641,53 @@ def check_template_identity():
             " ".join(sorted(groups)))
 
 
+def check_php_prefix_parity():
+    """Docker 的 edge 與原生的 nginx 必須把**同一組前綴**交給 PHP。
+
+    這一族差異的症狀都一樣：某個路徑在一邊正常、在另一邊 404，而且看起來
+    像「應用壞了」而不是「路由設錯了」。docker/edge/conf.d/default.conf 自己
+    第 55 行的註解就記過同一種故障（Filament 的資產被前端吃掉 → 後台沒樣式）。
+
+    2026-09-05 實測的分岔：/filament /login /logout /broadcasting 四個前綴在
+    Docker 側會掉進 catch-all 交給 Nuxt（回 Nitro 的 404），原生側則交給 PHP。
+    """
+    gv = read("ansible/inventory/group_vars/all/main.yml")
+    conf = read("docker/edge/conf.d/default.conf")
+    if not exists("ansible/inventory/group_vars/all/main.yml") or not exists("docker/edge/conf.d/default.conf"):
+        row("SKIP", "A13-parity", "Docker 與原生的 PHP 前綴一致", "少了其中一份設定")
+        return
+
+    m = re.search(r"^nginx_php_prefixes:\n((?:\s*-\s*\"[^\"]+\"\n)+)", gv, re.M)
+    if not m:
+        row("SKIP", "A13-parity", "Docker 與原生的 PHP 前綴一致", "讀不到 nginx_php_prefixes")
+        return
+    native = {x.strip().lstrip("/") for x in re.findall(r'-\s*"([^"]+)"', m.group(1))}
+
+    # Docker 側：把所有交給 pm-php.inc 的 location 抓出來
+    docker = set()
+    # 前綴型（= / ^~）與正規式型分開抓
+    for lm in re.finditer(r"location\s+(?:=|\^~)\s+(/[A-Za-z0-9_./-]*)\s*\{[^}]*pm-php\.inc", conf):
+        docker.add(lm.group(1).strip("/").split("/")[0])
+    for lm in re.finditer(r"location\s+~\s+\^/\(([^)]+)\)", conf):
+        for alt in lm.group(1).split("|"):
+            alt = alt.strip()
+            if re.match(r"^[a-z0-9_-]+$", alt):
+                docker.add(alt)
+
+    # livewire 在 Docker 是帶 hash 的正規式，原生是字面 + pattern，兩邊都算有
+    if re.search(r"location\s+~\s+\^/livewire", conf):
+        docker.add("livewire")
+
+    missing = sorted(native - docker)
+    if missing:
+        row("FAIL", "A13-parity", "Docker 與原生的 PHP 前綴一致",
+            "docker/edge 少了：" + " ".join("/" + x for x in missing)
+            + "（原生側 group_vars 的 nginx_php_prefixes 有）")
+    else:
+        row("PASS", "A13-parity", "Docker 與原生的 PHP 前綴一致",
+            " ".join(sorted("/" + x for x in native)))
+
+
 def main():
     families = sys.argv[1:] or ["cli", "docs", "tui"]
     if "cli" in families:
@@ -652,6 +699,7 @@ def main():
         check_bats_wiring()
         check_eslint_wiring()
         check_template_identity()
+        check_php_prefix_parity()
     if "tui" in families:
         check_tui()
     if "docs" in families:

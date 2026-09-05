@@ -565,6 +565,64 @@ def check_stop_semantics(cfgs, root):
             f"app grace > supervisord stopwaitsecs({want}s)；nginx 用 SIGQUIT")
 
 
+def _size_to_bytes(v):
+    """把 nginx 的大小寫法（64m / 512k / 1048576）換成 bytes。"""
+    t = str(v).strip().lower()
+    m = re.match(r"^(\d+)([kmg]?)$", t)
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2)]
+
+
+def check_upload_limit_chain(cfgs, root):
+    """A16：WAF 的 body 上限必須 ≥ nginx 的 client_max_body_size。
+
+    順序反過來的後果不是報錯，是**難以歸因的 413**：檔案先通過 nginx，
+    再被 ModSecurity 以 SecRequestBodyLimitAction Reject 擋掉，
+    而訊息只會指向 ModSecurity，看不出是兩個限制設反了。
+
+    原生側（ansible/roles/nginx_myguard/defaults/main.yml）一直是從
+    app_max_upload_mb 推導整條鏈並在 A16 明文要求這個順序；
+    Docker 側曾經是 12.5MB < 64m，也就是兩條路徑對同一件事的規則不一致。
+    這個檢查就是不讓它們再分岔。
+    """
+    conf = Path(root, "docker/edge/nginx.conf")
+    if not conf.exists():
+        out("SKIP", "A16", "上傳大小的限制鏈（nginx ≤ WAF）", "找不到 docker/edge/nginx.conf")
+        return
+    m = re.search(r"^\s*client_max_body_size\s+(\S+?);", conf.read_text(encoding="utf-8"), re.M)
+    if not m:
+        out("SKIP", "A16", "上傳大小的限制鏈（nginx ≤ WAF）", "nginx.conf 沒有 client_max_body_size")
+        return
+    nginx_b = _size_to_bytes(m.group(1))
+    if nginx_b is None:
+        out("SKIP", "A16", "上傳大小的限制鏈（nginx ≤ WAF）", f"看不懂的大小：{m.group(1)}")
+        return
+
+    bad, seen = [], 0
+    for mode, cfg in sorted(cfgs.items()):
+        svc = (cfg.get("services") or {}).get("waf")
+        if not svc:
+            continue
+        seen += 1
+        env = svc.get("environment") or {}
+        if isinstance(env, list):
+            env = dict(e.split("=", 1) for e in env if "=" in e)
+        waf_b = _size_to_bytes(env.get("MODSEC_REQ_BODY_LIMIT", ""))
+        if waf_b is None:
+            bad.append(f"{mode}(WAF 沒有 MODSEC_REQ_BODY_LIMIT)")
+        elif waf_b < nginx_b:
+            bad.append(f"{mode}(WAF {waf_b} < nginx {nginx_b} —— 順序反了)")
+    if not seen:
+        out("SKIP", "A16", "上傳大小的限制鏈（nginx ≤ WAF）", "沒有模式含 waf service")
+    elif bad:
+        out("FAIL", "A16", "上傳大小的限制鏈（nginx ≤ WAF）", " ".join(bad))
+    else:
+        out("PASS", "A16", "上傳大小的限制鏈（nginx ≤ WAF）",
+            f"nginx {m.group(1)} ≤ WAF body limit（{seen} 個模式）")
+
+
 def main():
     root = sys.argv[1]
     cfgs = {}
@@ -604,6 +662,7 @@ def main():
     check_mount_sources(root, cfgs)
     check_version_pins(cfgs)
     check_external_image_pins(cfgs, root)
+    check_upload_limit_chain(cfgs, root)
     return 0
 
 
