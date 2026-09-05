@@ -51,9 +51,14 @@ CASES = [
 LIVEWIRE_BODY = json.dumps({
     "_token": "probe",
     "components": [{
-        "snapshot": json.dumps(
-            {"data": {"note": "O'Brien <b>x</b> or 1=1 -- select"}}
-        ),
+        # 內容要用「排除規則正是為了放行它才存在」的那一種。太溫和的字串
+        # 在 PL1 之下不會觸發 CRS，對照組就測不到東西（2026-09-05 實測）。
+        # <script> 與 UNION SELECT 各自都會被 941/942 命中，而它們分別是
+        # 「富文字欄位貼上 HTML」與「表格篩選器打了一句話」—— 後台的日常操作。
+        "snapshot": json.dumps({"data": {
+            "bio": "<script>alert(1)</script>",
+            "q": "1 UNION SELECT NULL FROM users",
+        }}),
         "updates": {},
         "calls": [],
     }],

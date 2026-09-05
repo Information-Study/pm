@@ -19,11 +19,23 @@ _verify_usage() {
     cat >&2 <<'TXT'
 cx verify [範圍...]
 
-範圍（可複選，省略 = static app ansible）
-  static     不需要容器的檢查：compose 合併結果、Dockerfile、版本鎖定
-  runtime    需要容器在跑：supervisord、vendor、端點、資料庫
-  ansible    ansible-playbook --syntax-check + ansible-lint + yamllint
+範圍（可複選，省略 = static app ansible cli docs tui）
+  不需要 Docker、不需要 .env，在全新 clone 上就能跑：
+  cli        cx 自己：動詞／旗標／補全／help 四方同步
+  docs       文件與實作是否一致（教的變數真的被讀嗎、路徑對嗎）
+  tui        選單每一項都指得到真的存在的指令，且每個動詞都到得了
+
+  需要合併後的 compose 設定（要有 .env）：
+  static     compose 合併結果、Dockerfile、版本鎖定
+
+  需要容器在跑：
+  runtime    supervisord、vendor、APP_KEY、xdebug
   app        應用層端點（/up、/admin、/sanctum、前端）
+  waf        ModSecurity：攻擊被擋、正常請求不被擋、引擎狀態與宣告一致
+  acl        檔案權限（POSIX ACL）
+
+  其他：
+  ansible    ansible-playbook --syntax-check + ansible-lint + yamllint
   all        全部（會依序把三個模式都起起來，很慢）
 
 選項
@@ -32,9 +44,10 @@ cx verify [範圍...]
   --quiet           只印總結
 
 範例
-  cx verify                 # 靜態 + 應用 + ansible
-  cx verify static
+  cx verify                 # 預設：不需要容器的那些 + 應用端點 + ansible
+  cx verify cli docs tui    # 全新 clone 上就能跑，秒級
   cx verify runtime         # 需要先 cx dev up -d
+  cx verify waf             # 需要先 cx test up -d
   cx verify all             # 完整驗收（會起三個模式）
 TXT
 }
@@ -210,6 +223,138 @@ _verify_ansible() {
     fi
 }
 
+# ── cli / docs / tui ───────────────────────────────────────────────────────
+# 這三個完全不碰 Docker 也不需要 .env —— 在一個剛 clone 下來、什麼都還沒裝的
+# 樹上就能跑完。這是刻意的：本專案已知的缺陷有一半以上是「兩個檔案對同一件事
+# 的說法不一致」，那一類完全不需要執行環境就驗得出來，也就沒有理由讓它們
+# 卡在「要先把三個模式起起來」後面。
+_verify_meta() {
+    local family=$1 title=$2 line st id t note
+    cx_step "$title"
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        IFS='|' read -r st id t note <<< "$line"
+        _vf "$st" "$id" "$t" "$note"
+    done < <(CX_ROOT="$CX_ROOT" python3 "$CX_ROOT/bin/lib/verify_meta.py" "$family" 2>/dev/null)
+}
+
+# ── waf ────────────────────────────────────────────────────────────────────
+# 為什麼要獨立一個範圍：既有的 app 範圍只打 edge，完全不經過 WAF；
+# 而 scan dast 那條 lane 的閘門是「無 High risk alert」，它不會告訴你
+# **正常請求被擋掉了**。2026-09-05 之前的狀態正是：攻擊 100% 全擋、
+# Filament 後台完全不能用，兩件事同時成立而且沒有任何檢查會發現。
+_verify_waf() {
+    cx_step "WAF 驗收（test 模式）"
+    local proj port
+    proj=$(cx_project_for test)
+    port=$(grep -E '^WAF_HTTP_PORT=' "$CX_ROOT/docker/env/test.env" 2>/dev/null | cut -d= -f2)
+    port=${port:-18081}
+
+    local cid
+    cid=$(docker ps --filter "label=com.docker.compose.project=$proj" \
+                    --filter "label=com.docker.compose.service=waf" -q 2>/dev/null | head -1)
+    if [[ -z $cid ]]; then
+        _vf SKIP "waf-up" "WAF 容器在跑" "cx test up -d"
+        return 0
+    fi
+    _vf PASS "waf-up" "WAF 容器在跑"
+
+    # 宣告值與實際值必須一致。這一項抓的是 cx scan dast 切換引擎之後沒還原
+    # 造成的漂移 —— 環境跟版控說的不一樣，而且沒有任何地方會提醒你。
+    local declared actual
+    declared=$(grep -E '^MODSEC_RULE_ENGINE=' "$CX_ROOT/docker/env/test.env" 2>/dev/null | cut -d= -f2)
+    declared=${declared:-DetectionOnly}
+    actual=$(docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+             | sed -n 's/^MODSEC_RULE_ENGINE=//p' | head -1)
+    if [[ $actual == "$declared" ]]; then
+        _vf PASS "waf-engine" "引擎狀態與 test.env 宣告一致" "$actual"
+    else
+        _vf FAIL "waf-engine" "引擎狀態與 test.env 宣告一致" \
+            "宣告 $declared，實際 $actual（cx scan dast 之後沒還原？）"
+    fi
+
+    # 只有 On 才擋得下來。DetectionOnly 之下這兩項沒有意義，誠實地 SKIP。
+    local base="http://127.0.0.1:$port" code
+    if [[ $actual != On ]]; then
+        _vf SKIP "waf-block" "攻擊特徵請求被擋成 403" "引擎是 $actual，不是 On"
+        _vf SKIP "waf-livewire" "Livewire 的正常請求不被誤擋" "引擎是 $actual，不是 On"
+        return 0
+    fi
+
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+           "$base/?q=%3Cscript%3Ealert(1)%3C/script%3E" 2>/dev/null)
+    if [[ $code == 403 ]]; then
+        _vf PASS "waf-block" "攻擊特徵請求被擋成 403"
+    else
+        _vf FAIL "waf-block" "攻擊特徵請求被擋成 403" "實際回 ${code:-無回應}"
+    fi
+
+    # Livewire 的前綴由 APP_KEY 推導，現場從後台登入頁撈 —— 絕不可以寫死。
+    local lw edge_port body c_waf c_edge
+    lw=$(curl -s -m 15 "$base/admin/login" 2>/dev/null \
+         | grep -o '/livewire-[0-9a-zA-Z]\{6,\}' | head -1)
+    if [[ -z $lw ]]; then
+        _vf SKIP "waf-livewire" "Livewire 的正常請求不被誤擋" "抓不到端點前綴"
+        return 0
+    fi
+    edge_port=$(grep -E '^EDGE_HTTP_PORT=' "$CX_ROOT/docker/env/test.env" 2>/dev/null | cut -d= -f2)
+    edge_port=${edge_port:-18080}
+    # body 要用「排除規則正是為了放行它才存在」的內容 —— 太溫和的字串
+    # 在 PL1 之下本來就不會觸發 CRS，那樣的檢查會永遠通過，等於沒驗。
+    #
+    # 2026-09-05 實測（舊規則、引擎 On、經 18081 對照 18080）：
+    #   "x <b>y</b> or 1=1 -- select"    → waf 419 / edge 419（測不到東西）
+    #   "<script>alert(1)</script>"      → waf 403 / edge 419 ← 抓得到
+    #   "1 UNION SELECT NULL FROM users" → waf 403 / edge 419 ← 抓得到
+    # 前者是富文字欄位貼上 HTML，後者是表格篩選器打了一句話 —— 兩個都是
+    # 後台的日常操作，也正是 10011 移除 941/942 那幾條規則的理由。
+    body='{"components": [{"snapshot": "{\"data\": {\"bio\": \"<script>alert(1)</script>\", \"q\": \"1 UNION SELECT NULL FROM users\"}}", "updates": {}, "calls": []}]}'
+    c_waf=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST \
+            -H 'Content-Type: application/json' -H 'X-Livewire: 1' \
+            --data "$body" "$base$lw/update" 2>/dev/null)
+    c_edge=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST \
+            -H 'Content-Type: application/json' -H 'X-Livewire: 1' \
+            --data "$body" "http://127.0.0.1:$edge_port$lw/update" 2>/dev/null)
+    if [[ $c_waf == "$c_edge" ]]; then
+        _vf PASS "waf-livewire" "Livewire 的正常請求不被誤擋" "經 WAF 與直連 edge 都是 $c_waf"
+    else
+        _vf FAIL "waf-livewire" "Livewire 的正常請求不被誤擋" \
+            "經 WAF $c_waf、直連 edge $c_edge（排除規則沒命中 $lw）"
+    fi
+}
+
+# ── acl ────────────────────────────────────────────────────────────────────
+_verify_acl() {
+    cx_step "檔案權限（POSIX ACL）"
+    if ! cx_have setfacl || ! cx_have getfacl; then
+        _vf SKIP "acl-tools" "setfacl / getfacl 可用" "cx setup system acl"
+        return 0
+    fi
+    _vf PASS "acl-tools" "setfacl / getfacl 可用"
+
+    # 檔案系統支不支援 ACL。noacl 掛載的錯誤是 "Operation not supported"，
+    # 看起來完全不像掛載問題，所以先探測再說。
+    local probe rc=0
+    probe=$(mktemp -d "$CX_ROOT/.cx-acl-probe.XXXXXX" 2>/dev/null) || probe=''
+    if [[ -n $probe ]]; then
+        setfacl -m u:"$(id -u)":rwx "$probe" 2>/dev/null || rc=$?
+        rm -rf "$probe"
+        if (( rc )); then
+            _vf FAIL "acl-fs" "檔案系統支援 ACL" "setfacl 失敗（noacl 掛載？findmnt -T .）"
+            return 0
+        fi
+        _vf PASS "acl-fs" "檔案系統支援 ACL"
+    fi
+
+    # shellcheck source=/dev/null
+    . "$CX_ROOT/bin/cmd/acl.sh"
+    if ( _acl_check ) >/dev/null 2>&1; then
+        _vf PASS "acl-model" "cx acl check 通過"
+    else
+        _vf SKIP "acl-model" "cx acl check 通過" "尚未套用（cx acl apply）—— ACL 是選用的"
+    fi
+}
+
 # ── 報告 ───────────────────────────────────────────────────────────────────
 _verify_report() {
     local out=$1 row st id title note
@@ -247,15 +392,15 @@ cmd_verify_main() {
             --report) report=$(cx_resolve "${2:?--report 需要路徑}"); shift 2 ;;
             --report=*) report=$(cx_resolve "${1#*=}"); shift ;;
             --quiet) quiet=1; shift ;;
-            static|runtime|ansible|app|all) scopes+=("$1"); shift ;;
+            static|runtime|ansible|app|cli|docs|tui|waf|acl|all) scopes+=("$1"); shift ;;
             *) cx_error "未知的範圍：$1"; _verify_usage; return "$EX_USAGE" ;;
         esac
     done
-    (( ${#scopes[@]} )) || scopes=(static app ansible)
+    (( ${#scopes[@]} )) || scopes=(cli docs tui static app ansible)
 
     local s
     for s in "${scopes[@]}"; do
-        [[ $s == all ]] && { scopes=(static runtime app ansible); break; }
+        [[ $s == all ]] && { scopes=(cli docs tui static runtime app waf acl ansible); break; }
     done
 
     # 清掉上一次的設定快取，確保這次讀到的是現在的 compose 檔。
@@ -263,8 +408,13 @@ cmd_verify_main() {
 
     for s in "${scopes[@]}"; do
         case $s in
+            cli)     _verify_meta cli "cx 自身一致性" ;;
+            docs)    _verify_meta docs "文件與實作一致性" ;;
+            tui)     _verify_meta tui "TUI 選單可達性" ;;
             static)  _verify_static ;;
             ansible) _verify_ansible ;;
+            waf)     cx_docker_need; _verify_waf ;;
+            acl)     _verify_acl ;;
             runtime)
                 cx_docker_need
                 cx_step "執行期驗收"
