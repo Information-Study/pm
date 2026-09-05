@@ -731,11 +731,15 @@ _git_remote_init() {
         if gh repo view "$CX_GH_ORG/$slug" >/dev/null 2>&1; then
             cx_warn "$CX_GH_ORG/$slug 已存在，略過建立"
         else
-            local desc
+            # 專案名一律從 .cxroot 推導 —— 這段字串會被寫進**真的 GitHub repo**
+            # 的描述欄，寫死「pm」的話，任何從這個範本開出來的新專案都會頂著
+            # 上一個專案的名字，而且要到 repo 建好之後才看得出來。
+            local desc proj
+            proj=$(cx_project)
             case $slug in
-                "$CX_REPO_BACKEND")  desc="pm 後端 — PHP 8.5 + Laravel 13 + Filament v5" ;;
-                "$CX_REPO_FRONTEND") desc="pm 前端 — Vue 3 + Nuxt 4" ;;
-                *)                   desc="pm — 統籌大庫（Docker / Ansible / cx）" ;;
+                "$CX_REPO_BACKEND")  desc="$proj 後端 — PHP 8.5 + Laravel 13 + Filament v5" ;;
+                "$CX_REPO_FRONTEND") desc="$proj 前端 — Vue 3 + Nuxt 4" ;;
+                *)                   desc="$proj — 統籌大庫（Docker / Ansible / cx）" ;;
             esac
             cx_run gh repo create "$CX_GH_ORG/$slug" --public --disable-wiki --description "$desc"
             cx_ok "已建立 $CX_GH_ORG/$slug"

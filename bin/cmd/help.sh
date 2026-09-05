@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 cmd_help_main() {
+    # 標題單獨印：底下的 heredoc 是**引號版**（<<'TXT'），刻意不展開任何 $ ——
+    # 說明文字裡到處是 $CX_ROOT、${CX_MODE} 這類要照字面顯示的東西。
+    # 為了一個專案名把整份 heredoc 改成會展開的版本，會讓那些全部壞掉。
+    printf 'cx — %s 專案統一入口\n\n' "$(cx_project)" >&2
     cat >&2 <<'TXT'
-cx — pm 專案統一入口
-
 用法：cx [全域旗標] <動詞> [參數...]
 
 全域旗標
@@ -108,6 +110,9 @@ cx — pm 專案統一入口
                     範圍：ansible / php / js / sh / all（預設 all）
                     ansible 那一支是 --syntax-check 的替代品，不是等價物 ——
                     ansible 裝好之後請改用 cx deploy lint
+  rename <新名稱>   把整個範本改成新的專案名（.cxroot / .env / sonar /
+                    group_vars / site.yml + deploy.sh 的群組名）。不碰 .git。
+                    先跑 cx --dry-run rename <新名稱> 看變更點
   fresh             清理與重建（備份 → 驗證 → 確認閘門 → 刪除 → 重建 → 三 Git 初始化）
     fresh --phase preflight   只做前置檢查，完全不動任何東西
     fresh --resume-from rebuild --from <封存>  重建失敗後接續（不重跑破壞性流程）

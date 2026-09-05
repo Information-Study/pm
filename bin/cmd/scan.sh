@@ -32,8 +32,9 @@ _scan_usage() {
 報告位置
   reports/quality/  larastan.json
   reports/sast/     semgrep.sarif
-  reports/sca/      trivy-fs.json・composer-audit.json・npm-audit.json
-  reports/secrets/  gitleaks-{pm,backend,frontend}.json
+  reports/sca/      trivy-fs.json・trivy-image-*.json・composer-audit.json・
+                    npm-audit.json・sbom.cdx.json・scanner-image-digests.txt
+  reports/secrets/  gitleaks-{<專案名>,backend,frontend}.json
   reports/dast/     detect/ 與 blocking/ 各一份 report.{json,html}，compare/ 是對照
 
 結束碼

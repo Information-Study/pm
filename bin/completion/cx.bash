@@ -24,7 +24,7 @@ _cx_completion() {
     # 這份清單就是「cx 到底做得到什麼」的權威來源之一 ——
     # 新增動詞時四個地方要一起改：bin/cmd/<verb>.sh、cx 的 CX_CMD_FILE_OF
     #（只有檔名與動詞不同名時才需要）、這裡、以及 bin/cmd/help.sh。
-    local verbs='help doctor setup acl lint style scan verify git fresh tui install uninstall code pma php
+    local verbs='help doctor setup acl lint style scan verify git fresh rename tui install uninstall code pma php
                  art composer npm db test sonar deploy
                  dev prod up down restart ps logs sh build config dc'
 

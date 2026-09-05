@@ -234,6 +234,7 @@ _tui_env() {
         lint   "靜態檢查：ansible / php / js / sh" \
         acl    "檔案權限（POSIX ACL）" \
         fresh  "⚠ 清理與重建專案" \
+        rename "⚠ 把整個範本改成新的專案名" \
         status "三個 repo 的狀態"); do
         case $c in
             '<')     return 0 ;;
@@ -244,6 +245,7 @@ _tui_env() {
             lint)    _tui_lint ;;
             acl)     _tui_acl ;;
             fresh)   _tui_fresh ;;
+            rename)  _tui_rename ;;
             *)       _tui_run "$c" ;;
         esac
     done
@@ -334,6 +336,21 @@ _tui_acl_user() {
             rm)     _tui_run acl user rm "$who" ;;
         esac
     done
+}
+
+# rename 會改寫專案身分（.cxroot / .env / group_vars…）。
+# 一律先跑一次 dry-run 把變更點列給使用者看，再問要不要真的套用 ——
+# 這裡不加 --yes，cx rename 自己的確認閘門仍然會問。
+_tui_rename() {
+    local new
+    new=$(_tui_ask "改名" "新的專案名稱（小寫開頭，只能有小寫英數與 - _）：") || return 0
+    [[ -n $new ]] || return 0
+    _tui_run --dry-run rename "$new"
+    cx_confirm --danger "套用改名？" \
+"上面是 dry-run 列出的變更點。
+
+要真的套用嗎？（cx rename 自己還會再問一次）" || return 0
+    _tui_run rename "$new"
 }
 
 # fresh 是全專案唯一會刪掉前後端與 .git 的動詞。放進選單是為了「看得到」，

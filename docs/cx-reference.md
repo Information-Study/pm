@@ -830,6 +830,60 @@ cx fresh --rollback [--from <封存目錄>]
 
 ---
 
+## `cx rename` — 把範本改成新的專案名
+
+```bash
+cx --dry-run rename shop     # 只列出變更點，不動任何檔案
+cx rename shop               # 列出變更點 → 確認閘門 → 套用
+```
+
+### 為什麼需要一個動詞
+
+`cx` 的 shell / Python 層是**乾淨**的 —— 專案身分一律從 `.cxroot` 的
+`CX_PROJECT_NAME` 推導（`cx_project` / `cx_project_for` / `cx_sonar_project`）。
+但有四個地方是硬編碼或**第二事實來源**：
+
+| 位置 | 就地改名時會怎樣 |
+|---|---|
+| `.env` 的 `PROJECT_SLUG` / `IMAGE_PREFIX` | **最嚴重的一個。** `_setup_env` 只在**產生** `.env` 時寫入，檔案已存在就早退、從不回頭核對 —— 於是 compose 專案前綴仍是舊的，網路還叫 `pm_dev_net`，而且沒有任何地方會說出來 |
+| `sonar-project.properties` 的 `projectKey` / `projectName` | SonarQube 上還是舊專案 |
+| `group_vars/all/main.yml` 的 `app_name` / `app_slug` / `db_name` / `db_user` / 三個 repo URL | 部署出去的資料庫名與帳號名還是舊的 |
+| `site.yml` 的 `hosts:` 群組名 ←→ `deploy.sh` 的 `--list-hosts` | 兩者不一致時 `cx deploy ping` 會**找不到任何主機** |
+
+### 會改什麼、不會改什麼
+
+會改上表那四類，加上 `.cxroot` 自己（含三個 repo 名）與 `.env.example`。
+
+**不會**動 `.git`、不會碰任何 remote、不會刪除任何 docker volume。
+改名不該動版本歷史，remote 要不要改是另一個決定。
+
+名稱規則是 `^[a-z][a-z0-9_-]{1,30}$` —— 那是交集：compose 專案名只吃小寫英數與
+`-` `_`，MySQL 帳號名上限 32 字元，而 Ansible 群組名不能含 `-`（會被當成運算子，
+所以群組名一律轉成底線：`shop_servers`）。
+
+### 改完之後要自己做的四件事
+
+動詞刻意不自動做這些 —— 它們都會動到既有資料或需要判斷：
+
+```bash
+cx dev down -v && cx test down -v && cx prod down -v   # 舊的容器／網路／volume 還叫舊名字
+cx dev up -d --build                                   # 映像 tag 前綴變了
+cx setup guard                                         # git hook 的白名單裡有專案名
+cx verify cli                                          # TPL-* 四項應該全綠
+```
+`ansible/inventory/hosts.yml` 的群組名也要自己改（那個檔不進版控）。
+
+### 檢查比自動化重要
+
+`cx verify cli` 的 **`TPL-*` 四項**會在每次驗收時比對上面那些點，
+所以就算有人手動改名改到一半、或是 `cx rename` 漏掉某處，都抓得到。
+實測：只改 `.cxroot` 不改其他 → `TPL-env` / `TPL-sonar` / `TPL-ansible` 三項立刻 FAIL。
+
+> `TPL-group` 檢查的是 `site.yml` 與 `deploy.sh` **彼此**一致，
+> 不是「群組名等於專案名」—— 前者是會讓部署整個失效的性質，後者只是慣例。
+
+---
+
 ## `cx install` / `cx uninstall`
 
 ```

@@ -523,6 +523,97 @@ def check_eslint_wiring():
             "bin/cmd/lint.sh 的 js 分支沒有呼叫 _lint_js_eslint —— 只會跑 Prettier")
 
 
+def _project_name():
+    """從 .cxroot 讀出專案名 —— 與 cx_project() 同一個來源。"""
+    txt = read(".cxroot") or ""
+    m = re.search(r"^CX_PROJECT_NAME=(\S+)", txt, re.M)
+    return m.group(1) if m else None
+
+
+def check_template_identity():
+    """專案身分只能有一個事實來源：.cxroot 的 CX_PROJECT_NAME。
+
+    `cx` 的 shell / Python 層是乾淨的（全部走 cx_project()），
+    但有四個地方是**硬編碼或第二事實來源**，就地改名時會靜默不一致：
+
+      .env 的 PROJECT_SLUG / IMAGE_PREFIX
+          `_setup_env` 只在**產生** .env 時寫入，檔案已存在就早退、
+          從不回頭核對。所以改了 .cxroot 之後，compose 專案前綴仍然是舊的
+          （網路還叫 pm_dev_net），而且沒有任何地方會說出來。
+      sonar-project.properties 的 projectKey / projectName
+      group_vars/all/main.yml 的 app_name / app_slug
+      site.yml 的 hosts 群組名 ←→ deploy.sh 的 --list-hosts 參數
+          這兩個必須彼此一致，否則 cx deploy ping 會找不到任何主機。
+
+    這一族檢查比 `cx rename` 更重要：自動化可以用手做，
+    但「改到一半而且沒人知道」只有檢查抓得到。
+    """
+    want = _project_name()
+    if not want:
+        row("SKIP", "TPL-name", "專案身分一致", "讀不到 .cxroot 的 CX_PROJECT_NAME")
+        return
+
+    env = read(".env")
+    if env is None:
+        row("SKIP", "TPL-env", ".env 的 slug 與 .cxroot 一致", "沒有 .env（跑 cx setup env）")
+    else:
+        bad = []
+        for key in ("PROJECT_SLUG", "IMAGE_PREFIX"):
+            m = re.search(rf"^{key}=(\S*)", env, re.M)
+            got = m.group(1) if m else "(未宣告)"
+            if got != want:
+                bad.append(f"{key}={got}")
+        if bad:
+            row("FAIL", "TPL-env", ".env 的 slug 與 .cxroot 一致",
+                f"{' '.join(bad)}，應為 {want}"
+                "（_setup_env 在 .env 已存在時會早退，不會自己修正）")
+        else:
+            row("PASS", "TPL-env", ".env 的 slug 與 .cxroot 一致", want)
+
+    sonar = read("sonar-project.properties")
+    if sonar is None:
+        row("SKIP", "TPL-sonar", "sonar-project.properties 與 .cxroot 一致", "檔案不存在")
+    else:
+        bad = []
+        for key in ("sonar.projectKey", "sonar.projectName"):
+            m = re.search(rf"^{re.escape(key)}=(\S*)", sonar, re.M)
+            got = m.group(1) if m else "(未宣告)"
+            if got != want:
+                bad.append(f"{key}={got}")
+        if bad:
+            row("FAIL", "TPL-sonar", "sonar-project.properties 與 .cxroot 一致",
+                f"{' '.join(bad)}，應為 {want}")
+        else:
+            row("PASS", "TPL-sonar", "sonar-project.properties 與 .cxroot 一致", want)
+
+    gv = read("ansible/inventory/group_vars/all/main.yml")
+    if gv is None:
+        row("SKIP", "TPL-ansible", "group_vars 的 app_slug 與 .cxroot 一致", "讀不到 group_vars")
+    else:
+        m = re.search(r'^app_slug:\s*"?([^"\s]+)"?', gv, re.M)
+        got = m.group(1) if m else "(未宣告)"
+        if got != want:
+            row("FAIL", "TPL-ansible", "group_vars 的 app_slug 與 .cxroot 一致",
+                f"app_slug={got}，應為 {want}")
+        else:
+            row("PASS", "TPL-ansible", "group_vars 的 app_slug 與 .cxroot 一致", want)
+
+    site = read("ansible/site.yml") or ""
+    dep = read("bin/cmd/deploy.sh") or ""
+    groups = set(re.findall(r"^\s*hosts:\s*(\S+)", site, re.M)) - {"localhost"}
+    used = set(re.findall(r"--list-hosts\s+(\S+)", dep)) | set(re.findall(r"ansible\s+([a-z_]+_servers)", dep))
+    if not groups or not used:
+        row("SKIP", "TPL-group", "site.yml 的 hosts 群組與 deploy.sh 一致",
+            "抓不到群組名")
+    elif groups != used:
+        row("FAIL", "TPL-group", "site.yml 的 hosts 群組與 deploy.sh 一致",
+            f"site.yml={sorted(groups)} vs deploy.sh={sorted(used)}"
+            "（不一致時 cx deploy ping 會找不到任何主機）")
+    else:
+        row("PASS", "TPL-group", "site.yml 的 hosts 群組與 deploy.sh 一致",
+            " ".join(sorted(groups)))
+
+
 def main():
     families = sys.argv[1:] or ["cli", "docs", "tui"]
     if "cli" in families:
@@ -533,6 +624,7 @@ def main():
         check_test_db_guard()
         check_bats_wiring()
         check_eslint_wiring()
+        check_template_identity()
     if "tui" in families:
         check_tui()
     if "docs" in families:
