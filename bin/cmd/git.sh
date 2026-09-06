@@ -1665,21 +1665,51 @@ _git_remote_init() {
 "
         fi
     done < <(_git_repos_order)
+    # 先問清楚這個 token 刪不刪得掉，不要在對話框裡猜。
+    # 原本這裡寫死「gh 的 token 多半沒有 delete_repo 權限」——
+    # 對有加過 scope 的人來說那是假的，而且會讓人以為建錯了只能認了。
+    local _del
+    if gh auth status 2>&1 | grep -q 'delete_repo'; then
+        _del="目前的 token **有** delete_repo，可以用 gh repo delete <org>/<name> --yes 收拾。"
+    else
+        _del="目前的 token **沒有** delete_repo，要自己上網頁刪，或先跑
+  gh auth refresh -h github.com -s delete_repo"
+    fi
     cx_confirm --danger "在 GitHub 建立遠端（PUBLIC）" \
 "以 $_who 的身分，在組織 $CX_GH_ORG 底下處理這三個 repo：
 
 $_list
-新建的一律是 **public**。建錯的話 cx 刪不掉它們 ——
-gh 的 token 多半沒有 delete_repo 權限，要自己上網頁刪。
+新建的一律是 **public**，而且**不會**推送任何程式碼（只建空的 repo）。
+建錯要刪的話需要 gh token 有 delete_repo 權限 —— $_del
 
 專案身分來自 .cxroot（CX_GH_ORG / CX_REPO_*）。名字不對就先跑 cx rename。" \
         || { cx_warn "已取消"; return "$EX_ABORT"; }
 
     cx_step "建立 GitHub 遠端（組織：$CX_GH_ORG）"
+    # URL 形式跟著 **gh 自己的設定**走，不寫死。
+    #
+    # 2026-09-06 的 init 演練發現：這裡寫死 https，而範本自己的三個 remote 都是
+    # SSH、gh 的 github.com 也設成 ssh —— 同一個工具產出兩種慣例，
+    # 而新專案的第一次 push 會突然需要 credential helper。
+    #
+    # 主機層級的設定優先於全域（實測：全域 https、github.com ssh，
+    # gh 用的是後者），所以要帶 -h github.com。讀不到就退回 https ——
+    # 那是「沒有設定過 SSH key」時唯一還能動的形式。
+    #
+    # ⚠ 這兩種形式 guard.sh 的白名單都認得（cx_guard_allow_re 同時列出
+    #   https://github\.com/ 與 git@github\.com:），所以換形式不會讓 push 被擋。
+    local _proto
+    _proto=$(gh config get git_protocol -h github.com 2>/dev/null) || _proto=''
+    [[ -n $_proto ]] || _proto=https
+    cx_dim "  remote 形式：$_proto（來源：gh config get git_protocol -h github.com）"
+
     local r slug url
     while read -r r; do
         slug=$(_git_repo_slug "$r")
-        url="https://github.com/$CX_GH_ORG/$slug.git"
+        case $_proto in
+            ssh) url="git@github.com:$CX_GH_ORG/$slug.git" ;;
+            *)   url="https://github.com/$CX_GH_ORG/$slug.git" ;;
+        esac
 
         if gh repo view "$CX_GH_ORG/$slug" >/dev/null 2>&1; then
             cx_warn "$CX_GH_ORG/$slug 已存在，略過建立"

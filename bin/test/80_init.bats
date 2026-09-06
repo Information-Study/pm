@@ -206,3 +206,71 @@ setup() {
     ls "$CX_TEST_ROOT/src/backend/database/migrations/" | grep -q personal_access_tokens \
         || _fail_with "缺少 Sanctum 的 migration"
 }
+
+# ── remote-init 的 URL 形式（2026-09-06）────────────────────────────────────
+#
+# 原本 git.sh 寫死 https://github.com/…，而範本自己的三個 remote 都是 SSH、
+# gh 的 github.com 也設成 ssh —— 同一個工具產出兩種慣例，
+# 而新專案的第一次 push 會突然需要 credential helper。
+#
+# 現在跟著 `gh config get git_protocol -h github.com` 走。用 PATH stub 驗，
+# 不碰真的 GitHub。
+
+_gh_stub() {                        # _gh_stub <ssh|https>
+    local dir="$BATS_TEST_TMPDIR/ghstub"
+    mkdir -p "$dir"
+    cat > "$dir/gh" <<GH
+#!/usr/bin/env bash
+case "\$1 \$2" in
+    "auth status") echo "Token scopes: 'repo', 'delete_repo'" ;;
+    "api user")    echo bats-user ;;
+    "config get")  echo "$1" ;;
+    "repo view")   exit 1 ;;
+    "repo create") : ;;
+esac
+exit 0
+GH
+    chmod +x "$dir/gh"
+    printf '%s' "$dir"
+}
+
+@test "remote-init：gh 設定 ssh 時，origin 是 SSH 形式" {
+    make_repo gp1 >/dev/null
+    local stub; stub=$(_gh_stub ssh)
+    PATH="$stub:$PATH" run cx_raw --root "$CX_TEST_ROOT" --yes git remote-init
+    assert_rc 0
+    run git -C "$CX_TEST_ROOT" remote get-url origin
+    assert_out_has "git@github.com:Bats-Org/gp1.git"
+    # 子模組也要跟著同一種形式，不可以一半一半
+    run git -C "$CX_TEST_ROOT/src/backend" remote get-url origin
+    assert_out_has "git@github.com:Bats-Org/gp1-backend.git"
+}
+
+@test "remote-init：gh 設定 https 時，origin 是 HTTPS 形式" {
+    make_repo gp2 >/dev/null
+    local stub; stub=$(_gh_stub https)
+    PATH="$stub:$PATH" run cx_raw --root "$CX_TEST_ROOT" --yes git remote-init
+    assert_rc 0
+    run git -C "$CX_TEST_ROOT" remote get-url origin
+    assert_out_has "https://github.com/Bats-Org/gp2.git"
+}
+
+@test "remote-init 產生的 URL 一定落在 push 白名單內（兩種形式都要）" {
+    # 換 URL 形式最容易踩到的地雷：guard 的白名單只認其中一種，
+    # 於是 remote-init 之後 cx git push 會擋下自己剛設好的 origin。
+    local m
+    for m in ssh https; do
+        make_repo "gp3$m" >/dev/null
+        local stub; stub=$(_gh_stub "$m")
+        PATH="$stub:$PATH" run cx_raw --root "$CX_TEST_ROOT" --yes git remote-init
+        assert_rc 0
+        local url; url=$(git -C "$CX_TEST_ROOT" remote get-url origin)
+        run bash -c "
+            . '$CX_TEST_REAL_ROOT/bin/lib/common.sh' 2>/dev/null
+            . '$CX_TEST_ROOT/.cxroot'
+            . '$CX_TEST_REAL_ROOT/bin/lib/guard.sh'
+            printf '%s' '$url' | grep -qE \"\$(cx_guard_allow_re)\"
+        "
+        assert_rc 0
+    done
+}

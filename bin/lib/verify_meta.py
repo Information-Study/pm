@@ -1400,6 +1400,60 @@ def check_ansible_split():
         row("PASS", "ANS-split", "A15 斷言與 deploy_backend 的 gate 同群組", gate)
 
 
+def check_ansible_dbname():
+    """應用程式資料庫名不可與 mysql role 要清掉的 test schema 同名。
+
+    `mysql_app_db_name` 來自 group_vars 的 `db_name`（= 專案名），
+    而 `mysql_test_db_name` 預設寫死是 `test`。兩者相同時，同一支
+    `roles/mysql/tasks/databases.yml` 會先建立應用程式資料庫、稍後又對它
+    下 `state: absent`。
+
+    第一次部署必然踩到：migration 在 `deploy_backend` 裡跑、排在 mysql 之後，
+    所以此刻應用程式資料庫的 table_count 是 0 —— 「空的才准刪」那道 gate
+    **會通過**。之後每次部署則會撞上「有資料表，拒絕 DROP」的 fail，
+    而它叫操作者去 mysqldump 然後清空的，正是正式資料。
+
+    A22（roles/mysql/tasks/assert.yml）會在部署時擋下來，但那要等到真的連上
+    主機。這條檢查讓它在 repo 裡就看得到 —— 而且 `cx rename test` 之後
+    下一次 `cx verify docs` 就會紅。
+    """
+    gv = read("env/ansible/inventory/group_vars/all/main.yml")
+    md = read("env/ansible/roles/mysql/defaults/main.yml")
+    if not gv or not md:
+        row("SKIP", "ANS-dbname", "應用程式資料庫名不與 test schema 撞名",
+            "讀不到 group_vars 或 mysql defaults")
+        return
+
+    m = re.search(r'^db_name:\s*&db_name\s*"([^"]+)"', gv, re.M)
+    # group_vars 可以覆寫 mysql_test_db_name，覆寫優先
+    t = re.search(r'^mysql_test_db_name:\s*"?([^"\s#]+)', gv, re.M) \
+        or re.search(r'^mysql_test_db_name:\s*"?([^"\s#]+)', md, re.M)
+    if not m or not t:
+        row("FAIL", "ANS-dbname", "應用程式資料庫名不與 test schema 撞名",
+            f"抓不到值（db_name={'有' if m else '無'}、"
+            f"mysql_test_db_name={'有' if t else '無'}）—— 這條檢查已停止驗證")
+        return
+
+    app, test_db = m.group(1), t.group(1)
+    # 撞名本身無害 —— 危險的是「撞名 **且** 允許 DROP」。
+    # 所以 drop 關著的時候不判 FAIL，但要在備註裡講清楚這顆地雷還在。
+    d = re.search(r"^mysql_drop_test_db:\s*(\S+)", gv, re.M) \
+        or re.search(r"^mysql_drop_test_db:\s*(\S+)", md, re.M)
+    drop = (d.group(1).strip('"\'').lower() in ("true", "yes", "on")) if d else False
+
+    if app != test_db:
+        row("PASS", "ANS-dbname", "應用程式資料庫名不與 test schema 撞名",
+            f"db_name={app}・mysql_test_db_name={test_db}")
+    elif drop:
+        row("FAIL", "ANS-dbname", "應用程式資料庫名不與 test schema 撞名",
+            f"兩者都是 '{app}' 而且 mysql_drop_test_db 是開的 —— "
+            f"databases.yml 會先建立它再 DROP 它（部署時 A22 也會擋）")
+    else:
+        row("PASS", "ANS-dbname", "應用程式資料庫名不與 test schema 撞名",
+            f"兩者都是 '{app}'，但 mysql_drop_test_db 關著所以無害 —— "
+            f"要打開它之前必須先給 mysql_test_db_name 一個不撞名的值")
+
+
 def check_doc_index():
     """宣稱是「完整清單」的文件索引，必須真的完整。
 
@@ -1679,6 +1733,7 @@ def main():
     if "docs" in families:
         check_docs()
         check_ansible_split()
+        check_ansible_dbname()
         check_doc_index()
         check_doc_filemap()
         check_doc_verify_scopes()

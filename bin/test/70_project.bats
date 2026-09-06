@@ -81,9 +81,14 @@ app_name: "$n"
 app_slug: "$n"
 db_name: &db_name "$n"
 db_user: &db_user "$n"
-app_repo: "https://github.com/Org/$n.git"
-backend_repo: "https://github.com/Org/$n-backend.git"
+app_repo: "https://github.com/Bats-Org/$n.git"
+backend_repo: "https://github.com/Bats-Org/$n-backend.git"
+frontend_repo: "git@github.com:Bats-Org/$n-frontend.git"
 YML
+    # hosts.yml.example 的群組名也要跟著改 —— 文件教的做法就是照它複製一份，
+    # 群組名留舊值的話 site.yml 比對不到主機，而 ansible 只 warn 然後回 0。
+    printf '# %s_servers site.yml 的作用對象\nall:\n  children:\n    %s_servers:\n      hosts: {}\n' \
+        "$n" "$n" > "$CX_TEST_ROOT/env/ansible/inventory/hosts.yml.example"
     printf -- '- name: %s | 部署\n  hosts: %s_servers\n' "$n" "$n" \
         > "$CX_TEST_ROOT/env/ansible/site.yml"
     printf 'app_slug: "%s"\n' "$n" > "$CX_TEST_ROOT/env/ansible/roles/demo/defaults/main.yml"
@@ -399,4 +404,42 @@ print('OK')
     run _inv set nope --no-db
     [ "$status" -ne 0 ] || _fail_with "改一台不存在的主機卻成功了"
     assert_out_has "nope" "h1"
+}
+
+# ── rename 的三個 2026-09-06 修正 ────────────────────────────────────────
+#
+# 這三個都是 init 演練時發現的：功能「成功」了，但留下一個之後才會炸的狀態。
+
+@test "rename 也改 hosts.yml.example 的群組名（否則 deploy 會成功地什麼都沒做）" {
+    _rename_fixture old6
+    run cx_raw --root "$CX_TEST_ROOT" --yes rename shop
+    assert_rc 0
+    run cat "$CX_TEST_ROOT/env/ansible/inventory/hosts.yml.example"
+    assert_out_has "shop_servers"
+    assert_out_lacks "old6_servers"
+}
+
+@test "rename --org 會改掉 repo URL 的組織段（不是只改最後一段）" {
+    _rename_fixture old7
+    run cx_raw --root "$CX_TEST_ROOT" --yes rename shop --org New-Org
+    assert_rc 0
+    run cat "$CX_TEST_ROOT/env/ansible/inventory/group_vars/all/main.yml"
+    # 名字換了，而且**組織也換了** —— 只換名字的話 Ansible 會去 clone 舊組織
+    assert_out_has "New-Org/shop.git" "New-Org/shop-backend.git"
+    assert_out_lacks "Bats-Org"
+    # ssh 形式（git@github.com:org/…）也要蓋到
+    assert_out_has "New-Org/shop-frontend.git"
+    run grep '^CX_GH_ORG=' "$CX_TEST_ROOT/.cxroot"
+    assert_out_has "CX_GH_ORG=New-Org"
+}
+
+@test "rename 對保留字是**警告**不是硬擋（test 要用得成）" {
+    _rename_fixture old8
+    run cx_raw --root "$CX_TEST_ROOT" --yes rename test
+    assert_rc 0
+    # 一定要講，而且要講到 mysql 那個碰撞
+    assert_out_has "與既有的名稱空間同字" "mysql_test_db_name"
+    # 但真的改成功了
+    run grep '^CX_PROJECT_NAME=' "$CX_TEST_ROOT/.cxroot"
+    assert_out_has "CX_PROJECT_NAME=test"
 }

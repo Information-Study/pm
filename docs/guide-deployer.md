@@ -239,6 +239,32 @@ hardening_ufw_allowed_tcp_ports: [22, 80, 443, 9000]   # ④ 放行 9000（限�
 | `--syntax-check` / `ansible-lint` / `yamllint` | ✅ |
 | **跨主機的 FPM / Nitro 實際流量** | ⬜ **未驗** —— 需要第二台真機 |
 
+### 3.35 ⚠ `mysql_drop_test_db` 與專案名撞名（A22）
+
+`roles/mysql` 有一個清理動作：把 MySQL 內建、通常沒用的 `test` schema 刪掉。
+它的 gate 是 `mysql_drop_test_db`，**預設 `false`**。
+
+問題出在專案名也可能是 `test` —— 那時 `mysql_app_db_name`（來自 `db_name`）
+與 `mysql_test_db_name`（寫死 `test`）指向同一個資料庫，於是同一支
+`tasks/databases.yml` 會先建立它、稍後又對它下 `state: absent`。
+
+**第一次部署必然踩到**：migration 在 `deploy_backend` 裡跑、排在 `mysql` 之後，
+所以此刻應用程式資料庫的 table 數是 0 ——「空的才准刪」那道 gate **會通過**。
+之後每次部署則會撞上「有資料表，拒絕 DROP」的 fail，
+而它叫你去 mysqldump 然後清空的，正是你的正式資料。
+
+三道防線（2026-09-06 補）：
+
+| | 在哪 | 什麼時候擋 |
+|---|---|---|
+| 靜態 | `cx verify docs` 的 `ANS-dbname` | 在 repo 裡就看得到 |
+| 部署 | `roles/mysql/tasks/assert.yml` 的 A22 | 角色最前面 |
+| 動作 | DROP task 自己的 `when` | 有人用 `--tags` 只跑到那裡 |
+
+三道都只在 `mysql_drop_test_db` 真的打開時才擋 —— 撞名本身無害，
+危險的是「撞名 **且** 允許 DROP」。要打開它而專案又叫 `test` 的話，
+先在 `group_vars` 給 `mysql_test_db_name` 一個不撞名的值。
+
 ### 3.4 資料庫層 —— `db_primary` 仍必須在 `web_backend` 裡
 
 支援的拓撲是「多台 `web_backend`，其中一台**兼任** `db_primary`」：

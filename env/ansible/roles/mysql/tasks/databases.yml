@@ -92,3 +92,8 @@
     - mysql_drop_test_db | bool
     - mysql_test_db_exists | default(false) | bool
     - (mysql_test_db_tables | default(0) | int) == 0
+    # 縱深防禦。A22（roles/mysql/tasks/assert.yml）已經擋在角色最前面，
+    # 這一條是為了「有人用 --tags 只跑到這裡」的情形 ——
+    # 這是整個 role 裡唯一一個會 DROP DATABASE 的 task，
+    # 多一道條件的成本遠低於一次資料庫消失。
+    - mysql_app_db_name != mysql_test_db_name

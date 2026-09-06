@@ -720,7 +720,7 @@ cx git <子指令> [參數...]
 | `commit [-m 訊息]` | 子模組先、主庫 gitlink 後 |
 | `save [-m 訊息]` | `commit` 的別名 |
 | `branch list\|new\|switch\|delete <名稱> [--repo main\|backend\|frontend\|all]` | 預設三個 repo 一起；`new` 另接 `--from <ref>`（switch/delete **不吃**，會 EX_USAGE）；主庫拒絕 `feature/*` |
-| `remote-init` | 用 `gh` 在 `.cxroot` 的 `CX_GH_ORG` 底下建三個 public repo（**有確認閘門**） |
+| `remote-init` | 用 `gh` 在 `.cxroot` 的 `CX_GH_ORG` 底下建三個 public repo（**有確認閘門**；不推送任何程式碼，URL 形式跟著 `gh config get git_protocol -h github.com`） |
 | `push [--force]` | 推送 |
 | `scan-secrets` | 祕密掃描（commit / push 前會自動跑） |
 | `guard install\|status\|remove` | pre-push hook |
@@ -1277,7 +1277,18 @@ cx rename shop               # 列出變更點 → 確認閘門 → 套用
 
 ### 會改什麼、不會改什麼
 
-會改上表那四類，加上 `.cxroot` 自己（含三個 repo 名）與 `.env.example`。
+會改上表那四類，加上 `.cxroot` 自己（含三個 repo 名）與 `.env.example`，
+以及 `inventory/hosts.yml.example` 的群組名。
+
+> ⚠ `.example` 那一份是 2026-09-06 補的，它不是裝飾。
+> 「照 `.example` 複製一份 `hosts.yml`」是文件教的做法，而群組名留著舊值的話
+> `site.yml` 比對不到任何主機 —— ansible 只會印一行 warning 然後**回傳 0**，
+> 於是 `cx deploy ping` / `check` / `apply` 會「成功地什麼都沒做」。
+
+`--org` 除了改 `.cxroot` 的 `CX_GH_ORG`，也會改 `group_vars` 裡三個 repo URL 的
+**組織那一段**（https 與 ssh 兩種寫法都蓋）。原本只換 URL 的最後一段
+（`<舊名>.git` → `<新名>.git`），於是 `cx init <名字> --org <新組織>` 之後
+Ansible 仍會去 clone **舊組織**的 repo —— 而那要部署到一半才會發現。
 
 **不會**動 `.git`、不會碰任何 remote、不會刪除任何 docker volume。
 改名不該動版本歷史，remote 要不要改是另一個決定。
@@ -1285,6 +1296,23 @@ cx rename shop               # 列出變更點 → 確認閘門 → 套用
 名稱規則是 `^[a-z][a-z0-9_-]{1,30}$` —— 那是交集：compose 專案名只吃小寫英數與
 `-` `_`，MySQL 帳號名上限 32 字元，而 Ansible 群組名不能含 `-`（會被當成運算子，
 所以群組名一律轉成底線：`shop_servers`）。
+
+### 保留字：**警告，不擋**
+
+`dev` / `test` / `prod`（cx 的模式名）與 `production` / `staging` / `local`
+（Ansible 的環境群組名）都能當專案名，`cx rename` 只會警告。
+硬擋是錯的 —— 拿 `test` 當專案名做演練正是這個工具該支援的事。
+
+警告會講出具體會發生什麼：
+
+* **模式同名**：三個模式變成 `test_dev` / `test_test` / `test_prod`。
+  cx 自己分得清楚（所有 docker 查詢都用 `label=com.docker.compose.project=`
+  精確比對，**沒有任何地方**把 `<專案>_<模式>` 反解回兩段），
+  但 `docker ps | grep test` 會同時命中三套堆疊。
+* **`test` 另外還有一個**：`roles/mysql` 的 `mysql_test_db_name` 寫死是 `test`，
+  而應用程式資料庫改名後也叫 `test`。見 [`verify-checks.md`](verify-checks.md)
+  的 `ANS-dbname` 與 `roles/mysql/tasks/assert.yml` 的 A22。
+
 
 ### 改完之後要自己做的四件事
 

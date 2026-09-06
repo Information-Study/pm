@@ -285,3 +285,61 @@ $staged"
     [[ $output == *"停止驗證"* ]] \
         || _fail_with "訊息沒有說明這是「檢查壞了」而不是「程式碼壞了」：$output"
 }
+
+# ── ANS-dbname：應用程式資料庫不可與要被清掉的 test schema 撞名 ──────────
+#
+# roles/mysql 的 mysql_test_db_name 預設寫死是 test，而 mysql_app_db_name
+# 來自 group_vars 的 db_name（= 專案名）。專案叫 test 的話兩者相同，
+# 同一支 databases.yml 會先建立應用程式資料庫、稍後又對它下 state: absent。
+#
+# 第一次部署必然踩到：migration 在 deploy_backend 裡跑、排在 mysql 之後，
+# 所以此刻 table_count 是 0 —— 「空的才准刪」那道 gate **會通過**。
+#
+# 但撞名本身無害，危險的是「撞名 **且** 允許 DROP」。所以這是三態，
+# 而不是「撞名就紅」—— 後者會讓一個正當地叫 test 的專案連部署都做不了。
+
+_dbname_fixture() {                 # _dbname_fixture <專案名> <drop:true|false>
+    local n=$1 drop=$2 t="$BATS_TEST_TMPDIR/dbn-$n-$drop"
+    mkdir -p "$t/env/ansible/inventory/group_vars/all" \
+             "$t/env/ansible/roles/mysql/defaults" "$t/bin"
+    cp -r "$CX_TEST_REAL_ROOT/bin/lib" "$t/bin/"
+    cp "$CX_TEST_REAL_ROOT/.cxroot" "$t/"
+    cp "$CX_TEST_REAL_ROOT/env/ansible/roles/mysql/defaults/main.yml" \
+       "$t/env/ansible/roles/mysql/defaults/"
+    sed -e "s|^db_name: &db_name \"pm\"|db_name: \&db_name \"$n\"|" \
+        -e "s|^mysql_drop_test_db: .*|mysql_drop_test_db: $drop|" \
+        "$CX_TEST_REAL_ROOT/env/ansible/inventory/group_vars/all/main.yml" \
+        > "$t/env/ansible/inventory/group_vars/all/main.yml"
+    printf '%s' "$t"
+}
+
+@test "ANS-dbname：撞名且 drop 打開 → FAIL" {
+    local t; t=$(_dbname_fixture test true)
+    run bash -c "CX_ROOT='$t' python3 '$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py' docs"
+    [[ $output == *"FAIL|ANS-dbname"* ]] \
+        || _fail_with "撞名又允許 DROP 卻沒有變紅：$(grep -i dbname <<<"$output")"
+}
+
+@test "ANS-dbname：撞名但 drop 關著 → PASS，而且備註要講出這顆地雷" {
+    local t; t=$(_dbname_fixture test false)
+    run bash -c "CX_ROOT='$t' python3 '$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py' docs"
+    [[ $output == *"PASS|ANS-dbname"* ]] \
+        || _fail_with "drop 關著卻擋下一個正當的專案名：$(grep -i dbname <<<"$output")"
+    [[ $output == *"mysql_drop_test_db 關著所以無害"* ]] \
+        || _fail_with "PASS 了但沒說明地雷還在：$(grep -i dbname <<<"$output")"
+}
+
+@test "ANS-dbname：沒撞名時就算 drop 打開也不該紅" {
+    local t; t=$(_dbname_fixture shop true)
+    run bash -c "CX_ROOT='$t' python3 '$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py' docs"
+    [[ $output == *"PASS|ANS-dbname"* ]] \
+        || _fail_with "沒撞名卻紅了：$(grep -i dbname <<<"$output")"
+}
+
+@test "ANS-dbname：抓不到值時要 FAIL（不可以安靜地什麼都不驗）" {
+    local t; t=$(_dbname_fixture shop false)
+    sed -i '/^mysql_test_db_name:/d' "$t/env/ansible/roles/mysql/defaults/main.yml"
+    run bash -c "CX_ROOT='$t' python3 '$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py' docs"
+    [[ $output == *"FAIL|ANS-dbname"* && $output == *"停止驗證"* ]] \
+        || _fail_with "值不見了卻沒說檢查壞掉：$(grep -i dbname <<<"$output")"
+}

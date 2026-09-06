@@ -60,6 +60,32 @@ _rename_plan_file() {                   # _rename_plan_file <檔案> <old> <new>
     return 1
 }
 
+# 保留字的警告。回傳值一律 0 —— 這是提醒，不是閘門。
+_rename_reserved_warn() {           # _rename_reserved_warn <新名稱>
+    local n=$1 hit=''
+    case " dev test prod " in *" $n "*) hit=mode ;; esac
+    case " production staging local " in *" $n "*) hit=env ;; esac
+    [[ -n $hit ]] || return 0
+
+    cx_warn "「$n」與既有的名稱空間同字 —— 可以用，但先知道會發生什麼"
+    if [[ $hit == mode ]]; then
+        cx_dim "  它同時是 cx 的模式名，三個模式會變成 ${n}_dev / ${n}_test / ${n}_prod。"
+        cx_dim "  cx 自己分得清楚（docker 查詢一律用 label=com.docker.compose.project="
+        cx_dim "  精確比對，沒有任何地方把 <專案>_<模式> 反解回兩段），"
+        cx_dim "  但 docker ps | grep $n 會同時命中三套堆疊。"
+    else
+        cx_dim "  它同時是 Ansible 的環境群組名（inventory 的 staging / production）。"
+        cx_dim "  群組會變成 ${n}_servers 與 $n 兩個，看起來很像但不是同一個。"
+    fi
+    if [[ $n == test ]]; then
+        cx_dim "  另外：roles/mysql 的 mysql_test_db_name 寫死是 test，而應用程式資料庫"
+        cx_dim "  改名後也叫 test —— 同一支 databases.yml 會先建立它、稍後又對它"
+        cx_dim "  下 state: absent。roles/mysql/tasks/assert.yml 的 A16 會擋下這個組合；"
+        cx_dim "  真要用 test 當專案名，就在 group_vars 把 mysql_test_db_name 改掉。"
+    fi
+    return 0
+}
+
 cmd_rename_main() {
     local new=${1:-}
     case $new in
@@ -91,6 +117,13 @@ cmd_rename_main() {
     [[ $new =~ $_RENAME_RE ]] || cx_die "$EX_USAGE" \
         "新名稱「$new」不合法 —— 需符合 $_RENAME_RE
     它會被拼成 compose 專案名、docker 網路名、映像前綴、MySQL 帳號名與 Ansible 群組名。"
+
+    # 保留字：**警告，不擋**。
+    #
+    # 這些名字合法、也真的能用，硬擋是錯的 —— 拿 test 當專案名做演練正是這個
+    # 工具該支援的事。但不講也是錯的：2026-09-06 的 init 演練就是踩在這上面，
+    # 才發現 roles/mysql 的 mysql_test_db_name 碰撞。
+    _rename_reserved_warn "$new"
 
     # 只改 --org 是合法的用法（cx re-init --org X 就走這條）。
     # 原本這裡無條件擋下同名，於是那條路徑整個是死的：
@@ -127,6 +160,12 @@ cmd_rename_main() {
         "/^  hosts: $old_grp\$/p" && targets+=(env/ansible/site.yml)
     _rename_plan_file bin/cmd/deploy.sh "$old" "$new" \
         "/$old_grp/p" && targets+=(bin/cmd/deploy.sh)
+    # ⚠ .example 也要改，它不是裝飾。「照 .example 複製一份 hosts.yml」是文件教的
+    #   做法，而群組名留著舊值的話 site.yml 比對不到任何主機 —— ansible 只會印
+    #   一行 warning 然後**回傳 0**，於是 cx deploy ping / check / apply
+    #   會「成功地什麼都沒做」。
+    _rename_plan_file env/ansible/inventory/hosts.yml.example "$old" "$new" \
+        "/$old_grp/p" && targets+=(env/ansible/inventory/hosts.yml.example)
 
     # role 的 defaults/meta 是**被 group_vars 蓋掉**的（group_vars 優先序較高），
     # 所以留著舊名字不會讓部署跑錯 —— 但它們是第二事實來源，
@@ -198,10 +237,19 @@ cmd_rename_main() {
                               -e "s|/$old-backend\.git|/$new-backend.git|g" \
                               -e "s|/$old-frontend\.git|/$new-frontend.git|g" \
                               -e "s|^\(ansible_managed:.*\)$old \(專案的\)|\1$new \2|" \
-                    "$CX_ROOT/$f" ;;
+                    "$CX_ROOT/$f"
+                # ⚠ 上面那三條只換 URL 的**最後一段**（<舊名>.git → <新名>.git）。
+                #   組織那一段要另外換 —— 不換的話 `cx init <名字> --org <新組織>`
+                #   之後，Ansible 仍會去 clone **舊組織**的 repo，而那是部署到
+                #   一半才會發現的事。https 與 ssh 兩種寫法都要蓋到。
+                if [[ -n $org && -n ${cur_org:-} && $org != "${cur_org:-}" ]]; then
+                    cx_run sed -i -e "s|github\.com/$cur_org/|github.com/$org/|g" \
+                                  -e "s|github\.com:$cur_org/|github.com:$org/|g" \
+                        "$CX_ROOT/$f"
+                fi ;;
             env/ansible/site.yml)
                 cx_run sed -i -e "s|^  hosts: $old_grp\$|  hosts: $new_grp|" "$CX_ROOT/$f" ;;
-            bin/cmd/deploy.sh)
+            bin/cmd/deploy.sh|env/ansible/inventory/hosts.yml.example)
                 cx_run sed -i -e "s|\\b$old_grp\\b|$new_grp|g" "$CX_ROOT/$f" ;;
             --org)
                 cx_run sed -i -e "s|^CX_GH_ORG=.*$|CX_GH_ORG=$org|" "$CX_ROOT/.cxroot" ;;

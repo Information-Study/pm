@@ -10,6 +10,40 @@
       {{ ansible_facts['os_family'] | default('unknown') }}。
     quiet: true
 
+# ── A22：應用程式資料庫不可與「要被清掉的」test schema 同名 ──────────────
+#
+# mysql_test_db_name 預設寫死是 test，而 mysql_app_db_name 來自 app_db_name
+#（= 專案名）。專案叫 test 的話兩者相同，於是同一支 databases.yml 會：
+#   1. 建立 {{ mysql_app_db_name }}（應用程式資料庫）
+#   2. 稍後對 {{ mysql_test_db_name }} 下 state: absent
+#
+# 而且第一次部署一定踩得到：migration 在 deploy_backend 裡跑，排在 mysql 之後，
+# 所以此刻應用程式資料庫的 table_count 是 0 —— 「空的 schema 才准刪」那道 gate
+# **會通過**，資料庫就這樣被 DROP 掉，接著 artisan migrate 死在
+# Unknown database。之後每次部署則相反：有資料表了，於是那道 fail 會叫操作者
+# 「先人工確認那些資料表可以丟棄並做一次 mysqldump」—— 指的正是他的正式資料。
+#
+# 預設 mysql_drop_test_db: false 是唯一擋著的東西，而 production.yml.example
+# 的措辭（「除非你真的確認 test schema 是空的而且不需要」）正好會誘導人打開它。
+- name: A22 —— 應用程式資料庫不可與 mysql_test_db_name 同名
+  ansible.builtin.assert:
+    that:
+      - mysql_app_db_name != mysql_test_db_name
+    quiet: true
+    fail_msg: >-
+      mysql_app_db_name 與 mysql_test_db_name 都是
+      '{{ mysql_app_db_name }}' —— 這會讓同一支 databases.yml
+      先建立應用程式資料庫、稍後又對它下 DROP DATABASE。
+      成因通常是專案名就叫 test（app_db_name 由專案名推導，而
+      mysql_test_db_name 預設寫死是 test）。
+      修正：把 mysql_drop_test_db 設回 false（預設值，撞名就無害），
+      或在 inventory/group_vars/all/main.yml 給 mysql_test_db_name 一個
+      不會撞名的值，或把專案改成別的名字。
+  # 只在 drop 真的打開時才擋。撞名本身無害 —— 危險的是「撞名 **且** 允許 DROP」。
+  # 無條件擋的話，一個正當地叫 test 的專案會連部署都做不了，
+  # 而它其實什麼問題都沒有（mysql_drop_test_db 預設就是 false）。
+  when: mysql_drop_test_db | bool
+
 - name: mysql_repo_source 必須是 oracle 或 distro
   ansible.builtin.assert:
     that:

@@ -38,6 +38,7 @@ cx verify all                    # 以上再加 runtime waf acl
 | `LAY-ignore` | `src/` 不可被 ignore、祕密檔必須被 ignore、**`cx fresh` 用的範本也擋得住同樣的東西** | **SSH 公鑰／vault 密碼／主機清單進 PUBLIC 歷史**（gitleaks 抓不到這一類） |
 | `LAY-version` | `.cxroot` 與 `common.sh` 的版號雙向一致 | 版號退回裝飾 |
 | `LAY-scaffold` | `cx fresh` 重建骨架時，產生器的目標與 docker workdir 是 v3 路徑 | **`cx init` 先把樹刪光，再失敗** |
+| `ANS-dbname` | 應用程式資料庫名不與 mysql role 要清掉的 `test` schema 撞名 | **正式資料庫被 DROP** |
 
 ### `LAY-legacy` 抓的三類，以及為什麼要三類
 
@@ -66,6 +67,37 @@ cx verify all                    # 以上再加 runtime waf acl
 > ② 與 ③ 刻意不掃 `.md` 與註解：它們偵測的是**程式碼裡的路徑用法**，
 > 而描述這個問題本身的文字（`docs/cx/layout.md`、`verify_meta.py` 上方的
 > 註解、這一節）必須寫得出舊形式。①（會誤導讀者的字面）才需要掃文件。
+
+### `ANS-dbname` 是三態，不是「撞名就紅」
+
+`mysql_app_db_name` 來自 group_vars 的 `db_name`（＝專案名），
+而 `roles/mysql/defaults/main.yml` 把 `mysql_test_db_name` 寫死成 `test`
+（那是 MySQL 內建、通常該清掉的殘留 schema）。專案叫 `test` 時兩者相同，
+於是同一支 `roles/mysql/tasks/databases.yml` 會：
+
+1. 建立 `{{ mysql_app_db_name }}` —— 應用程式資料庫
+2. 稍後對 `{{ mysql_test_db_name }}` 下 `state: absent`
+
+**第一次部署必然踩到**：migration 在 `deploy_backend` 裡跑、排在 `mysql` 之後，
+所以此刻應用程式資料庫的 `table_count` 是 0 ——「空的 schema 才准刪」那道 gate
+**會通過**，資料庫就這樣被 DROP，接著 `artisan migrate` 死在 `Unknown database`。
+之後每次部署則相反：有資料表了，於是那道 `fail` 會叫操作者
+「先人工確認那些資料表可以丟棄並做一次 mysqldump」—— 指的正是他的正式資料。
+
+但**撞名本身無害**，危險的是「撞名 **且** 允許 DROP」。所以這條檢查是三態：
+
+| 情況 | 結果 |
+|---|---|
+| 名字不同 | PASS |
+| 撞名，`mysql_drop_test_db: true` | **FAIL** |
+| 撞名，`mysql_drop_test_db: false`（預設） | PASS，備註講明這顆地雷還在 |
+
+無條件判紅是錯的 —— 那會讓一個正當地叫 `test` 的專案連部署都做不了，
+而它其實什麼問題都沒有。部署時的第二道是
+`roles/mysql/tasks/assert.yml` 的 **A22**（同樣只在 `mysql_drop_test_db` 打開時擋），
+第三道是 DROP task 自己的 `when` —— 那是給「用 `--tags` 只跑到那裡」的情形。
+
+`80_verify.bats` 有四條案例釘住這三態，外加「抓不到值要 FAIL」。
 
 ### `LAY-scaffold` 為什麼不能靠 `LAY-legacy` 代勞
 
