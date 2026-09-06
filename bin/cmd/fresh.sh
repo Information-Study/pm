@@ -684,12 +684,17 @@ _fresh_carryover() {
         # while-read 而不是 `for d in ${KEEP[$c]}` —— 後者靠字詞分割，
         # 目錄名含空白就會裂開。shellcheck 的 SC2086 抓得到，但 _lint_sh
         # 只 gate error，所以那個問題在 CI 上是看不見的。
+        # ⚠ tar 的內容在 v3 是 src/<c>/…（archive.sh 用 -C "$CX_ROOT" -- "src/$c"），
+        #   舊封存則是 <c>/…。兩種都要讀得懂 —— 只認一種的話，另一種會讓
+        #   每個迴圈都 continue，什麼都沒疊回去，而使用者的程式碼只留在封存裡。
+        #   _fresh_verify_rebuild 有同樣的 fallback，這裡漏了（雲端複審抓到）。
+        local base="$tmp/src/$c"; [[ -d $base ]] || base="$tmp/$c"
         while IFS= read -r d; do
             [[ -n $d ]] || continue
-            [[ -d $tmp/$c/$d ]] || continue
+            [[ -d $base/$d ]] || continue
             cx_run mkdir -p "$CX_ROOT/src/$c/$(dirname "$d")" || return 1
             # -T：把來源目錄的**內容**疊上去，而不是變成子目錄
-            cx_run cp -a -T "$tmp/$c/$d" "$CX_ROOT/src/$c/$d" || return 1
+            cx_run cp -a -T "$base/$d" "$CX_ROOT/src/$c/$d" || return 1
             n=$((n + 1))
         done < <(_fresh_keep_dirs "$c")
         cx_ok "$c：疊回 $n 個目錄"

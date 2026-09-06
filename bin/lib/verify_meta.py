@@ -1022,6 +1022,7 @@ def check_git_branch_model():
 #   用 "docker" "/compose/" 這種拼接寫法，讓任何以「整段路徑」為單位的
 #   批次替換都比對不到它。
 _D, _A = "docker", "ansible"
+_BE, _FE = "backend", "frontend"
 LEGACY_LITERALS = tuple(
     _D + x for x in ("/compose/", "/env/", "/php/", "/nuxt/", "/edge/", "/waf/",
                      "/entrypoint/", "/security/", "/legacy/", "/ansible-target/")
@@ -1029,8 +1030,108 @@ LEGACY_LITERALS = tuple(
     _A + x for x in ("/site.yml", "/inventory/", "/roles/", "/playbooks/",
                      "/README.md", "/ansible.cfg", "/requirements.yml")
 )
+
 # 這些前綴之後出現「舊字面」是因為它是**新路徑的後綴**，不算違規。
 LEGACY_ALLOW_PREFIX = ("env/", "$CX_ROOT/env/", "./env/", "/env/", "'env/", '"env/')
+
+# ── 第二類：**裸名字**組出來的路徑 ────────────────────────────────────────
+#
+# 上面那張表只認「帶子路徑」的形式（`docker` 接 `/compose/`、`ansible` 接
+# `/site.yml` 那種；這裡刻意拆開寫，否則這行註解自己會被上面那張表抓到）。
+# 2026-09-06 的雲端複審抓到八處它完全看不到的漏網，全部屬於這一類：
+#
+#   Path(root, "docker").rglob(...)         python 的路徑拼接，沒有斜線
+#   os.path.join(root, "backend")           同上
+#   [[ -d $CX_ROOT/$d ]]（迴圈變數是名字）  shell 的變數組路徑
+#   targets=(".git" "backend" "frontend")   shell 陣列字面
+#   ansible/                                ignore 檔的行首單獨一行
+#
+# 後果不是「路徑錯了會報錯」，而是**檢查與功能靜默變成 no-op 卻回報成功**：
+#   * verify_checks.py 的 sec-ignore 掃不到任何 Dockerfile → 永遠 PASS
+#   * scaffold_patch.py 三個 patch_* 全部早退 → cx fresh 之後範本保護全失蹤
+#   * acl.sh 的每個迴圈都 skip → cx acl user add 說成功但什麼都沒設
+#
+# 而 LEGACY_LITERALS 那一半在 Phase 3.2（src/）時根本忘了擴充 ——
+# 它只有 docker/ansible，從來沒有 backend/frontend。
+#
+# ⚠ **不要偵測 `for c in backend frontend`。** 那是**名字**的清單，本身完全正當
+#   —— git.sh、archive.sh、guard.sh 的迴圈體都是 `$(cx_sub_path "$c")` 或
+#   `$CX_ROOT/src/$c`。第一版把它列進來，44 處命中裡有 36 處是誤判。
+#   要抓的是「名字**被拿去組路徑**」那一行，不是宣告名字那一行。
+_LEGACY_NAMES = (_D, _A, _BE, _FE)
+LEGACY_PATTERNS = (
+    # python：Path(x, "docker") / os.path.join(x, "backend")
+    (re.compile(r'(?:Path|os\.path\.join)\(\s*[^,()]+,\s*["\'](?:%s)["\']'
+                % "|".join(_LEGACY_NAMES)), "python 路徑拼接"),
+    # shell 的 $CX_ROOT/$x 由 check_layout_legacy 用**有狀態的掃描**處理 ——
+    # 單行 regex 判斷不了 $x 是子模組名還是完整相對路徑（doctor.sh 與
+    # common.sh 的 $p 就是後者）。見 _legacy_shell_loop_hits。
+    # shell 陣列字面：("backend" "frontend")
+    (re.compile(r'=\(\s*(?:"[^"]*"\s+)*"(?:%s)"' % "|".join((_BE, _FE))), "shell 陣列字面"),
+    # for/in 清單裡「混雜新舊」由 _legacy_shell_loop_hits 處理 ——
+    # 單一 regex 分不出 `for c in backend frontend`（純**名字**清單，正當）
+    # 與 `for p in backend src/backend/storage frontend`（混雜路徑，錯的）。
+    # ignore 檔的行首單獨一行
+    (re.compile(r'^(?:%s)/\s*$' % "|".join(_LEGACY_NAMES)), "ignore 檔的行首路徑"),
+)
+# 這些是**正當**的裸名字用途，不是路徑：
+#   .gitmodules 的 [submodule "backend"]（那是名字，git mv 不會改）
+#   cx_submodules() 的回傳值、--name 的參數（同上）
+#   ansible 的群組名 web_backend / deploy_backend、cx npm --backend 旗標
+#   argparse 的 choices=（那是參數值，不是路徑）
+#   os.path.join(tpl, ...)（tpl 是 templates/，不是專案路徑）
+LEGACY_PATTERN_ALLOW = re.compile(
+    r'submodule\s+"|cx_submodules|--backend|--name|web_backend|deploy_backend|'
+    r'choices=|os\.path\.join\(\s*tpl\b|Path\(\s*tpl\b')
+
+
+def _legacy_shell_loop_hits(lines):
+    """`for X in backend frontend` 的迴圈**體**裡有沒有拿 $X 去組路徑。
+
+    單行 regex 判斷不了 `$CX_ROOT/$p` 的 $p 是子模組名還是完整相對路徑
+    —— doctor.sh 與 common.sh 的 $p 是後者（檔案清單、bind mount 來源），
+    而 acl.sh 的 $d 是前者。所以要記住迴圈宣告了什麼變數，
+    再在那個迴圈的範圍內找。
+
+    回傳 [(行號, 說明)]。
+    """
+    out, var, depth = [], None, 0
+    for ln, line in enumerate(lines, 1):
+        st = line.lstrip()
+        if st.startswith("#"):
+            continue
+
+        # ── 混雜清單：`for p in backend src/backend/storage … frontend` ──
+        # 三個帶子路徑的改對了、兩個裸的留著。2026-09-06 的 _acl_paths 就是
+        # 這樣，而「同一行有 src/ 就跳過」的過濾規則讓它整行溜過去。
+        # 判準是**清單裡同時有帶斜線的元素與裸的 backend/frontend** ——
+        # 純名字清單（for c in backend frontend）完全正當，不可以一起抓。
+        mm = re.match(r'for\s+\w+\s+in\s+([^;]+?)\s*;\s*do', st)
+        if mm:
+            items = mm.group(1).split()
+            has_path = any("/" in it for it in items)
+            bare = [it for it in items if it in ("backend", "frontend")]
+            if has_path and bare:
+                out.append((ln, f"for/in 清單混雜新舊：裸的 {' '.join(bare)} 沒改"))
+
+        m = re.match(r'for\s+(\w+)\s+in\s+backend\s+frontend\s*;', st)
+        if m:
+            var, depth = m.group(1), 1
+            continue
+        if var is None:
+            continue
+        # 粗略的巢狀追蹤就夠了：這些迴圈都很短，而且只找 done。
+        if re.match(r'(?:for|while|until)\b', st):
+            depth += 1
+        elif re.match(r'done\b', st):
+            depth -= 1
+            if depth <= 0:
+                var = None
+            continue
+        if re.search(r'\$(?:CX_ROOT|CX_TEST_ROOT)/\$\{?%s\}?(?![\w])' % re.escape(var), line) \
+                and "src/" not in line:
+            out.append((ln, f"迴圈變數 ${var} 直接組路徑（應為 $CX_ROOT/src/${var}）"))
+    return out
 
 
 def check_layout_legacy():
@@ -1064,7 +1165,11 @@ def check_layout_legacy():
             txt = q.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for ln, line in enumerate(txt.splitlines(), 1):
+        lines = txt.splitlines()
+        if q.suffix in (".sh", ".bash", ".bats"):
+            for ln, why in _legacy_shell_loop_hits(lines):
+                hits.append(f"{rel}:{ln}:{why}")
+        for ln, line in enumerate(lines, 1):
             for old in LEGACY_LITERALS:
                 idx = line.find(old)
                 while idx != -1:
@@ -1072,6 +1177,23 @@ def check_layout_legacy():
                         hits.append(f"{rel}:{ln}:{old}")
                         break
                     idx = line.find(old, idx + 1)
+            # ── 第二類：裸名字組出來的路徑 ──────────────────────────
+            # ⚠ 只掃**非註解行**，而且**不掃 .md**。
+            #   第一類（帶子路徑的字面）要掃註解與 .md，因為文件裡的舊路徑會
+            #   讓下一個人 cd 到不存在的目錄；但第二類偵測的是「程式碼裡的
+            #   路徑用法」，而描述這個問題本身的文字（就在這個檔案上面幾行，
+            #   以及 docs/cx/ 的兩份說明）必須寫得出舊形式。
+            if q.suffix == ".md":
+                continue
+            stripped = line.lstrip()
+            if stripped.startswith("#") or stripped.startswith(";"):
+                continue
+            if "src/" in line or "env/" in line or LEGACY_PATTERN_ALLOW.search(line):
+                continue
+            for rx, why in LEGACY_PATTERNS:
+                if rx.search(line):
+                    hits.append(f"{rel}:{ln}:{why}")
+                    break
     if hits:
         by_file = {}
         for h in hits:

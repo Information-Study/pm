@@ -47,9 +47,14 @@ def log(msg):
 def patch_backend(root, tpl):
     """裝回測試防護的四個零件。"""
     changed = 0
-    be = os.path.join(root, "backend")
+    # ⚠ root 是專案根，v3 版面的子專案在 src/ 底下；tpl 是 templates/，
+    #   那邊的目錄結構沒有跟著搬（templates/backend、templates/frontend）。
+    #   兩者不可以用同一個字串拼 —— 2026-09-06 的雲端複審抓到這三個函式
+    #   在 v3 上全部靜默早退，於是 cx fresh 之後測試防護、Filament panel、
+    #   Sanctum 與 ESLint 全部沒被裝回去，而流程回報成功。
+    be = os.path.join(root, "src", "backend")
     if not os.path.isdir(be):
-        log("沒有 backend/，略過")
+        log("沒有 src/backend/，略過")
         return 0
 
     src_tests = os.path.join(tpl, "backend", "tests")
@@ -114,7 +119,7 @@ def patch_backend_wiring(root, tpl):
       所以 bootstrap/providers.php 與 bootstrap/app.php 在**兩個模式**下都會掉。
     """
     changed = 0
-    be = os.path.join(root, "backend")
+    be = os.path.join(root, "src", "backend")
     if not os.path.isdir(be):
         return 0
     src_root = os.path.join(tpl, "backend")
@@ -126,7 +131,7 @@ def patch_backend_wiring(root, tpl):
             continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(src, dst)
-        log(f"裝回 backend/{rel}")
+        log(f"裝回 src/backend/{rel}")
         changed += 1
 
     # 2) Sanctum 的 migration —— 比對的是「有沒有這張表」，不是檔名，
@@ -184,9 +189,9 @@ def patch_backend_wiring(root, tpl):
 def patch_frontend(root, tpl):
     """裝回 ESLint 基線的三個零件。"""
     changed = 0
-    fe = os.path.join(root, "frontend")
+    fe = os.path.join(root, "src", "frontend")
     if not os.path.isdir(fe):
-        log("沒有 frontend/，略過")
+        log("沒有 src/frontend/，略過")
         return 0
 
     src = os.path.join(tpl, "frontend", "eslint.config.mjs")

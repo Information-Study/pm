@@ -286,7 +286,7 @@ def check_external_image_pins(cfgs, root):
             seen.setdefault(m.group(2), f"common.sh/{m.group(1)}")
 
     # Dockerfile 的 FROM 與 COPY --from（ARG 預設值也算）
-    for df in sorted(Path(root, "docker").rglob("Dockerfile")):
+    for df in sorted(Path(root, "env/docker").rglob("Dockerfile")):
         txt = df.read_text(encoding="utf-8")
         for m in re.finditer(r"^ARG\s+\w*IMAGE\w*=(\S+)", txt, re.M):
             seen.setdefault(m.group(1), f"{df.parent.name}/ARG")
@@ -431,8 +431,8 @@ def check_dockerignore_secrets(root):
                 if ln.strip() and not ln.strip().startswith("#")}
 
     copied = set()
-    for df in sorted(Path(root, "docker").rglob("Dockerfile")):
-        for m in re.finditer(r"^COPY\s+(?:--\S+\s+)*([A-Za-z0-9_.-]+)/\s",
+    for df in sorted(Path(root, "env/docker").rglob("Dockerfile")):
+        for m in re.finditer(r"^COPY\s+(?:--\S+\s+)*([A-Za-z0-9_./-]+?)/\s",
                              df.read_text(encoding="utf-8"), re.M):
             copied.add(m.group(1))
 

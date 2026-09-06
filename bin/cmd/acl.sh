@@ -97,9 +97,9 @@ _acl_check_ownership() {
     local -a bad=()
     local d
     for d in backend frontend; do
-        [[ -d $CX_ROOT/$d ]] || continue
+        [[ -d $CX_ROOT/src/$d ]] || continue
         while IFS= read -r f; do bad+=("$f"); done \
-            < <(find "$CX_ROOT/$d" -not -user "$(id -u)" -print 2>/dev/null)
+            < <(find "$CX_ROOT/src/$d" -not -user "$(id -u)" -print 2>/dev/null)
     done
     (( ${#bad[@]} == 0 )) && return 0
 
@@ -131,9 +131,9 @@ _acl_fix_owner() {
     local -a bad=()
     local d
     for d in backend frontend; do
-        [[ -d $CX_ROOT/$d ]] || continue
+        [[ -d $CX_ROOT/src/$d ]] || continue
         while IFS= read -r f; do bad+=("$f"); done \
-            < <(find "$CX_ROOT/$d" -not -user "$(id -u)" -print 2>/dev/null)
+            < <(find "$CX_ROOT/src/$d" -not -user "$(id -u)" -print 2>/dev/null)
     done
     (( ${#bad[@]} )) || { cx_ok "所有檔案都已屬於你，不需要處理"; return 0; }
 
@@ -295,8 +295,8 @@ _acl_user() {
             cx_step "授予 $who $( ((ro)) && echo '唯讀' || echo '可讀寫' )"
             local d
             for d in backend frontend; do
-                [[ -d $CX_ROOT/$d ]] || continue
-                _acl_set "$CX_ROOT/$d" "$spec" "$who" || return $?
+                [[ -d $CX_ROOT/src/$d ]] || continue
+                _acl_set "$CX_ROOT/src/$d" "$spec" "$who" || return $?
             done
             # 專案根本身要能進入，否則上面全部白搭
             cx_run setfacl -m "u:$id:rX" "$CX_ROOT" || return $?
@@ -331,9 +331,9 @@ _acl_user() {
             cx_step "收回 $who 的權限"
             local d
             for d in backend frontend; do
-                [[ -d $CX_ROOT/$d ]] || continue
-                cx_run setfacl -R  -x "u:$id" "$CX_ROOT/$d" || return $?
-                cx_run setfacl -Rd -x "u:$id" "$CX_ROOT/$d" || return $?
+                [[ -d $CX_ROOT/src/$d ]] || continue
+                cx_run setfacl -R  -x "u:$id" "$CX_ROOT/src/$d" || return $?
+                cx_run setfacl -Rd -x "u:$id" "$CX_ROOT/src/$d" || return $?
             done
             cx_run setfacl -x "u:$id" "$CX_ROOT" 2>/dev/null || true
             cx_ok "$who 的 ACL 已移除"
@@ -347,7 +347,11 @@ _acl_user() {
 # ---------------------------------------------------------------------------
 _acl_paths() {
     local p
-    for p in backend src/backend/storage src/backend/bootstrap/cache src/backend/.env frontend; do
+    # ⚠ 混雜新舊路徑的一行特別容易漏。2026-09-06 的 v3 遷移把帶子路徑的三個
+    #   改對了（src/backend/storage…），卻留下裸的 backend 與 frontend ——
+    #   而 LAY-legacy 當時「同一行有 src/ 就跳過」，所以它也看不到。
+    for p in src/backend src/backend/storage src/backend/bootstrap/cache \
+             src/backend/.env src/frontend; do
         [[ -e $CX_ROOT/$p ]] && printf '%s\n' "$CX_ROOT/$p"
     done
     return 0
@@ -376,7 +380,7 @@ _acl_check() {
     webn=$(_acl_uid_of "$web"); devn=$(_acl_uid_of "$dev")
     cx_step "ACL 檢查（web=$web dev=$dev）"
 
-    local -a want_ro=("backend" "frontend")
+    local -a want_ro=("src/backend" "src/frontend")
     local -a want_rw=("src/backend/storage" "src/backend/bootstrap/cache")
     local p acl
 
@@ -417,7 +421,7 @@ _acl_check() {
     # 「修正： cx acl apply」去做，才在中途撞到 Operation not permitted。
     local -a bad=()
     if (( $(id -u) != 0 )); then          # root 不受此限，見 _acl_check_ownership
-        for p in backend frontend; do
+        for p in src/backend src/frontend; do
             [[ -d $CX_ROOT/$p ]] || continue
             while IFS= read -r f; do bad+=("$f"); done \
                 < <(find "$CX_ROOT/$p" -not -user "$(id -u)" -print 2>/dev/null)

@@ -34,9 +34,37 @@ cx verify all                    # 以上再加 runtime waf acl
 | `A13-parity` | Docker 與原生把**同一組前綴**交給 PHP | 某路徑在一邊正常、另一邊 404，而且看起來像「應用壞了」 |
 | `SEC-pma-auth` | phpMyAdmin 保留登入認證 | 未認證的請求拿到以 root 登入的頁面（2026-09-05 實際發生） |
 | `SEC-logdir-mode` | 日誌目錄不對 web 群組開放寫入 | 提權面 |
-| `LAY-legacy` | 全樹沒有殘留的舊版面路徑 | 漏改一處不會有人告訴你 |
+| `LAY-legacy` | 全樹沒有殘留的舊版面路徑（**三類**，見下） | 漏改一處不會有人告訴你 |
 | `LAY-ignore` | `src/` 不可被 ignore、祕密檔必須被 ignore | **SSH 公鑰進 PUBLIC 歷史**（gitleaks 抓不到這一類） |
 | `LAY-version` | `.cxroot` 與 `common.sh` 的版號雙向一致 | 版號退回裝飾 |
+
+### `LAY-legacy` 抓的三類，以及為什麼要三類
+
+2026-09-06 的雲端複審在 v3 遷移完成、`LAY-legacy` 全綠之後，
+還抓到**八處**它完全看不到的漏網。三類的分工是那次的結果：
+
+| 類 | 形式 | 例 |
+|---|---|---|
+| ① 帶子路徑的字面 | `docker` 接 `/compose/`、`ansible` 接 `/site.yml` | 掃**含 `.md`**（文件裡的舊路徑會讓人 cd 到不存在的目錄） |
+| ② 裸名字組出來的路徑 | `Path(root, "docker")`、`os.path.join(root, "backend")`、`=("backend" "frontend")`、ignore 檔的行首 `ansible/` | 只掃**非註解的程式碼行** |
+| ③ 混雜與迴圈變數 | `for p in backend src/backend/storage frontend`、`for c in backend frontend` 的迴圈體裡 `$CX_ROOT/$c` | **有狀態掃描**（`_legacy_shell_loop_hits`） |
+
+為什麼第三類不能用單行 regex：
+
+* `for c in backend frontend` 是**名字**的清單，本身完全正當 ——
+  `git.sh` / `archive.sh` / `guard.sh` 的迴圈體都是 `$(cx_sub_path "$c")`。
+  第一版把它列進 regex，44 處命中裡有 36 處是誤判。
+  要抓的是「名字**被拿去組路徑**」那一行，不是宣告名字那一行。
+* `$CX_ROOT/$p` 的 `$p` 可能是子模組名（`acl.sh`）也可能是完整相對路徑
+  （`doctor.sh` 的檔案清單、`common.sh` 的 bind mount 來源）。
+  單行看不出差別，要記住迴圈宣告了什麼變數。
+* 混雜清單（`for p in backend src/backend/storage … frontend`）**不能**套用
+  「同一行有 `src/` 就跳過」的豁免 —— 混雜正是它要抓的東西。
+  判準是「清單裡同時有帶斜線的元素與裸的 backend/frontend」。
+
+> ② 與 ③ 刻意不掃 `.md` 與註解：它們偵測的是**程式碼裡的路徑用法**，
+> 而描述這個問題本身的文字（`docs/cx/layout.md`、`verify_meta.py` 上方的
+> 註解、這一節）必須寫得出舊形式。①（會誤導讀者的字面）才需要掃文件。
 
 ## `docs` — 文件與實作一致
 

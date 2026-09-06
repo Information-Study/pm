@@ -61,7 +61,7 @@ src/frontend/.cache/
 src/frontend/dist
 
 # ── 與映像無關的目錄 ────────────────────────────────────────────────────────
-ansible/
+env/ansible/
 docs/
 reports/
 templates/

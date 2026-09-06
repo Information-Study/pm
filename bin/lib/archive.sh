@@ -444,8 +444,15 @@ cx_restore() {
     local -a targets=() existing=()
     [[ -f $A/gitdir-main.tar.gz ]] && targets+=(".git")
     local c
+    # ⚠ targets 是**樹上的路徑**，不是封存檔名。v3 版面下子專案在 src/ 底下，
+    #   而封存檔名維持 src-<名字>.tar.gz（那是封存格式的一部分）。
+    #   寫成 "$c" 的話 `[[ -e $CX_ROOT/$t ]]` 永遠不成立 → existing 只有 .git →
+    #   下面的「先移到 .cx-restore-backup/」整段被跳過，而 tar 直接疊在
+    #   既有的 src/backend 上。確認對話框卻寫著「已存在的會被覆蓋（先移到
+    #   .cx-restore-backup/）」—— 那個承諾對**唯一裝著使用者程式碼的兩個目錄**
+    #   是假的。2026-09-06 的雲端複審抓到。
     for c in backend frontend; do
-        [[ -f $A/src-$c.tar.gz ]] && targets+=("$c")
+        [[ -f $A/src-$c.tar.gz ]] && targets+=("src/$c")
     done
     local t
     for t in "${targets[@]}"; do

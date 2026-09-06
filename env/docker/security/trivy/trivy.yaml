@@ -21,7 +21,7 @@ scan:
     # ansible-galaxy 下載的上游 collection。它們不是我們的程式碼，
     # 我們既不該修也修不了；不排除的話 Trivy 會回報一堆上游測試夾具裡的
     # Containerfile 問題（實測會掃到 community.general 的 keycloak 測試檔）。
-    - "ansible/collections"
+    - "env/ansible/collections"
     - "**/.git"
 
 vulnerability:
