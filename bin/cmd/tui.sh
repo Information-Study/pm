@@ -1069,44 +1069,60 @@ _tui_tools() {
 # 另外加一行提示：藏起來的東西如果沒有說去哪裡找，使用者只會以為壞了。
 cmd_tui_main() {
     _tui_need_tty || return "$EX_PRECOND"
-    local c
-    local -a items=()
-    # @tui-mode: all
-    items+=(
-        status "▸ 現況一覽：身分／容器／分支／gitlink／網址／上次驗收"
-        mode   "▸ 切換模式（目前：$_TUI_MODE）"
-        project "專案：init / re-init / 抹除紀錄 / 狀態"
-        env    "環境：doctor / 整備 / verify / lint / acl"
-        docker "容器：dev / test / prod / 資料庫 / 網址"
-        tools  "工具：artisan / php / composer / npm / 風格 / VS Code"
-    )
-    # @tui-mode: test
-    if [[ $_TUI_MODE == test ]]; then
+    local c hint
+    local -a items
+    while :; do
+        # ⚠ items 與 hint 必須在**迴圈內**重建。
+        #   _tui_switch_mode 改的是 $_TUI_MODE，而依模式變形的項目是照那個值
+        #   算出來的 —— 建在迴圈外只會算一次，於是切換模式之後選單完全不變。
+        #
+        #   這個缺陷的外觀特別容易被當成「切換沒有作用」：標題字串是在
+        #   _tui_menu 的參數位置求值的，每次迭代都會重算，所以
+        #   「[模式：test]」**會**跟著變 —— 只有底下的項目沒變。
+        #   使用者看到的是一個說自己在 test 模式、卻沒有測試與掃描的選單。
+        #   2026-09-06 使用者回報，而當時的 75_tui_run.bats 沒抓到：
+        #   那幾條案例用 `cx --mode test tui` 從**啟動時**指定模式，
+        #   走不到「在選單裡切換」這條路。
+        items=()
+        # @tui-mode: all
         items+=(
-            test   "測試：後端 / 前端 / 覆蓋率"
-            scan   "DevSecOps：四道防線"
+            status "▸ 現況一覽：身分／容器／分支／gitlink／網址／上次驗收"
+            mode   "▸ 切換模式（目前：$_TUI_MODE）"
+            project "專案：init / re-init / 抹除紀錄 / 狀態"
+            env    "環境：doctor / 整備 / verify / lint / acl"
+            docker "容器：dev / test / prod / 資料庫 / 網址"
+            tools  "工具：artisan / php / composer / npm / 風格 / VS Code"
         )
-    fi
-    # @tui-mode: prod
-    if [[ $_TUI_MODE == prod ]]; then
+        # @tui-mode: test
+        if [[ $_TUI_MODE == test ]]; then
+            items+=(
+                test   "測試：後端 / 前端 / 覆蓋率"
+                scan   "DevSecOps：四道防線"
+            )
+        fi
+        # @tui-mode: prod
+        if [[ $_TUI_MODE == prod ]]; then
+            items+=(
+                deploy "部署：Ansible"
+            )
+        fi
+        # @tui-mode: all
         items+=(
-            deploy "部署：Ansible"
+            git    "Git：狀態 / 分支 / feature / hotfix / release / guard"
+            custom "自訂選單（.cx/menu.conf）"
+            help   "指令說明"
         )
-    fi
-    # @tui-mode: all
-    items+=(
-        git    "Git：狀態 / 分支 / feature / hotfix / release / guard"
-        custom "自訂選單（.cx/menu.conf）"
-        help   "指令說明"
-    )
-    local hint
-    case $_TUI_MODE in
-        dev)  hint="（測試與掃描在 test 模式・部署在 prod 模式 —— 用上面的「切換模式」）" ;;
-        test) hint="（部署在 prod 模式）" ;;
-        prod) hint="（測試與掃描在 test 模式）" ;;
-    esac
-    while c=$(_tui_menu "cx — $(cx_project) 專案管理  [模式：$_TUI_MODE・runner：$_TUI_RUNNER]$hint" \
-        "離開" "${items[@]}"); do
+        case $_TUI_MODE in
+            dev)  hint="（測試與掃描在 test 模式・部署在 prod 模式 —— 用上面的「切換模式」）" ;;
+            test) hint="（部署在 prod 模式）" ;;
+            prod) hint="（測試與掃描在 test 模式）" ;;
+            *)    hint='' ;;
+        esac
+
+        # _tui_menu：0=選了、1=離開／ESC、2=後端壞掉。後兩者都結束迴圈。
+        c=$(_tui_menu "cx — $(cx_project) 專案管理  [模式：$_TUI_MODE・runner：$_TUI_RUNNER]$hint" \
+            "離開" "${items[@]}") || break
+
         case $c in
             '<')     break ;;
             status)  _tui_run status ;;

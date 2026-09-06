@@ -276,9 +276,35 @@ tree_digest() {                     # tree_digest [目錄]
 #   * ESC 要送兩次才會取消 whiptail 的 --menu
 #   * 畫面是逸出序列包著文字，要 strip 過才比對得了
 tui_screen() {                      # tui_screen [額外的 cx 旗標...]
+    tui_screen_keys '' "$@"
+}
+
+# 送一段自訂按鍵序列之後再離開。
+#
+# ⚠ 這一支存在的理由：tui_screen 只驗「啟動時就是這個模式」的畫面，
+#   走不到「**在選單裡**切換模式」那條路 —— 而那正是 2026-09-06 使用者
+#   回報的缺陷所在（items 建在 while 迴圈外，切換之後選單不重建；
+#   而標題是在 _tui_menu 的參數位置求值的，所以「[模式：test]」會變，
+#   看起來像切換有作用，只有項目沒變）。
+#
+#   按鍵用 printf 的格式字串給：'\033[B\r' = 下、Enter。
+#   每段之間要有延遲 —— whiptail 還沒準備好讀時一次寫完會讓它一直等。
+tui_screen_keys() {                 # tui_screen_keys <按鍵序列> [cx 旗標...]
+    local keys=$1; shift
     local out; out=$(mktemp)
-    { sleep 2; printf '\033'; sleep 1; printf '\033'; sleep 1; } \
-        | timeout 25 script -qec "$CX_TEST_ROOT/cx --root $CX_TEST_ROOT $* tui" /dev/null \
+    {
+        sleep 2
+        if [[ -n $keys ]]; then
+            # 一次送一組「動作」，中間留時間讓 whiptail 重畫
+            local k
+            while IFS= read -r k; do
+                [[ -n $k ]] || continue
+                printf '%b' "$k"; sleep 1.5
+            done <<< "$keys"
+            sleep 0.5
+        fi
+        printf '\033'; sleep 1; printf '\033'; sleep 1
+    } | timeout 40 script -qec "$CX_TEST_ROOT/cx --root $CX_TEST_ROOT $* tui" /dev/null \
         > "$out" 2>&1
     TUI_RC=$?
     # 逸出序列：CSI、字集切換、以及 DEC 的 > = 兩種

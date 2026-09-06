@@ -66,3 +66,47 @@ setup() {
     [[ $TUI_TEXT == *"模式：test"* ]]     || _fail_with "標題沒有帶出模式"
     [[ $TUI_TEXT == *"runner：native"* ]] || _fail_with "標題沒有帶出 runner"
 }
+
+# ── 在選單裡切換模式，選單必須跟著重建 ────────────────────────────────────
+#
+# 上面那三條驗的是「**啟動時**就是這個模式」的畫面，走不到「在選單裡切換」
+# 這條路。2026-09-06 使用者回報：切到 test / prod 之後選單完全沒變。
+#
+# 原因是 items 陣列建在 while 迴圈**外面**，只算一次。
+# 而標題字串是在 _tui_menu 的參數位置求值的，每次迭代都重算 ——
+# 所以「[模式：test]」**會**跟著變，只有底下的項目沒變。
+# 使用者看到的是一個說自己在 test 模式、卻沒有測試與掃描的選單。
+#
+# 按鍵：主選單第 1 項是 status、第 2 項是 mode → 下+Enter 進切換模式；
+#       切換模式選單是 dev/test/prod → 下+Enter 選 test、下下+Enter 選 prod。
+
+@test "在選單裡切到 test：測試與掃描要出現" {
+    tui_screen_keys '\033[B\r
+\033[B\r'
+    [ "$TUI_RC" -eq 0 ] || _fail_with "選單沒有正常離開（rc=$TUI_RC）"
+    [[ $TUI_TEXT == *"模式：test"* ]] \
+        || _fail_with "標題沒有切到 test —— 按鍵序列可能沒走到：$TUI_TEXT"
+    [[ $TUI_TEXT == *"DevSecOps"* ]] \
+        || _fail_with "切到 test 之後選單沒有重建（掃描沒出現）"
+    [[ $TUI_TEXT == *"測試：後端"* ]] \
+        || _fail_with "切到 test 之後選單沒有重建（測試沒出現）"
+}
+
+@test "在選單裡切到 prod：部署要出現、測試與掃描不要" {
+    tui_screen_keys '\033[B\r
+\033[B\033[B\r'
+    [ "$TUI_RC" -eq 0 ] || _fail_with "選單沒有正常離開（rc=$TUI_RC）"
+    [[ $TUI_TEXT == *"模式：prod"* ]] \
+        || _fail_with "標題沒有切到 prod：$TUI_TEXT"
+    [[ $TUI_TEXT == *"部署：Ansible"* ]] \
+        || _fail_with "切到 prod 之後選單沒有重建（部署沒出現）"
+}
+
+@test "切換模式之後提示文字也要跟著換（藏起來的東西要說去哪找）" {
+    tui_screen_keys '\033[B\r
+\033[B\r'
+    [ "$TUI_RC" -eq 0 ]
+    # dev 的提示提到 test 與 prod 兩個模式；切到 test 之後只該剩 prod
+    [[ $TUI_TEXT == *"部署在 prod 模式"* ]] \
+        || _fail_with "切到 test 之後提示沒有更新：$TUI_TEXT"
+}
