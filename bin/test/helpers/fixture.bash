@@ -288,6 +288,10 @@ tui_screen() {                      # tui_screen [額外的 cx 旗標...]
 #   看起來像切換有作用，只有項目沒變）。
 #
 #   按鍵用 printf 的格式字串給：'\033[B\r' = 下、Enter。
+#
+#   ⚠ 收尾固定送**兩個** ESC —— 剛好關掉「一層子選單 + 主選單」。走得更深的
+#     案例要自己在 keys 最後多加 ESC，一層一個；少一個的話主選單會停在那裡
+#     等輸入，整個 pty 被 timeout 殺掉，而失敗訊息只有 status 124。
 #   每段之間要有延遲 —— whiptail 還沒準備好讀時一次寫完會讓它一直等。
 tui_screen_keys() {                 # tui_screen_keys <按鍵序列> [cx 旗標...]
     local keys=$1; shift

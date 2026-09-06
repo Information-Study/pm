@@ -388,9 +388,9 @@ _deploy_hosts() {
             # 於是 `cx --dry-run deploy hosts show` 會什麼都不印。
             # 想在動手之前先看狀態的人，正是最可能加 --dry-run 的人。
             python3 "$py" --path "$inv" "$sub" "$@" ;;
-        init|add|rm)
+        init|add|set|rm)
             cx_run python3 "$py" --path "$inv" "$sub" "$@" ;;
-        *) cx_error "hosts: 未知子指令 $sub（init|add|rm|show|check|edit）"
+        *) cx_error "hosts: 未知子指令 $sub（init|add|set|rm|show|check|edit）"
            return "$EX_USAGE" ;;
     esac
 }

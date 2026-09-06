@@ -274,37 +274,88 @@ _tui_git() {
 
 # 主機設定：inventory 是 cx deploy 唯一沒有工具幫忙產生的必要檔案。
 # 選單這一項存在的理由，就是讓「從全新 clone 走到部署」不需要離開 cx。
+# ── ① 主機設定 ────────────────────────────────────────────────────────────
 _tui_deploy_hosts() {
     local c
     while c=$(_tui_menu "主機設定（env/ansible/inventory/hosts.yml）" "返回" \
         show  "列出目前的主機與群組" \
-        add   "新增一台主機" \
+        add   "新增一台主機（會問要跑哪些群組）" \
+        set   "改一台主機的位址／帳號／群組" \
         rm    "移除一台主機" \
         init  "建立空的 hosts.yml" \
-        check "驗證結構與 A15（db_primary 必須剛好一台且在 web 裡）" \
+        check "驗證結構與 A15（db_primary 剛好一台，且必須在 web_backend 裡）" \
         edit  "用編輯器直接開（註解會保留）"); do
         case $c in
             '<') return 0 ;;
             add)
-                local name ip user
+                local name ip user flags
                 name=$(_tui_ask "新增主機" "inventory 裡的名稱（例：web-1）：") || continue
-                [[ -n $name ]] || continue
+                [[ -n ${name// /} ]] || continue
                 ip=$(_tui_ask "新增主機" "IP 或 DNS 名稱：") || continue
-                [[ -n $ip ]] || continue
+                [[ -n ${ip// /} ]] || continue
                 user=$(_tui_ask "新增主機" "SSH 帳號（有 sudo；不是 deploy_user）：" "ubuntu") || user=''
+                # ⚠ 這一問在 2026-09-06 之前**不存在** —— 於是從選單加的主機
+                #   永遠吃預設值（三個群組全開），前後端分機從選單根本做不到。
+                flags=$(_tui_deploy_pick_groups "$name 要跑什麼？" \
+                    "這決定哪些 role 會在這台跑。單機拓撲選第一項。") || continue
                 local -a a=(deploy hosts add "$name" --ip "$ip")
                 [[ -n $user ]] && a+=(--user "$user")
+                local -a gf; read -r -a gf <<<"$flags"
+                (( ${#gf[@]} )) && a+=("${gf[@]}")
+                _tui_run "${a[@]}" ;;
+            set)
+                local name ip user
+                name=$(_tui_ask "修改主機" "要改哪一台？（先用「列出」查名稱）") || continue
+                [[ -n ${name// /} ]] || continue
+                ip=$(_tui_ask "修改主機" "新的 IP 或 DNS（留空 = 不改）：") || continue
+                user=$(_tui_ask "修改主機" "新的 SSH 帳號（留空 = 不改）：") || user=''
+                local -a a=(deploy hosts set "$name")
+                [[ -n ${ip// /} ]]   && a+=(--ip "$ip")
+                [[ -n ${user// /} ]] && a+=(--user "$user")
+                if (( ${#a[@]} == 4 )); then
+                    cx_msg "修改主機" "兩項都留空，沒有要改的東西。\n要改群組請用「群組設定」。"
+                    continue
+                fi
                 _tui_run "${a[@]}" ;;
             rm)
                 local name
                 name=$(_tui_ask "移除主機" "要移除哪一台？") || continue
-                [[ -n $name ]] || continue
+                [[ -n ${name// /} ]] || continue
                 _tui_run deploy hosts rm "$name" ;;
             check) _tui_run deploy hosts check --ansible ;;
             *)     _tui_run deploy hosts "$c" ;;
         esac
     done
 }
+
+# 群組拓撲的選單。把常見的四種拓撲列成選項，而不是連問三次是非題 ——
+# 「這台跑什麼」是一個決定，不是三個。
+#
+# 印出一串旗標（例：--fe --no-be --no-db）給呼叫端；使用者取消則回傳 1。
+_tui_deploy_pick_groups() {         # _tui_deploy_pick_groups <標題> <說明>
+    local f sel; f=$(mktemp)
+    local -a it=(
+        all  "① 全部：前端＋後端＋資料庫（單機，預設）"
+        fe   "② 只跑前端（web_frontend）"
+        bedb "③ 後端＋資料庫（web_backend + db_primary）"
+        be   "④ 只跑後端（web_backend，資料庫在別台）"
+        db   "⑤ 只跑資料庫（⚠ A15 會擋：db_primary 必須也在後端群組裡）"
+    )
+    local h w listh; read -r h w listh < <(_tui_menu_geom $(( ${#it[@]} / 2 )))
+    if ! _cx_dlg --title "$1" --menu "\n$2" "$h" "$w" "$listh" "${it[@]}" 2>"$f" 1>&8; then
+        rm -f "$f"; return 1
+    fi
+    sel=$(<"$f"); rm -f "$f"
+    case $sel in
+        all)  printf -- '--fe --be --db' ;;
+        fe)   printf -- '--fe --no-be --no-db' ;;
+        bedb) printf -- '--no-fe --be --db' ;;
+        be)   printf -- '--no-fe --be --no-db' ;;
+        db)   printf -- '--no-fe --no-be --db' ;;
+        *)    return 1 ;;
+    esac
+}
+
 
 # gitflow：feature 一律從 dev 開、合回 dev。
 # 側別選擇。feature 分支只開在子模組裡，所以每一個動作都要先問是哪一邊 ——
@@ -866,30 +917,113 @@ _tui_db_restore() {
     else rm -f "$g"; fi
 }
 
+# ── 部署（Ansible）────────────────────────────────────────────────────────
+#
+# 四個大項，照「先設定、再部署、出事再撤回」的順序排：
+#
+#   ① 主機設定   inventory 有哪些機器（名稱／位址／帳號）
+#   ② 群組設定   每台機器**跑什麼**（前端／後端／資料庫）
+#   ③ 部署開始   前置檢查的階梯 → 乾跑 → 真的部署
+#   ④ 撤回部署   回滾到上一個 release
+#
+# 為什麼「群組設定」值得獨立成一項：群組不是命名慣例，它**真的決定哪個 role
+# 在哪台跑**（web_frontend → nodejs_pm2/deploy_frontend、web_backend →
+# php/composer/deploy_backend、db_primary → mysql + migrate）。
+# 而在 2026-09-06 之前，這個選單是 11 個平鋪的項目，其中 hosts 底下的「新增主機」
+# 只問名稱與 IP —— 完全沒有群組的入口，於是從選單加的主機永遠是預設值，
+# 前後端根本拆不開。
 _tui_deploy() {
     local c
     while c=$(_tui_menu "部署（Ansible）" "返回" \
-        hosts  "主機設定（inventory）—— 沒有它，下面每一項都會撞牆" \
-        syntax "ansible-playbook --syntax-check" \
-        lint   "ansible-lint + yamllint" \
-        galaxy   "安裝 requirements.yml 的 collections" \
-        ping     "確認 SSH 與 become" \
-        check    "--check --diff 乾跑（staging）" \
-        vars     "印出合併後的變數（查『我設的值有沒有生效』）" \
-        facts    "抓一台主機的 ansible facts" \
-        apply    "⚠ 真的部署（會要求確認）" \
-        app      "⚠ 只跑應用層（不碰系統層）" \
-        rollback "⚠ 互動式回滾"); do
+        hosts    "① 主機設定 —— inventory 有哪些機器" \
+        groups   "② 群組設定 —— 每台機器跑什麼（前端／後端／資料庫）" \
+        start    "③ 部署開始 —— 前置檢查 → 乾跑 → 真的部署" \
+        rollback "④ ⚠ 撤回部署（回滾到上一個 release）"); do
         case $c in
-            '<')          return 0 ;;
-            hosts)        _tui_deploy_hosts ;;
-            facts)        _tui_deploy_limit facts "主機名稱（必填，來自 inventory）" ;;
-            vars|check|apply|app|rollback)
-                          _tui_deploy_limit "$c" "限制範圍（留空 = staging）" ;;
-            *)            _tui_run deploy "$c" ;;
+            '<')      return 0 ;;
+            hosts)    _tui_deploy_hosts ;;
+            groups)   _tui_deploy_groups ;;
+            start)    _tui_deploy_start ;;
+            rollback) _tui_deploy_limit rollback "限制範圍（留空 = staging）" ;;
         esac
     done
 }
+
+# ── ③ 部署開始：一道階梯 ──────────────────────────────────────────────────
+#
+# 順序是刻意的，也是 docs/guide-deployer.md §5.1 的那一道：
+# 由便宜到昂貴、由不碰主機到真的改主機。上一階紅了就不必往下跑。
+_tui_deploy_start() {
+    local c
+    while c=$(_tui_menu "部署開始（由上往下跑，上一階紅了就別往下）" "返回" \
+        galaxy "① 安裝 collections（全新 clone 必跑，不碰主機）" \
+        syntax "② --syntax-check（不碰主機）" \
+        lint   "③ ansible-lint + yamllint（不碰主機）" \
+        ping   "④ 確認 SSH 與 become（碰主機，唯讀）" \
+        check  "⑤ 乾跑 --check --diff（碰主機，唯讀）" \
+        apply  "⑥ ⚠ 真的部署（會要求確認）" \
+        app    "⚠ 只跑應用層（不碰系統層）" \
+        vars   "診斷：印出合併後的變數（查『我設的值有沒有生效』）" \
+        facts  "診斷：抓一台主機的 ansible facts"); do
+        case $c in
+            '<')    return 0 ;;
+            facts)  _tui_deploy_limit facts "主機名稱（必填，來自 inventory）" ;;
+            vars|check|apply|app)
+                    _tui_deploy_limit "$c" "限制範圍（留空 = staging）" ;;
+            *)      _tui_run deploy "$c" ;;
+        esac
+    done
+}
+
+# ── ② 群組設定 ────────────────────────────────────────────────────────────
+_tui_deploy_groups() {
+    local c
+    while c=$(_tui_menu "群組設定 —— 每台機器跑什麼" "返回" \
+        show  "看目前的分配（前端／後端／資料庫）" \
+        edit  "改某一台的群組歸屬" \
+        check "驗證（A15：db_primary 剛好一台，且必須在 web_backend 裡）" \
+        why   "拆機還要改什麼？"); do
+        case $c in
+            '<')   return 0 ;;
+            show)  _tui_run deploy hosts show ;;
+            edit)  _tui_deploy_group_edit ;;
+            check) _tui_run deploy hosts check --ansible ;;
+            why)   cx_msg "拆機不只是改群組" \
+"群組決定**哪個 role 在哪台跑**：
+
+  前端   web_frontend  nodejs_pm2 / deploy_frontend
+  後端   web_backend   php / composer / deploy_backend（migration 在這裡）
+  資料庫 db_primary    mysql + artisan migrate。**剛好一台**，而且必須
+                       也在 web_backend 裡（A15）—— 否則 migration 一次都
+                       不會跑，而且不會有任何錯誤訊息。
+
+真的把前後端拆到不同主機時，group_vars 還要改四個值：
+
+  php_fpm_listen           預設是 unix socket，只有同機連得到
+  php_fpm_allowed_clients  ⚠ FPM 沒有認證，連得上 9000 就能執行 PHP
+  frontend_host            預設 127.0.0.1，別台的 nginx 連不到
+  nginx_fastcgi_pass       指到後端那台
+
+完整清單見 docs/guide-deployer.md §3.3。
+「驗證」偵測到真的分機時會提醒前兩項。" ;;
+        esac
+    done
+}
+
+# 改某一台的群組歸屬。走 cx deploy hosts set —— 它只動有給的旗標，
+# ip／user／port／key 原樣保留（用 rm + add 重加會把那些全部弄丟）。
+_tui_deploy_group_edit() {
+    local name flags
+    name=$(_tui_ask "群組設定" "要改哪一台？（先用「看目前的分配」查名稱）") || return 0
+    [[ -n ${name// /} ]] || return 0
+    flags=$(_tui_deploy_pick_groups "$name 要跑什麼？" \
+        "選新的拓撲。位址與帳號不會被動到。") || return 0
+    local -a a=(deploy hosts set "$name")
+    local -a gf; read -r -a gf <<<"$flags"
+    (( ${#gf[@]} )) && a+=("${gf[@]}")
+    _tui_run "${a[@]}"
+}
+
 
 # 這幾個子指令都吃一個「限制範圍」參數。原本選單一律不帶參數送出，
 # 於是 check / apply 永遠只能對預設的 staging 跑，facts 更是直接壞的

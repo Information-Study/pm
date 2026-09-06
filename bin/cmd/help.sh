@@ -94,7 +94,11 @@ cmd_help_main() {
 
 ── 第三階段：部署 ───────────────────────────────────────────────────────────
   prod up -d --build   起正式環境的容器（只發布 80）
-  deploy hosts init|add|rm|show|check|edit
+  deploy hosts init|add|set|rm|show|check|edit
+                    add/set 的群組旗標決定**哪個 role 在這台跑**：
+                      --fe/--no-fe  前端（nodejs_pm2 / deploy_frontend）
+                      --be/--no-be  後端（php / composer / deploy_backend）
+                      --db/--no-db  資料庫（mysql + artisan migrate，剛好一台）
                     產生與驗證 env/ansible/inventory/hosts.yml（唯一沒有工具幫忙的必要檔案）
   deploy syntax     ansible-playbook --syntax-check（三個 playbook）
   deploy lint       ansible-lint（production profile）+ yamllint

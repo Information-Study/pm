@@ -355,3 +355,48 @@ print('OK')
 "
     assert_rc 0
 }
+
+# ── deploy hosts set：改群組不會弄丟位址與帳號 ────────────────────────────
+#
+# 這個子指令存在的唯一理由就是這一條。沒有它的話，「把某台改成只跑前端」
+# 只能 rm 再 add —— 而 add 只接得到旗標上給的東西，port 與 key
+# （以及當初打的 IP 與帳號）會一起消失，而且不會有任何提示。
+# TUI 的「群組設定 → 改某一台的群組歸屬」走的就是這一條。
+
+@test "deploy hosts set：只改群組，ip／user／port／key 原樣保留" {
+    _inv_q init --env production
+    _inv_q add h1 --ip 10.0.0.1 --user deployer --port 2222 --key /tmp/id_ed25519
+    _inv_q set h1 --no-be --no-db
+    run python3 -c "
+import yaml
+d = yaml.safe_load(open('$BATS_TEST_TMPDIR/hosts.yml'))['all']['children']
+fe = (d.get('web_frontend') or {}).get('hosts') or {}
+be = (d.get('web_backend')  or {}).get('hosts') or {}
+db = (d.get('db_primary')   or {}).get('hosts') or {}
+assert 'h1' in fe and 'h1' not in be and 'h1' not in db, (fe, be, db)
+# 連線參數放在**環境群組**裡（角色群組只列成員），所以要去那裡對
+v = d['production']['hosts']['h1']
+assert v['ansible_host'] == '10.0.0.1', v
+assert v['ansible_user'] == 'deployer', v
+assert v['ansible_port'] == 2222, v
+assert v['ansible_ssh_private_key_file'] == '/tmp/id_ed25519', v
+print('OK')
+"
+    assert_rc 0
+}
+
+@test "deploy hosts set：也改得動位址與帳號" {
+    _inv_q init --env production
+    _inv_q add h1 --ip 10.0.0.1 --user ubuntu
+    _inv_q set h1 --ip 10.9.9.9 --user deployer
+    run cat "$BATS_TEST_TMPDIR/hosts.yml"
+    assert_out_has "10.9.9.9" "deployer"
+}
+
+@test "deploy hosts set：主機名稱不存在要回非 0，並列出有哪些" {
+    _inv_q init --env production
+    _inv_q add h1 --ip 10.0.0.1
+    run _inv set nope --no-db
+    [ "$status" -ne 0 ] || _fail_with "改一台不存在的主機卻成功了"
+    assert_out_has "nope" "h1"
+}

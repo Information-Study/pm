@@ -110,3 +110,60 @@ setup() {
     [[ $TUI_TEXT == *"部署在 prod 模式"* ]] \
         || _fail_with "切到 test 之後提示沒有更新：$TUI_TEXT"
 }
+
+# ── 部署選單的形狀與可達性 ────────────────────────────────────────────────
+#
+# 2026-09-06 使用者回報「deploy 內選單跟功能皆不正常」。當時是 11 個平鋪的
+# 項目（hosts / syntax / lint / galaxy / ping / check / vars / facts / apply /
+# app / rollback），把「設定」與「執行」混在同一層，而且**沒有任何群組的入口**：
+# hosts → add 只問名稱與 IP，於是從選單加的主機永遠吃預設值（三個群組全開），
+# 前後端分機從選單根本做不到。
+#
+# 靜態檢查對這件事完全無感 —— TUI-resolve 只問「tag 指得到真的動詞嗎」，
+# 而 hosts / syntax / lint 全都指得到。所以這幾條要真的把選單畫出來看。
+#
+# 按鍵：prod 主選單第 7 項是 deploy（status/mode/project/env/docker/tools/deploy）
+#       → 下 6 次 + Enter。
+
+@test "部署選單是四個大項：主機／群組／部署／撤回" {
+    tui_screen_keys '\033[B\033[B\033[B\033[B\033[B\033[B\r' --mode prod
+    [ "$TUI_RC" -eq 0 ] || _fail_with "選單沒有正常離開（rc=$TUI_RC）"
+    [[ $TUI_TEXT == *"部署（Ansible）"* ]] || _fail_with "沒有進到部署選單：$TUI_TEXT"
+    [[ $TUI_TEXT == *"主機設定"* ]] || _fail_with "缺「主機設定」"
+    [[ $TUI_TEXT == *"群組設定"* ]] || _fail_with "缺「群組設定」—— 這正是使用者回報的缺口"
+    [[ $TUI_TEXT == *"部署開始"* ]] || _fail_with "缺「部署開始」"
+    [[ $TUI_TEXT == *"撤回部署"* ]] || _fail_with "缺「撤回部署」"
+    # 執行階梯要收在「部署開始」底下，不可以再平鋪回這一層
+    [[ $TUI_TEXT == *"ansible-lint"* ]] \
+        && _fail_with "lint 又回到部署選單第一層了（應該在「部署開始」裡）"
+    return 0
+}
+
+@test "部署 → 主機設定：新增主機會問群組，而且有 set 可以改" {
+    # ⚠ 最後那個 \033 不可省：tui_screen_keys 固定只送兩個 ESC，
+    #   剛好夠關掉「部署」與主選單。多進一層就要自己多關一層，
+    #   否則主選單會停在那裡等輸入，整個 pty 被 timeout 殺掉（status 124）。
+    tui_screen_keys '\033[B\033[B\033[B\033[B\033[B\033[B\r
+\r
+\033' --mode prod
+    [ "$TUI_RC" -eq 0 ] || _fail_with "選單沒有正常離開（rc=$TUI_RC）"
+    [[ $TUI_TEXT == *"hosts.yml"* ]] || _fail_with "沒有進到主機設定：$TUI_TEXT"
+    [[ $TUI_TEXT == *"會問要跑哪些群組"* ]] \
+        || _fail_with "新增主機沒有群組的入口 —— 那樣加出來的主機永遠是預設值"
+    [[ $TUI_TEXT == *"改一台主機的位址"* ]] || _fail_with "缺 set（只能 rm 再 add 的話會弄丟 port/key）"
+    # A15 的說明必須指向 web_backend；分群之後還寫「在 web 裡」是錯的
+    [[ $TUI_TEXT == *"web_backend"* ]] || _fail_with "A15 的說明沒有指向 web_backend"
+    return 0
+}
+
+@test "部署 → 群組設定：改得到某一台的群組歸屬" {
+    tui_screen_keys '\033[B\033[B\033[B\033[B\033[B\033[B\r
+\033[B\r
+\033' --mode prod
+    [ "$TUI_RC" -eq 0 ] || _fail_with "選單沒有正常離開（rc=$TUI_RC）"
+    [[ $TUI_TEXT == *"群組歸屬"* ]] \
+        || _fail_with "群組設定裡沒有「改某一台的群組歸屬」：$TUI_TEXT"
+    [[ $TUI_TEXT == *"拆機還要改什麼"* ]] \
+        || _fail_with "沒有說明拆機還要動 php_fpm_listen / frontend_host"
+    return 0
+}

@@ -106,7 +106,15 @@ _cx_completion() {
         sonar)
             COMPREPLY=($(compgen -W "up down status logs token url wait --help -h" -- "$cur")) ;;
         deploy)
-            COMPREPLY=($(compgen -W "syntax lint check ping facts vars apply app rollback galaxy hosts --help -h" -- "$cur")) ;;
+            if [[ $sub == hosts ]]; then
+                if (( argn <= 1 )); then
+                    COMPREPLY=($(compgen -W "init add set rm show check edit" -- "$cur"))
+                else
+                    COMPREPLY=($(compgen -W "--ip --user --port --key --env --fe --no-fe --be --no-be --web --no-web --db --no-db --ansible --force" -- "$cur"))
+                fi
+            else
+                COMPREPLY=($(compgen -W "syntax lint check ping facts vars apply app rollback galaxy hosts --help -h" -- "$cur"))
+            fi ;;
         verify)
             COMPREPLY=($(compgen -W "static runtime app ansible cli docs tui smoke waf acl all --report --quiet --help -h" -- "$cur")) ;;
         test)

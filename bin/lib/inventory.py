@@ -336,6 +336,48 @@ def cmd_add(args):
     return cmd_check(args)
 
 
+def cmd_set(args):
+    """改既有主機的群組歸屬（與連線資訊）。
+
+    為什麼需要這個子指令：群組決定**哪個 role 在哪台跑**（web_frontend →
+    nodejs_pm2/deploy_frontend、web_backend → php/composer/deploy_backend、
+    db_primary → mysql + artisan migrate）。add 有 --fe/--be/--db，
+    但那只在**新增的當下**能決定；之前只能 rm 再 add，
+    而 rm 會連 ip/user/port/key 一起丟掉，等於要重打一次。
+
+    只改有給的旗標，沒給的保持原值 —— 這樣 `set web-1 --no-fe` 讀作
+    「把這台從前端群組拿掉」，而不是「重設成預設值」。
+    """
+    env, hosts = load(args.path)
+    h = next((x for x in hosts if x["name"] == args.name), None)
+    if h is None:
+        print(f"沒有這台主機：{args.name}", file=sys.stderr)
+        print(f"  目前有：{' '.join(x['name'] for x in hosts) or '（一台都沒有）'}",
+              file=sys.stderr)
+        return 2
+
+    # --web / --no-web 是「前後端一起」的捷徑；明確的 --fe / --be 優先。
+    fe = args.fe if args.fe is not None else args.web
+    be = args.be if args.be is not None else args.web
+    changed = []
+    for key, val, label in (("fe", fe, "前端"), ("be", be, "後端"), ("db", args.db, "資料庫")):
+        if val is not None and bool(h.get(key)) != bool(val):
+            h[key] = bool(val)
+            changed.append(f"{label}={'✔' if val else '✘'}")
+    for key in ("ip", "user", "port", "key", "env"):
+        val = getattr(args, key, None)
+        if val is not None and h.get(key) != val:
+            h[key] = val
+            changed.append(f"{key}={val}")
+
+    if not changed:
+        print(f"{args.name}：沒有要改的東西", file=sys.stderr)
+        return cmd_check(args)
+    save(args.path, env, hosts)
+    print(f"已更新 {args.name}：{' '.join(changed)}", file=sys.stderr)
+    return cmd_check(args)
+
+
 def cmd_rm(args):
     env, hosts = load(args.path)
     if env is None and not hosts:
@@ -388,6 +430,21 @@ def main():
     p.add_argument("--db", dest="db", action="store_true", default=None)
     p.add_argument("--no-db", dest="db", action="store_false")
     p.set_defaults(fn=cmd_add, ansible=False)
+
+    p = sub.add_parser("set")
+    p.add_argument("name")
+    p.add_argument("--ip"); p.add_argument("--user")
+    p.add_argument("--port", type=int); p.add_argument("--key")
+    p.add_argument("--env", choices=ENVS)
+    p.add_argument("--fe", dest="fe", action="store_true", default=None)
+    p.add_argument("--no-fe", dest="fe", action="store_false")
+    p.add_argument("--be", dest="be", action="store_true", default=None)
+    p.add_argument("--no-be", dest="be", action="store_false")
+    p.add_argument("--web", dest="web", action="store_true", default=None)
+    p.add_argument("--no-web", dest="web", action="store_false")
+    p.add_argument("--db", dest="db", action="store_true", default=None)
+    p.add_argument("--no-db", dest="db", action="store_false")
+    p.set_defaults(fn=cmd_set, ansible=False)
 
     p = sub.add_parser("rm"); p.add_argument("name"); p.set_defaults(fn=cmd_rm, ansible=False)
 

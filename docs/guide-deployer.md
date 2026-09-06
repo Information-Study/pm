@@ -184,6 +184,19 @@ cx deploy hosts add pm-be-1 --ip 10.0.0.2 --no-fe --be --db  # 跑後端與資�
 cx deploy hosts check --ansible
 ```
 
+拓撲**之後還會變**（單機先上線、之後把前端搬出去是常見的走法）。改群組用 `set`，
+不要 `rm` 再 `add` —— 後者會把 `--port` 與 `--key`（以及當初打的 IP 與帳號）
+一起丟掉，而且不會有任何提示：
+
+```bash
+cx deploy hosts set pm-be-1 --no-fe          # 把後端那台從前端群組拿掉
+cx deploy hosts check --ansible              # 改完一定要再驗一次 A15
+```
+
+選單走法（`prod` 模式）：**部署 → ② 群組設定 → 改某一台的群組歸屬**。
+它會列出五種常見拓撲讓你選，送出的就是上面那組旗標。
+新增主機時也會問同一個問題 —— 沒問到的話加出來的主機一律是單機預設值。
+
 > 這一節在 2026-09-06 之前寫著「**不能**拆」，並列出四個原因。
 > 逐一查證之後，其中**兩個已經是變數了**（那份敘述過期了）：
 
@@ -221,11 +234,12 @@ hardening_ufw_allowed_tcp_ports: [22, 80, 443, 9000]   # ④ 放行 9000（限�
 |---|---|
 | 群組解析（`web` 真的是兩個子群組的聯集） | ✅ `ansible-inventory --graph` 實測 |
 | role gate 真的分開（fe 機 `backend=False`、be 機 `frontend=False`） | ✅ 條件求值實測 |
-| `inventory.py` 的不變式與向後相容 | ✅ `bin/test/70_project.bats` 6 個案例 |
+| `inventory.py` 的不變式與向後相容 | ✅ `bin/test/70_project.bats` 9 個案例（含 `set` 的欄位保留） |
+| 選單真的走得到群組設定 | ✅ `bin/test/75_tui_run.bats` 3 個 pty 案例 |
 | `--syntax-check` / `ansible-lint` / `yamllint` | ✅ |
 | **跨主機的 FPM / Nitro 實際流量** | ⬜ **未驗** —— 需要第二台真機 |
 
-### 3.4 可以拆的是資料庫層### 3.4 資料庫層 —— `db_primary` 仍必須在 `web_backend` 裡
+### 3.4 資料庫層 —— `db_primary` 仍必須在 `web_backend` 裡
 
 支援的拓撲是「多台 `web_backend`，其中一台**兼任** `db_primary`」：
 
@@ -395,6 +409,10 @@ cx deploy apply staging       # ⚠ 真的部署
 
 `[限制]` 是 `--limit` 的值（主機或群組樣式）。`check` 與 `vars` 不給就預設
 `staging`；`apply` / `app` 不給就是**所有主機**，那時會先警告。
+
+選單走法（`prod` 模式）：**部署 → ③ 部署開始**。那個子選單就是這道階梯，
+順序一樣，多一個排在最前面的 `galaxy`（全新 clone 必跑）與兩個診斷項
+（`vars` / `facts`）。每一項都會問一次「限制範圍」，留空就是預設的 `staging`。
 
 **全域旗標一律放在動詞之前：**
 

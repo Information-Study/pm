@@ -1179,6 +1179,8 @@ CX_PROJECT_NAME=shop ・ CX_GH_ORG=my-org ・ CX_REPO_BACKEND=shop-backend
 cx deploy hosts init                                   # 建立空的 hosts.yml
 cx deploy hosts add web-1 --ip 203.0.113.11 --user ubuntu
 cx deploy hosts add web-2 --ip 203.0.113.12 --user ubuntu   # 第二台預設不是 db_primary
+cx deploy hosts set web-2 --no-be --no-db              # 改群組，其餘欄位原樣保留
+cx deploy hosts set web-2 --ip 203.0.113.99            # 也改得動位址／帳號／埠／金鑰
 cx deploy hosts show
 cx deploy hosts check --ansible                        # 結構 + A15 + 讓 ansible 自己剖析
 cx deploy hosts rm web-2
@@ -1203,6 +1205,13 @@ hosts.yml」，然後叫人離開 cx 自己 `cp` 範例檔。
 以及 `--web` / `--no-web`（前後端一起的捷徑；明確的 `--fe` / `--be` 優先）。
 **第一台預設三個都是**（單機拓撲）；之後加的預設跑前後端但不是 `db_primary`。
 
+`set` 吃**同一組旗標**，差別是它只動有給的那幾個 —— `set web-1 --no-fe` 讀作
+「把這台從前端群組拿掉」，不是「重設成預設值」。它存在的理由只有一個：
+群組是在 `add` 的當下決定的，而拓撲會變。沒有 `set` 的話「把某台改成只跑前端」
+只能 `rm` 再 `add`，於是 `--port` 與 `--key`（以及當初打的 IP 與帳號）
+一起消失，而且不會有任何提示。
+`70_project.bats` 有一條案例專門釘住這件事（拿掉保留邏輯 → 該案例失敗）。
+
 > `web` 用 `children` 而不是自己列 hosts —— 這是拆分能成立的關鍵：
 > `site.yml` 裡既有的每一個 `groups['web']` gate 完全不用改，
 > 單機拓撲的行為 100% 不變。
@@ -1212,21 +1221,32 @@ hosts.yml」，然後叫人離開 cx 自己 `cp` 範例檔。
 > `check` 在分機拓撲下會警告兩個會讓那個拓撲不會動的預設值。
 
 `check` 會擋下三種真的會壞的狀況：`db_primary` 是空的、`db_primary` 超過一台、
-`db_primary` 有成員不在 `web`（A15 —— migration 掛在 `web` 的 gate 上，
-不在 `web` 就一次都不會跑，而 `site.yml` 的 preflight 也會擋）。
+`db_primary` 有成員不在 **`web_backend`**（A15）。
+migration 在 `deploy_backend` role 內，而那個 role 的 gate 是 `web_backend` ——
+`db_primary` 在 `web` 卻不在 `web_backend` 的話，migration **一次都不會跑，
+而且 ansible 全綠**，網站停在 `Base table or view not found`。
+`site.yml` 的 preflight 也擋同一件事，`ANS-split` 檢查則斷言這兩邊盯的是同一個群組。
 
-### ⚠ 哪些東西**不能**拆到不同主機
+### ⚠ 拆機時**還要改**的四個值
 
-nginx、前端、後端目前**必須在同一台**。這不是設定問題，是架構事實：
+群組只決定「哪個 role 在哪台跑」。真的把前後端放到不同主機時，連線那一半
+還在預設值上，而預設值全部假設同機 —— 群組改對了、拓撲照樣不會動：
 
-* `php_fpm_socket` 是 **unix socket**（`env/ansible/roles/php/templates/pool.conf.j2`），
-  nginx 只連得到同一台的 PHP
-* 前端 PM2 綁 `127.0.0.1:3000`（`deploy_frontend/defaults/main.yml`）
+| 變數 | 預設 | 為什麼要改 |
+|---|---|---|
+| `php_fpm_listen` | unix socket | 只有同一台連得到（`roles/php/templates/pool.conf.j2`） |
+| `php_fpm_allowed_clients` | `[]` | ⚠ FPM **沒有認證**，連得上就能執行 PHP。改 TCP 時 role 斷言會要求填 |
+| `frontend_host` | `127.0.0.1` | 別台的 nginx 連不到（`roles/nodejs_pm2/defaults/main.yml`） |
+| `nginx_fastcgi_pass` | `unix:{{ php_fpm_socket }}` | 要指到後端那台的 `:9000` |
 
-要真的拆開，得把 php-fpm 改成 TCP、PM2 綁到內網位址、nginx 的 upstream 指到
-遠端主機，並處理三者之間的網路與授權 —— 那是架構變更，不是這個工具的範圍。
+前兩項 `cx deploy hosts check` 在偵測到真的分機時會警告。
+完整清單與網路／防火牆的部分見 [`guide-deployer.md`](guide-deployer.md) §3.3。
 
-**可以**拆的是資料庫：多台 `web` + 其中一台兼 `db_primary`。
+> 這一節在 2026-09-06 之前寫著「nginx、前端、後端**必須在同一台**」，
+> 而 `php_fpm_listen` 與 `frontend_host` 早就是變數了 —— 文件比實作舊，
+> 而且與上一節的群組模型自相矛盾。
+
+**最容易拆的是資料庫**：多台 `web` + 其中一台兼 `db_primary`。
 那個拓撲要另外處理 `mysql_bind_address`、`db_host`、`mysql_app_user_hosts`
 與 `deploy_serial`，`hosts.yml.example` 的檔尾有完整寫法，`check` 也會提醒。
 
@@ -1539,6 +1559,33 @@ $ ./cx < /dev/null
 > 當時的 `75_tui_run.bats` 沒抓到，因為那幾條案例用 `cx --mode test tui`
 > 從**啟動時**指定模式，走不到「在選單裡切換」這條路。
 > 現在有 `tui_screen_keys` 這個 helper（送方向鍵進 pty）與三條對應案例。
+
+### 部署選單：四個大項
+
+`prod` 模式下才看得到。底下照「先設定、再部署、出事再撤回」分成四層：
+
+| 項目 | 內容 |
+|---|---|
+| ① 主機設定 | `show` / `add` / `set` / `rm` / `init` / `check` / `edit` |
+| ② 群組設定 | 看分配 / 改某一台的群組歸屬 / 驗證（A15）/ 拆機還要改什麼 |
+| ③ 部署開始 | `galaxy` → `syntax` → `lint` → `ping` → `check` → `apply`／`app`，外加 `vars`／`facts` 兩個診斷 |
+| ④ 撤回部署 | `rollback` |
+
+③ 的順序是刻意的，與 [`guide-deployer.md`](guide-deployer.md) §5.1 同一道：
+由便宜到昂貴、由不碰主機到真的改主機。上一階紅了就不必往下跑。
+
+「新增主機」與「改群組」都會跳出**拓撲選單**（單機／只前端／後端+資料庫／
+只後端／只資料庫），送出的就是 `--fe` / `--be` / `--db` 那組旗標。
+改群組走 `cx deploy hosts set`，所以位址、帳號、埠、金鑰不會被動到。
+
+> ⚠ 這個選單在 2026-09-06 之前是 **11 個平鋪的項目**，把「設定」與「執行」
+> 混在同一層，而且**完全沒有群組的入口** —— `hosts` → `add` 只問名稱與 IP，
+> 於是從選單加的主機永遠吃預設值（三個群組全開），
+> 前後端分機這件事從選單根本做不到，只能改用命令列。
+>
+> 靜態檢查對這件事完全無感：`TUI-resolve` 只問「tag 指得到真的動詞嗎」，
+> 而 `hosts` / `syntax` / `lint` 全都指得到。所以 `75_tui_run.bats` 補了三條
+> **真的把選單畫出來**的案例（反向對照過：舊版 `tui.sh` 三條全紅）。
 
 ### 專案設定
 
