@@ -299,7 +299,7 @@ docker compose ... -p pm_prod exec app sh -c '! php -m | grep -qi xdebug' && ech
 | A12 | **SAST 閘門與文件不符** | `--error` 是「有任何 finding 就失敗」，包含 warning。而 claude.md §5 寫的是「無 ERROR 等級 finding」。用 `--error` 當閘門的結果是這條 lane 永遠紅燈，於是沒有人會再看它 | 改由 `bin/lib/sarif_gate.py` 依嚴重度判定，warning 仍然完整顯示 |
 | A13 | **`.trivyignore.yaml` 從未被引用** | 檔案存在、內容也寫好了，但 `trivy.yaml` 沒有 `ignorefile:` —— 於是「無 HIGH/CRITICAL 除非有到期日的例外」這個閘門其實不成立 | 接上 `ignorefile:`，並補上兩筆有 `expired_at` 的例外 |
 | A14 | **`.semgrepignore` 放錯位置** | Semgrep 只在「掃描目標的根目錄」找它。原本放在 `env/docker/security/semgrep/` 底下，從來沒被讀到 | 移到專案根目錄 |
-| A15 | **Trivy 掃到 `ansible/collections/`** | 那是 ansible-galaxy 下載的上游程式碼，回報的是別人測試夾具裡的問題 | 加入 `skip-dirs` |
+| A15 | **Trivy 掃到 ansible 的 collections 目錄** | 那是 ansible-galaxy 下載的上游程式碼，回報的是別人測試夾具裡的問題 | 加入 `skip-dirs` |
 | A16 | **ZAP 的 `baseline.conf` 路徑指向未掛載的位置** | `-c /zap/wrk/../../../docker/...` 在容器內解析成 `/docker/...`，而只有 `reports/dast/<mode>` 被掛到 `/zap/wrk` | 多掛一個唯讀 volume 並改用容器內絕對路徑 |
 | A17 | **`scan.sh` 的兩個累加器缺陷** | `_scan_code` 把 SonarQube 的 rc 寫進呼叫者的 `worst` 但 return 的是 `_lane_worst`；`_scan_secrets` return 一個在該函式裡不存在的變數 | 兩處都改成回傳自己的 lane 累加器 |
 | A18 | **H2C smuggling** | edge 的 `map $http_upgrade $connection_upgrade { default upgrade; }` 會把 `Upgrade: h2c` 也轉給上游 | 改成白名單，只有 `websocket` 放行 |

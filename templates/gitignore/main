@@ -12,9 +12,9 @@
 *.p12
 *.pfx
 auth.json
-/ansible/inventory/hosts.yml
-/ansible/**/vault_pass*
-/ansible/collections/
+/env/ansible/inventory/hosts.yml
+/env/ansible/**/vault_pass*
+/env/ansible/collections/
 
 # 掃描報告：排除「內容」而非目錄本身。
 # 寫成 /reports/ 會讓 git 連進去讀巢狀 .gitignore 都不做，
@@ -25,7 +25,28 @@ auth.json
 
 # cx 執行期狀態
 /.cx/
-/_archive/
+/pm_archive/
+
+# 本機 Ansible 目標容器的公鑰（每台機器不同，不進版控）
+#
+# ⚠ 這一條是**根錨定**的，而 env/docker/ 底下沒有任何巢狀 .gitignore
+#   保護它（env/ansible/ 有自己的一份，所以那三條有雙重保險，這一條沒有）。
+#   _fresh_git_init 會用這個範本**覆蓋** live 的 .gitignore 再 git add -A ——
+#   所以範本少一條，cx fresh / cx init 之後那個檔就會進索引。
+#   而 cx git push 的祕密掃描擋不住它：檔名不匹配
+#   (\.env|\.key|\.pem|auth\.json|id_rsa|\.sqlite)$，內容也不是
+#   gitleaks 認得的 pattern（SSH 公鑰沒有規則）。
+#   2026-09-06 的安全審查實證重現過這條路徑。
+/env/docker/ansible-target/authorized_keys
+
+# 本機驗證用的暫存腳本（開發過程產生，不進版控）
+/.cx-*.sh
+/.cx-*.py
+/.cx-*.txt
+
+# Python 編譯產物（bin/lib/*.py 被當成腳本執行時會產生）
+__pycache__/
+*.py[cod]
 
 # 系統與編輯器
 .DS_Store

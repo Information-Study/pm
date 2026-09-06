@@ -76,7 +76,7 @@ cd pm
 2. 建立 `reports/` 與 `.cx/` 的葉目錄（**必須由你建立**，讓 Docker 建會是 root:root）
 3. ~~安裝三個 repo 的 pre-push hook~~ —— **已改為選用**，`cx setup` 不再自動安裝。
    要啟用白名單攔截： `cx git guard install`
-4. 安裝 Ansible collections（`ansible/collections/` 不進版控）
+4. 安裝 Ansible collections（`env/ansible/collections/` 不進版控）
 5. 盤點缺少的工具並告訴你怎麼補
 
 ### 2.3 補齊工具鏈

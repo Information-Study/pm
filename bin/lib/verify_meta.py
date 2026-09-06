@@ -1028,7 +1028,10 @@ LEGACY_LITERALS = tuple(
                      "/entrypoint/", "/security/", "/legacy/", "/ansible-target/")
 ) + tuple(
     _A + x for x in ("/site.yml", "/inventory/", "/roles/", "/playbooks/",
-                     "/README.md", "/ansible.cfg", "/requirements.yml")
+                     "/README.md", "/ansible.cfg", "/requirements.yml",
+                     # /collections/ 漏了一輪 —— 反向測試（把範本的
+                     # /env/ansible/collections/ 改回 v2）沒有變紅才發現。
+                     "/collections/")
 )
 
 # 這些前綴之後出現「舊字面」是因為它是**新路徑的後綴**，不算違規。
@@ -1155,8 +1158,14 @@ def check_layout_legacy():
         rel_parts = q.relative_to(ROOT).parts
         if skip & set(rel_parts):
             continue
+        # ⚠ templates/gitignore/{main,backend,frontend} 沒有副檔名，檔名也不在
+        #   上面那張表裡 —— 2026-09-06 的安全審查發現它們因此**完全沒被掃到**，
+        #   於是範本裡的 v2 路徑（根錨定的 `/ansible` 那三條）一直是隱形的。
+        #   而 _fresh_git_init 會用那個範本**覆蓋** live 的 .gitignore。
+        in_templates = rel_parts[:1] == ("templates",)
         if q.suffix not in exts and q.name not in (".dockerignore", ".semgrepignore",
-                                                   ".gitignore", "cx", "Dockerfile"):
+                                                   ".gitignore", "cx", "Dockerfile") \
+                and not in_templates:
             continue
         rel = str(q.relative_to(ROOT))
         if rel in skip_files:
@@ -1232,14 +1241,48 @@ def check_layout_ignore():
     for rel in ("src", "src/backend", "src/frontend"):
         if ignored(rel):
             bad.append(f"{rel} 被 ignore —— git submodule add 會失敗")
-    for rel in ("env/docker/ansible-target/authorized_keys",
-                "env/ansible/inventory/hosts.yml"):
+    SECRETS = ("env/docker/ansible-target/authorized_keys",
+               "env/ansible/inventory/hosts.yml",
+               "env/ansible/vault_pass_backup",
+               "env/ansible/collections/x")
+    for rel in SECRETS:
         if not ignored(rel):
             bad.append(f"{rel} 沒有被 ignore —— PUBLIC repo，而 gitleaks 掃不到這一類")
-    if bad:
-        row("FAIL", "LAY-ignore", "版面路徑的忽略規則正確", "；".join(bad))
+
+    # ── 範本也要擋得住同樣的東西 ────────────────────────────────────────
+    #
+    # ⚠ 上面驗的是 **live** 的 .gitignore，而 _fresh_git_init 會用
+    #   templates/gitignore/main **覆蓋**它，然後 git add -A + commit。
+    #   也就是說 cx fresh（任何模式）／cx init／cx re-init 之後，
+    #   真正生效的是**範本**那一份。
+    #
+    #   2026-09-06 的安全審查實證重現：範本停在 v2（/ansible/…）而且從來
+    #   沒有 authorized_keys 那一條，於是套用之後
+    #     env/ansible/inventory/hosts.yml、env/ansible/vault_pass_backup、
+    #     env/docker/ansible-target/authorized_keys
+    #   三個檔全部進索引。而 cx git push 的祕密掃描擋不住它們：
+    #   檔名不匹配 (\.env|\.key|\.pem|auth\.json|id_rsa|\.sqlite)$，
+    #   內容也不是 gitleaks 認得的 pattern。三個 repo 都是 PUBLIC。
+    tpl = ROOT / "templates" / "gitignore" / "main"
+    if not tpl.exists():
+        bad.append("templates/gitignore/main 不存在 —— cx fresh 會交出沒有忽略規則的樹")
     else:
-        row("PASS", "LAY-ignore", "版面路徑的忽略規則正確", "src/ 可加、祕密檔已排除")
+        txt = tpl.read_text(encoding="utf-8")
+        pats = {l.strip() for l in txt.splitlines()
+                if l.strip() and not l.strip().startswith("#")}
+        need = ("/env/ansible/inventory/hosts.yml", "/env/ansible/**/vault_pass*",
+                "/env/ansible/collections/", "/env/docker/ansible-target/authorized_keys")
+        miss = [n for n in need if n not in pats]
+        if miss:
+            bad.append("templates/gitignore/main 少了：" + " ".join(miss)
+                       + "（_fresh_git_init 用它覆蓋 .gitignore，所以 cx fresh 之後"
+                         "那幾個祕密檔會進索引，而 cx git push 掃不到）")
+    if bad:
+        row("FAIL", "LAY-ignore", "版面路徑的忽略規則正確（含 fresh 用的範本）",
+            "；".join(bad))
+    else:
+        row("PASS", "LAY-ignore", "版面路徑的忽略規則正確（含 fresh 用的範本）",
+            "src/ 可加、祕密檔已排除、範本與 live 一致")
 
 
 def check_layout_version():

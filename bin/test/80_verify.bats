@@ -174,3 +174,49 @@ PHP
     [[ $output == *"FAIL|TUI-coverage"* ]] \
         || _fail_with "標記不見了卻沒有變紅：$output"
 }
+
+# ── cx fresh 用的範本也要擋得住祕密 ────────────────────────────────────────
+#
+# LAY-ignore 原本只驗 **live** 的 .gitignore，而 _fresh_git_init 會用
+# templates/gitignore/main **覆蓋**它再 git add -A + commit。
+# 也就是說 cx fresh（任何模式）／cx init／cx re-init 之後，真正生效的是範本。
+#
+# 2026-09-06 的安全審查實證重現：範本停在 v2（/ansible/…）而且從來沒有
+# authorized_keys 那一條，套用之後三個祕密檔全部進索引 ——
+# 而 cx git push 的祕密掃描擋不住它們（檔名與內容都不匹配任何 pattern），
+# 三個 repo 都是 PUBLIC。
+
+@test "LAY-ignore 會驗 cx fresh 用的 .gitignore 範本（不只 live 那一份）" {
+    run bash -c "
+        cd '$CX_TEST_REAL_ROOT'
+        tmp=\$(mktemp -d); cp -r bin templates \"\$tmp/\"; cp .cxroot .gitignore \"\$tmp/\"
+        git -C \"\$tmp\" init -q 2>/dev/null
+        # 拿掉範本裡的 authorized_keys 那一條
+        sed -i '/ansible-target\/authorized_keys/d' \"\$tmp/templates/gitignore/main\"
+        CX_ROOT=\"\$tmp\" CX_PROJECT_NAME=pm python3 bin/lib/verify_meta.py cli
+        rm -rf \"\$tmp\"
+    "
+    [[ $output == *"FAIL|LAY-ignore"* ]] \
+        || _fail_with "範本少了祕密規則卻沒有變紅：$output"
+    [[ $output == *"templates/gitignore/main"* ]] \
+        || _fail_with "沒有指出是範本的問題：$output"
+}
+
+@test "範本套用之後，三個祕密檔都不會進索引（端到端重現）" {
+    local t="$BATS_TEST_TMPDIR/tplrepro"
+    mkdir -p "$t/env/ansible/inventory" "$t/env/docker/ansible-target"
+    git -C "$t" init -q -b main
+    printf 'ssh-ed25519 AAAA FAKE\n' > "$t/env/docker/ansible-target/authorized_keys"
+    printf 'secret\n'                > "$t/env/ansible/vault_pass_backup"
+    printf 'h: 1\n'                  > "$t/env/ansible/inventory/hosts.yml"
+
+    # _fresh_git_init 做的就是這一步
+    cp "$CX_TEST_REAL_ROOT/templates/gitignore/main" "$t/.gitignore"
+    git -C "$t" add -A 2>/dev/null || true
+
+    local staged
+    staged=$(git -C "$t" diff --cached --name-only | grep -v '^\.gitignore$' || true)
+    [ -z "$staged" ] \
+        || _fail_with "範本擋不住這些祕密檔（cx git push 也掃不到它們）：
+$staged"
+}

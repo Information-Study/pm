@@ -165,7 +165,7 @@ CX_DEPLOY_PLAYBOOKS='site.yml playbooks/deploy-only.yml playbooks/rollback.yml'
 
 # requirements.yml 列的 collection 是否都裝了。
 #
-# 全新 clone 上一定沒有：ansible/collections/ 被 .gitignore 排除
+# 全新 clone 上一定沒有：env/ansible/collections/ 被 .gitignore 排除
 #（那是 ansible-galaxy 下載的上游程式碼，不該進版控）。
 # 沒有它的話 --syntax-check 會失敗在
 #   [ERROR]: couldn't resolve module/action 'community.general.timezone'
@@ -186,7 +186,7 @@ _deploy_collections_ok() {
     (( ${#missing[@]} == 0 )) && return 0
     cx_error "缺少 collection：${missing[*]}"
     cx_dim "  安裝：cx deploy galaxy"
-    cx_dim "  （ansible/collections/ 不進版控，全新 clone 上一定要先裝一次）"
+    cx_dim "  （env/ansible/collections/ 不進版控，全新 clone 上一定要先裝一次）"
     return 1
 }
 

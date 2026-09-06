@@ -35,7 +35,7 @@ cx verify all                    # 以上再加 runtime waf acl
 | `SEC-pma-auth` | phpMyAdmin 保留登入認證 | 未認證的請求拿到以 root 登入的頁面（2026-09-05 實際發生） |
 | `SEC-logdir-mode` | 日誌目錄不對 web 群組開放寫入 | 提權面 |
 | `LAY-legacy` | 全樹沒有殘留的舊版面路徑（**三類**，見下） | 漏改一處不會有人告訴你 |
-| `LAY-ignore` | `src/` 不可被 ignore、祕密檔必須被 ignore | **SSH 公鑰進 PUBLIC 歷史**（gitleaks 抓不到這一類） |
+| `LAY-ignore` | `src/` 不可被 ignore、祕密檔必須被 ignore、**`cx fresh` 用的範本也擋得住同樣的東西** | **SSH 公鑰／vault 密碼／主機清單進 PUBLIC 歷史**（gitleaks 抓不到這一類） |
 | `LAY-version` | `.cxroot` 與 `common.sh` 的版號雙向一致 | 版號退回裝飾 |
 
 ### `LAY-legacy` 抓的三類，以及為什麼要三類
@@ -65,6 +65,39 @@ cx verify all                    # 以上再加 runtime waf acl
 > ② 與 ③ 刻意不掃 `.md` 與註解：它們偵測的是**程式碼裡的路徑用法**，
 > 而描述這個問題本身的文字（`docs/cx/layout.md`、`verify_meta.py` 上方的
 > 註解、這一節）必須寫得出舊形式。①（會誤導讀者的字面）才需要掃文件。
+
+### `LAY-ignore` 為什麼要同時驗**範本**
+
+`_fresh_git_init`（`bin/cmd/fresh.sh`）在 `.git` 不存在時會用
+`templates/gitignore/main` **覆蓋** live 的 `.gitignore`，然後 `git add -A` + commit。
+觸發它的有 `cx fresh`（**任何**模式，含新的 `--mode git-only`）、
+`cx init`、`cx re-init`，以及 TUI 的「專案設定 → 抹除紀錄」。
+
+也就是說：**跑完那些動詞之後，真正生效的忽略規則是範本那一份，不是 live 那一份。**
+
+2026-09-06 的安全審查實證重現了這條路徑。當時 `templates/gitignore/main`
+停在 v2（`/ansible/…`），而且**從來沒有** `authorized_keys` 那一條 ——
+套用之後三個檔全部進索引：
+
+```
+env/ansible/inventory/hosts.yml            主機位址與登入帳號
+env/ansible/vault_pass_backup              vault 密碼
+env/docker/ansible-target/authorized_keys  SSH 公鑰
+```
+
+而 `cx git push` 的三道閘門**擋不住它們**：
+檔名不匹配 `(\.env|\.key|\.pem|auth\.json|id_rsa|\.sqlite)$`，
+內容也不是 gitleaks 認得的 pattern（SSH 公鑰沒有規則、
+`generic-api-key` 需要 keyword-assignment 的形狀）。三個 repo 都是 PUBLIC。
+
+> 這件事的形狀值得記：branch 同時**加了** live 的規則、**加了** `LAY-ignore`，
+> 註解還寫著「這是整個版面遷移裡唯一一次失誤不可撤回的路徑」——
+> 而那道檢查只看 live 的檔案，範本連 `LAY-legacy` 都掃不到
+>（`templates/gitignore/main` 沒有副檔名，檔名也不在掃描清單裡）。
+> **多了一道看起來很嚴密的保護，實際覆蓋範圍卻不含真正會生效的那一份。**
+
+`bin/test/80_verify.bats` 有兩條案例釘住它：一條驗檢查會紅，
+一條是端到端重現（套用範本 → `git add -A` → 斷言什麼都沒 stage）。
 
 ## `docs` — 文件與實作一致
 

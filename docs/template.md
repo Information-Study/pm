@@ -17,7 +17,7 @@
 | `src/backend/vendor/` | 204 MB | `cx setup deps` |
 | `src/frontend/node_modules/` | 278 MB | `cx setup deps` |
 | `src/backend/node_modules/` | 89 MB | `cx setup deps` |
-| `ansible/collections/` | 39 MB | `cx setup`（或 `cx deploy galaxy`） |
+| `env/ansible/collections/` | 39 MB | `cx setup`（或 `cx deploy galaxy`） |
 | `reports/`（內容） | 依掃描次數 | `cx setup dirs`（連 `.gitignore` 一起補回）+ 重跑掃描 |
 | `.cx/`（快取與鎖） | 空的時候 52 KB，Trivy + Semgrep 規則抓滿之後 1.3 GB | `cx setup dirs` |
 

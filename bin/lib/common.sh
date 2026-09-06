@@ -334,6 +334,43 @@ cx_is_repo_root() {
     [[ $(cd "$r" && pwd -P) == "$(cd "$top" && pwd -P)" ]]
 }
 
+# 專案識別的驗證。
+#
+# cx rename 對新名字有 ^[a-z][a-z0-9_-]{1,30}$（rename.sh 的 _RENAME_RE），
+# 但那只管**寫入端** —— .cxroot 是一個純文字檔，任何人都可以手改，
+# 而它的值會流到：
+#
+#   compose 的 -p <專案>_<模式>        容器／網路／volume 的命名空間
+#   <專案>_test_net                    cx scan dast 用 docker run --network 接上去
+#   sonar 的 project key
+#   cx fresh 的確認字串 DESTROY <專案>  ← 閘門的比對目標
+#
+# 具體的攻擊形狀是**參數注入**：`CX_PROJECT_NAME=-workdir=/etc` 是完全合法的
+# shell（source 得過，不會執行任何東西），但它會讓
+#   docker compose ... -p -workdir=/etc_dev
+# 把值當成旗標。實測確認過。
+#
+# ⚠ 驗證**不能**放在 cx_project() 裡。那支函式幾乎都在 $(...) 裡被呼叫，
+#   而 cx_die 的 exit 只結束子 shell —— 訊息印得出來，流程照樣往下走
+#   （實測：rc=0）。所以驗證放在 dispatcher（cx 讀完 .cxroot 之後），
+#   與 --mode / --runner / --ui 的驗證同一個位置、同一個理由。
+#
+# 這道驗證擋不住的是「值在 source 時就執行」——
+# `CX_PROJECT_NAME=x$(cmd)` 在 `. "$CX_ROOT/.cxroot"` 那一行就跑掉了。
+# 那是 .cxroot 被 source 的本質（與 .envrc、Makefile 同一類取捨），
+# 不是這道驗證的範圍：能寫 .cxroot 的人已經能執行任意程式。
+readonly CX_PROJECT_RE='^[a-z][a-z0-9_-]{1,30}$'
+cx_assert_project_name() {
+    local n=${CX_PROJECT_NAME:-pm}
+    [[ $n =~ $CX_PROJECT_RE ]] && return 0
+    cx_error ".cxroot 的 CX_PROJECT_NAME 不合法：「$n」"
+    cx_dim  "  規則：$CX_PROJECT_RE（小寫開頭，2–31 字，只允許 a-z 0-9 _ -）"
+    cx_dim  "  這個值會變成 compose 的 -p 前綴、docker 網路名、sonar project key，"
+    cx_dim  "  以及 cx fresh 的確認字串 —— 以 - 開頭的值會被 docker 當成旗標。"
+    cx_dim  "  改名請用： cx rename <新名稱>（它會同步 .env / sonar / ansible 那幾處）"
+    exit "$EX_PRECOND"
+}
+
 cx_project() { printf '%s' "${CX_PROJECT_NAME:-pm}"; }
 
 # compose project 名（-p 的值）。

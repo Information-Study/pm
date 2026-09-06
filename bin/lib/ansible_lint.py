@@ -20,7 +20,7 @@ def err(code, f, msg):  errors.append((code, f, msg))
 def warn(code, f, msg): warns.append((code, f, msg))
 
 # ── 排除不屬於這個專案的路徑 ──────────────────────────────────────────
-# ansible/collections/ 是 ansible-galaxy 下載的上游 collection，
+# env/ansible/collections/ 是 ansible-galaxy 下載的上游 collection，
 # 裡面有幾萬個檔案（包含別人的測試夾具）。不排除的話這支檢查器會吐出
 # 八百多筆「別人的 command 沒有 changed_when」，訊號被雜訊完全淹沒，
 # 而那些違規我們既不該修也修不了。

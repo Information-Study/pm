@@ -712,7 +712,7 @@ _setup_all() {
 
     if cx_have ansible-galaxy && [[ -f $CX_ROOT/env/ansible/requirements.yml ]]; then
         cx_step "Ansible collections"
-        # ansible/collections/ 不進版控（那是上游程式碼），所以全新 clone 上
+        # env/ansible/collections/ 不進版控（那是上游程式碼），所以全新 clone 上
         # 一定要先裝一次，否則 cx deploy syntax 會失敗在
         # "couldn't resolve module/action 'community.general.timezone'"。
         if ( cd "$CX_ROOT/env/ansible" && cx_run ansible-galaxy collection install              -r requirements.yml >/dev/null 2>&1 ); then

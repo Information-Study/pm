@@ -101,3 +101,45 @@ print(m.group(1) if m else '')
     assert_out_lacks "版面不相容"
     assert_out_has "layout v2"
 }
+
+# ── 專案名的參數注入面 ─────────────────────────────────────────────────────
+#
+# CX_PROJECT_NAME 會變成 compose 的 -p <專案>_<模式>、docker 網路名、
+# sonar project key，以及 cx fresh 的確認字串 DESTROY <專案>。
+#
+# `CX_PROJECT_NAME=-workdir=/etc` 是完全合法的 shell（source 得過，
+# 不執行任何東西），但它會讓 `docker compose ... -p -workdir=/etc_dev`
+# 把值當成旗標。cx rename 對新名字有驗證，但那只管**寫入端**。
+
+@test "以 - 開頭的專案名要被擋（否則變成 docker 的旗標）" {
+    printf 'CX_PROJECT_NAME=-workdir=/etc\nCX_LAYOUT_VERSION=3\nCX_GH_ORG=X\nCX_REPO_MAIN=x\nCX_REPO_BACKEND=b\nCX_REPO_FRONTEND=f\n' \
+        > "$CX_TEST_ROOT/.cxroot"
+    run cx_bin --dry-run ps
+    assert_rc "$EX_PRECOND"
+    assert_out_has "CX_PROJECT_NAME 不合法"
+}
+
+@test "大寫或帶點的專案名也要被擋（compose 的 -p 不接受）" {
+    printf 'CX_PROJECT_NAME=My.Proj\nCX_LAYOUT_VERSION=3\nCX_GH_ORG=X\nCX_REPO_MAIN=x\nCX_REPO_BACKEND=b\nCX_REPO_FRONTEND=f\n' \
+        > "$CX_TEST_ROOT/.cxroot"
+    run cx_bin --dry-run ps
+    assert_rc "$EX_PRECOND"
+}
+
+@test "驗證必須在 dispatcher，不能只在 cx_project()（子 shell 的 exit 沒用）" {
+    # cx_project 幾乎都在 $(...) 裡被呼叫，cx_die 的 exit 只結束子 shell ——
+    # 訊息印得出來，流程照樣往下走。實測過 rc=0。
+    run grep -n 'cx_assert_project_name' "$CX_TEST_REAL_ROOT/cx"
+    assert_rc 0
+    # cx_project 本身必須保持單純讀取，不做會 exit 的事
+    run bash -c "sed -n '/^cx_project() {/,/^}/p' '$CX_TEST_REAL_ROOT/bin/lib/common.sh'"
+    assert_rc 0
+    [[ $output != *cx_die* ]] \
+        || _fail_with "cx_project() 裡有 cx_die —— 它在 \$(...) 中無效：$output"
+}
+
+@test "正常的專案名照樣通過" {
+    add_compose_skeleton        # ps 要走 compose，fixture 預設沒有骨架
+    run cx_bin --dry-run ps
+    assert_rc 0
+}

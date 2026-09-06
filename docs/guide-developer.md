@@ -233,7 +233,7 @@ detached HEAD **領先**追蹤分支時（你剛好在 detached 狀態下 commit
 | `setup native` | `system` → `tools` → `deps` 一次跑完 | 見 [§3.3](#33-一行把原生那條路準備好) |
 
 裸的 `cx setup`（= `setup all`）做的是：`env` → `dirs` → 提示 push guard 是選用 →
-安裝 Ansible collections（`ansible/collections/` 不進版控，缺了 `cx deploy syntax`
+安裝 Ansible collections（`env/ansible/collections/` 不進版控，缺了 `cx deploy syntax`
 會失敗在 `couldn't resolve module/action 'community.general.timezone'`）→
 盤點工具鏈並告訴你缺什麼。**它不會替你安裝工具**。
 

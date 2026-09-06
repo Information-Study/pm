@@ -74,7 +74,7 @@ cx setup tools ansible        # 裝進 ~/.local/share/cx-venv，免 root
 cx deploy galaxy              # 安裝 env/ansible/requirements.yml 列的 collections
 ```
 
-`cx deploy galaxy` 在全新 clone 上是**必要**的：`ansible/collections/` 被
+`cx deploy galaxy` 在全新 clone 上是**必要**的：`env/ansible/collections/` 被
 `.gitignore` 排除（那是 ansible-galaxy 下載的上游程式碼，不該進版控）。
 少了它，`--syntax-check` 會失敗在
 `couldn't resolve module/action 'community.general.timezone'` ——

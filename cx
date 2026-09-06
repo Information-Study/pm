@@ -141,6 +141,13 @@ case $verb in
     help|-h|--help) verb=help ;;
 esac
 
+# 專案名驗證。必須在 .cxroot 被 source **之後**、任何用到它的動詞之前。
+# 放在這裡而不是 cx_project() 裡：那支函式幾乎都在 $(...) 中被呼叫，
+# 而 cx_die 的 exit 只結束子 shell（實測 rc=0，訊息印得出來但流程照走）。
+# 與上面 --mode / --runner / --ui 的驗證同一個理由：
+# 不驗證等於留一個參數注入面（-p <值> 的值以 - 開頭就變成旗標）。
+cx_assert_project_name
+
 # 版面閘門。必須排在 CX_VERB export 之後（豁免清單要看動詞），
 # 而且在解析指令檔之前 —— 舊版面的樹會在 . "$file" 之後用一堆
 # 看不出關聯的方式壞掉，每個訊息都指向不同的方向。
