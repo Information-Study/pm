@@ -108,7 +108,7 @@ _cx_completion() {
         deploy)
             COMPREPLY=($(compgen -W "syntax lint check ping facts vars apply app rollback galaxy hosts --help -h" -- "$cur")) ;;
         verify)
-            COMPREPLY=($(compgen -W "static runtime app ansible cli docs tui waf acl all --report --quiet --help -h" -- "$cur")) ;;
+            COMPREPLY=($(compgen -W "static runtime app ansible cli docs tui smoke waf acl all --report --quiet --help -h" -- "$cur")) ;;
         test)
             COMPREPLY=($(compgen -W "cli back front all coverage larastan up down restart ps logs sh build config dc --help -h" -- "$cur")) ;;
         dev|prod|up|down|restart|ps|logs|sh|build|config|dc)

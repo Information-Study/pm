@@ -400,6 +400,101 @@ _verify_acl() {
     fi
 }
 
+# ── smoke：唯讀動詞真的跑得起來 ─────────────────────────────────────────────
+#
+# 為什麼需要這個範圍：其餘每一個範圍驗的都是「設定對不對」與「跨檔一致不一致」，
+# 沒有一個真的**把動詞叫起來**。00_dispatch.bats 有「每個動詞的 --help 都跑得
+# 起來」，但 --help 只證明檔案 source 得進來、函式定義得出來 —— 它走不到
+# 任何一條實際的程式路徑。
+#
+# 於是「cx open pma 算出來的埠是錯的」「cx status 在某個狀態下 unbound variable」
+# 這一類缺陷，在所有靜態檢查全綠的情況下沒有任何東西擋得住。實際發生過：
+# 2026-09-06 的 cx status 第一版在 `local c=$1 d="$CX_ROOT/$c"` 上直接 unbound
+#（bash 的 local 先宣告全部名字再依序賦值），而那要真的跑一次才看得到。
+#
+# 只跑**唯讀**的動詞。會改東西的（up/down/commit/push/apply/fresh）不在這裡 ——
+# 驗收不該有副作用。
+_verify_smoke() {
+    cx_step "動詞煙霧測試（只跑唯讀的）"
+    # 每一項：<顯示名>|<要跑的參數>
+    # 需要 Docker 的另外分組，daemon 不通時整組 SKIP 而不是逐條紅。
+    local -a plain=(
+        "status|status"
+        "status --json|status --json"
+        "status --short|status --short"
+        "open list|open list"
+        "git status|git status"
+        "git feature list|git feature list"
+        "git hotfix list|git hotfix list"
+        "git branch list|git branch list"
+        "git config show|git config show"
+        "git guard status|git guard status"
+        "deploy hosts show|deploy hosts show"
+    )
+    local -a needs_docker=(
+        "config|config"
+        "ps|ps"
+        "open front --url|open front --url"
+        "open pma --url|open pma --url"
+    )
+    # ⚠ 只看退出碼是不夠的。
+    #   command substitution 的失敗**不會**傳播到呼叫端 —— 而 cx status
+    #   到處都是 `printf '%s' "$(某個函式)"` 這種形式，加上它的契約是
+    #   「從不失敗」（最後一律 return 0）。兩者相加的結果是：內部函式炸了
+    #   （unbound variable、指令不存在），錯誤訊息吐到 stderr，而動詞仍然 rc=0。
+    #   2026-09-06 的 cx status 第一版就是這樣：`local c=$1 d="$CX_ROOT/$c"`
+    #   在 set -u 之下 unbound，畫面上少了兩行，退出碼完全正常。
+    #   所以這裡同時看 **stderr 有沒有 bash 的錯誤**。
+    local item name args rc err bad=0 n=0
+    _smoke_one() {                  # _smoke_one <顯示名> <參數...>
+        local nm=$1; shift
+        local e; e=$(mktemp)
+        local r=0
+        ( "$CX_ROOT/cx" --ui plain "$@" ) >/dev/null 2>"$e" || r=$?
+        n=$((n + 1))
+        if (( r != 0 )); then
+            _vf FAIL "smoke-${nm%% *}" "cx $nm 跑得起來" "rc=$r"
+            bad=1
+        elif grep -qE 'unbound variable|command not found|syntax error|No such file or directory' "$e"; then
+            _vf FAIL "smoke-${nm%% *}" "cx $nm 跑得起來" \
+                "rc=0 但 stderr 有 bash 錯誤：$(grep -oE '(unbound variable|command not found|syntax error|No such file or directory)' "$e" | sort -u | tr '\n' ' ')"
+            bad=1
+        fi
+        rm -f "$e"
+    }
+    for item in "${plain[@]}"; do
+        name=${item%%|*}; args=${item#*|}
+        # shellcheck disable=SC2086
+        _smoke_one "$name" $args
+    done
+    if cx_docker_ok; then
+        for item in "${needs_docker[@]}"; do
+            name=${item%%|*}; args=${item#*|}
+            # shellcheck disable=SC2086
+            _smoke_one "$name" $args
+        done
+    else
+        _vf SKIP "smoke-docker" "需要 Docker 的動詞" "daemon 不可用"
+    fi
+    unset -f _smoke_one
+    (( bad )) || _vf PASS "smoke-verbs" "唯讀動詞都跑得起來（rc=0 且 stderr 無 bash 錯誤）" "$n 個"
+
+    # 委派一致性：cx open pma 與 cx pma 必須給出**完全相同**的網址。
+    # 這一條盯的是「複製了埠推導邏輯」——兩份會各自演化，然後給出不同的答案
+    # 而沒有人發現。bin/test/78_open.bats 有對應的案例，這裡是真樹上的複驗。
+    if cx_docker_ok && [[ $CX_MODE != prod ]]; then
+        local a b
+        a=$( "$CX_ROOT/cx" --ui plain open --url pma 2>/dev/null ) || a='<失敗>'
+        b=$( "$CX_ROOT/cx" --ui plain pma --url 2>/dev/null )      || b='<失敗>'
+        if [[ $a == "$b" && $a != '<失敗>' ]]; then
+            _vf PASS "smoke-open-pma" "cx open pma 與 cx pma 給出同一個網址" "$a"
+        else
+            _vf FAIL "smoke-open-pma" "cx open pma 與 cx pma 給出同一個網址" \
+                "open=$a pma=$b —— 埠推導被複製了一份，兩邊已經漂走"
+        fi
+    fi
+}
+
 # ── 報告 ───────────────────────────────────────────────────────────────────
 _verify_report() {
     local out=$1 row st id title note
@@ -437,15 +532,15 @@ cmd_verify_main() {
             --report) report=$(cx_resolve "${2:?--report 需要路徑}"); shift 2 ;;
             --report=*) report=$(cx_resolve "${1#*=}"); shift ;;
             --quiet) _VF_QUIET=1; shift ;;
-            static|runtime|ansible|app|cli|docs|tui|waf|acl|all) scopes+=("$1"); shift ;;
+            static|runtime|ansible|app|cli|docs|tui|waf|acl|smoke|all) scopes+=("$1"); shift ;;
             *) cx_error "未知的範圍：$1"; _verify_usage; return "$EX_USAGE" ;;
         esac
     done
-    (( ${#scopes[@]} )) || scopes=(cli docs tui static app ansible)
+    (( ${#scopes[@]} )) || scopes=(cli docs tui smoke static app ansible)
 
     local s
     for s in "${scopes[@]}"; do
-        [[ $s == all ]] && { scopes=(cli docs tui static runtime app waf acl ansible); break; }
+        [[ $s == all ]] && { scopes=(cli docs tui smoke static runtime app waf acl ansible); break; }
     done
 
     # 清掉上一次的設定快取，確保這次讀到的是現在的 compose 檔。
@@ -460,6 +555,7 @@ cmd_verify_main() {
             ansible) _verify_ansible ;;
             waf)     cx_docker_need; _verify_waf ;;
             acl)     _verify_acl ;;
+            smoke)   _verify_smoke ;;
             runtime)
                 cx_docker_need
                 cx_step "執行期驗收"

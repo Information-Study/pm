@@ -598,6 +598,7 @@ cx verify [範圍...] [--report <檔案>] [--quiet]
 | `cli` | cx 自己：動詞／旗標／補全／help 四方同步 | 什麼都不用 |
 | `docs` | 文件與實作是否一致（教的變數真的被讀嗎、路徑對嗎） | 什麼都不用 |
 | `tui` | 選單每一項都指得到真的存在的指令，且每個動詞都到得了 | 什麼都不用 |
+| `smoke` | **真的把 15 個唯讀動詞叫起來跑一次**（rc=0 且 stderr 無 bash 錯誤） | 什麼都不用（需 Docker 的那幾個會自動跳過） |
 | `static` | compose 合併結果、Dockerfile、版本鎖定 | 要有 `.env` |
 | `ansible` | syntax-check + ansible-lint + yamllint | 要有 ansible |
 | `runtime` | supervisord、vendor、APP_KEY、xdebug | 容器在跑 |
@@ -606,11 +607,31 @@ cx verify [範圍...] [--report <檔案>] [--quiet]
 | `acl` | setfacl 可用、檔案系統支援、`cx acl check` | setfacl |
 | `all` | 全部，會依序把三個模式都起起來 | 很慢 |
 
-省略範圍 = `cli docs tui static app ansible`。
+省略範圍 = `cli docs tui smoke static app ansible`。
 報告預設寫到 `reports/verify/<時間戳>.md`。
 
 三個結果嚴格分開：**PASS**（真的驗過）、**FAIL**（真的壞了）、
 **SKIP**（這次沒辦法驗，**不算通過**）。
+
+### `smoke` 為什麼只看退出碼不夠
+
+其餘每一個範圍驗的都是「設定對不對」與「跨檔一致不一致」——
+**沒有一個真的把動詞叫起來**。`cx <verb> --help` 只證明檔案 source 得進來、
+函式定義得出來，它走不到任何一條實際的程式路徑。
+
+而只看退出碼也不夠：command substitution 的失敗**不會**傳播到呼叫端，
+而 `cx status` 到處都是 `printf '%s' "$(某個函式)"`，加上它的契約是
+「從不失敗」。兩者相加 → 內部函式炸了、錯誤吐到 stderr、**動詞仍然 rc=0**。
+
+2026-09-06 的 `cx status` 第一版就是這樣：
+`local c=$1 d="$CX_ROOT/$c"` 在 `set -u` 之下 unbound
+（bash 的 `local` 先宣告全部名字再依序賦值），畫面上少了兩行，退出碼完全正常。
+
+所以 `smoke` 同時 grep stderr 的 `unbound variable` / `command not found` /
+`syntax error` / `No such file or directory`。
+
+**只跑唯讀的動詞** —— `up` / `down` / `commit` / `push` / `apply` / `fresh`
+不在裡面，驗收不該有副作用。
 
 ### `cli` / `docs` / `tui` 為什麼值得獨立出來
 

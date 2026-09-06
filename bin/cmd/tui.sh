@@ -493,7 +493,7 @@ _tui_env() {
 _tui_verify() {
     local c
     while c=$(_tui_menu "驗收清單" "返回" \
-        ''        "預設（static app ansible cli docs tui）" \
+        ''        "預設（cli docs tui smoke static app ansible）" \
         static    "不需要容器：compose 合併結果、Dockerfile、版本鎖定" \
         app       "應用層端點（/up、/admin、/sanctum、前端）" \
         runtime   "需要容器在跑：supervisord、vendor、xdebug" \
@@ -502,6 +502,7 @@ _tui_verify() {
         cli       "cx 自己：動詞／旗標／補全／help 四方同步" \
         docs      "文件與實作是否一致" \
         tui       "選單每一項都指得到真的存在的指令" \
+        smoke     "真的把唯讀動詞叫起來跑一次（rc=0 且 stderr 無 bash 錯誤）" \
         ansible   "syntax-check + ansible-lint + yamllint" \
         all       "全部（會依序把三個模式都起起來，很慢）"); do
         case $c in

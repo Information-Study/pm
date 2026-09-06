@@ -72,6 +72,34 @@ cx verify all                    # 以上再加 runtime waf acl
 > 現在它對三個模式各走訪一次選單圖，並把每個模式各能到幾個印在備註裡。
 > 模式門檻用 `tui.sh` 的 `# @tui-mode:` 標記表示；**標記整個消失時會 FAIL**。
 
+## `smoke` — 唯讀動詞真的跑得起來（`bin/cmd/verify.sh`）
+
+其餘每一個範圍驗的都是「設定對不對」與「跨檔一致不一致」，
+**沒有一個真的把動詞叫起來**。`00_dispatch.bats` 有「每個動詞的 `--help`
+都跑得起來」，但 `--help` 只證明檔案 source 得進來、函式定義得出來 ——
+它走不到任何一條實際的程式路徑。
+
+| ID | 盯什麼 | 壞掉的症狀 |
+|---|---|---|
+| `smoke-verbs` | 15 個唯讀動詞 rc=0 **且 stderr 沒有 bash 錯誤** | 見下 |
+| `smoke-open-pma` | `cx open pma` 與 `cx pma` 給出**完全相同**的網址 | 埠推導被複製了一份，兩邊各自演化然後給出不同的答案 |
+
+> ⚠ **只看退出碼是不夠的。**
+> command substitution 的失敗**不會**傳播到呼叫端，而 `cx status` 到處都是
+> `printf '%s' "$(某個函式)"` 這種形式，加上它的契約是「從不失敗」
+>（最後一律 `return 0`）。兩者相加的結果是：內部函式炸了
+>（unbound variable、指令不存在），錯誤訊息吐到 stderr，而**動詞仍然 rc=0**。
+>
+> 2026-09-06 的 `cx status` 第一版就是這樣：
+> `local c=$1 d="$CX_ROOT/$c"` 在 `set -u` 之下 unbound
+>（bash 的 `local` 先宣告全部名字再依序賦值），
+> 畫面上少了兩行，退出碼完全正常。
+> 所以這個範圍同時 grep stderr 的 `unbound variable` / `command not found` /
+> `syntax error` / `No such file or directory`。
+
+**只跑唯讀的動詞。** 會改東西的（`up` / `down` / `commit` / `push` /
+`apply` / `fresh`）不在這裡 —— 驗收不該有副作用。
+
 ## `static` — 合併後的 compose（`bin/lib/verify_checks.py`）
 
 `cfg` / `cfg-<模式>`、`2.1`–`2.5`、`3.1`–`3.8`、`4` / `4b`、

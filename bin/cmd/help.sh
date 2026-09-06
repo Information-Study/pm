@@ -83,11 +83,12 @@ cmd_help_main() {
   verify [範圍...] [--quiet] [--report <檔>]
                     驗收並產出報告。範圍：
                       cli docs tui        純靜態，什麼都不用裝（含跨檔一致性）
+                      smoke               真的把唯讀動詞叫起來跑一次
                       static              需要 Docker（合併後的 compose）
                       runtime app         需要容器跑起來
                       waf acl ansible     需要對應的環境
                       all                 以上全部
-                    不給範圍時跑： cli docs tui static app ansible
+                    不給範圍時跑： cli docs tui smoke static app ansible
                     （刻意不含 runtime / waf / acl —— 那三個需要額外環境，
                       放進預設會讓「什麼都沒裝的樹」永遠有紅字）
 
