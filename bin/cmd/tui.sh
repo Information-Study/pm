@@ -722,12 +722,7 @@ _tui_volumes() {
         proj=$(cx_project_for "$_TUI_MODE")
         case $c in
             '<')  return 0 ;;
-            list) _tui_shell_page "Volume：$proj" \
-                    "docker volume ls --filter label=com.docker.compose.project=$proj \
-                     --format 'table {{.Name}}\t{{.Driver}}' ;
-                     echo ; echo '── 佔用空間 ──' ;
-                     docker system df -v 2>/dev/null | awk -v p=\"$proj\" '
-                        /^VOLUME NAME/{f=1} f && (\$1 ~ p || /^VOLUME NAME/) {print}'" ;;
+            list) _tui_shell_page "Volume：$proj" _tui_volume_report "$proj" ;;
             rm)   _tui_volume_rm "$proj" ;;
         esac
     done
@@ -748,7 +743,7 @@ _tui_volume_rm() {                  # _tui_volume_rm <compose project>
         sel=$(<"$f"); rm -f "$f"
         cx_confirm --danger "刪除 volume" \
             "將刪除：$sel\n\n裡面的資料會消失，而且**無法還原**。\n\n資料庫的話請先 cx db dump。\n\n確定嗎？" \
-            && _tui_shell_page "刪除 $sel" "docker volume rm '$sel'"
+            && _tui_shell_page "刪除 $sel" docker volume rm "$sel"
     else rm -f "$f"; fi
 }
 
@@ -760,8 +755,8 @@ _tui_images() {
         case $c in
             '<')  return 0 ;;
             list) _tui_shell_page "Image：$(cx_image_prefix)" \
-                    "docker image ls --filter reference='$(cx_image_prefix)/*' \
-                     --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}'" ;;
+                    docker image ls --filter "reference=$(cx_image_prefix)/*" \
+                    --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' ;;
             why)  cx_msg "映像 tag 含模式" \
 "映像 tag 一定含模式（例如 $(cx_image_prefix)/nuxt:test-prod-ssr）。
 
@@ -777,14 +772,38 @@ spa / static 的 API base URL 是**build 時**烘進 bundle 的，
     done
 }
 
-# 把一段唯讀的 shell 輸出顯示在對話框裡。
+# 把一段唯讀指令的輸出顯示在對話框裡。
 # 不用 _tui_run —— 那一支是給 cx 動詞用的（會帶 --mode / --runner）。
-_tui_shell_page() {                 # _tui_shell_page <標題> <指令>
-    local title=$1 cmd=$2 out
-    out=$(eval "$cmd" 2>&1) || true
+#
+# ⚠ 參數是**指令與它的參數**（陣列），不是一個要被 eval 的字串。
+#   第一版寫成 `out=$(eval "$cmd")`，而 $cmd 內插了 $(cx_project_for) 與
+#   $(cx_image_prefix) —— 前者最終來自 .cxroot 的 CX_PROJECT_NAME，
+#   後者來自 .env 的 IMAGE_PREFIX，而**兩者讀取時都沒有驗證**
+#   （cx rename 對新名字有 ^[a-z][a-z0-9_-]{1,30}$，但那只管寫入端）。
+#   .env 由 cx setup env 從進版控的 .env.example 產生，所以一個惡意範本
+#   可以讓 IMAGE_PREFIX 帶著 shell 元字元一路走到這個 eval。
+#
+#   那條路徑的實際嚴重度不高（.cxroot 本來就會被 source，clone 未知 repo
+#   再跑建置工具等於執行它的程式碼），但 eval 在這裡是**不必要**的 ——
+#   這個檔案別處一律用陣列 + cx_run。少一個 eval 就少一條要推理的路徑。
+_tui_shell_page() {                 # _tui_shell_page <標題> <指令> [參數...]
+    local title=$1; shift
+    local out
+    out=$( "$@" 2>&1 ) || true
     [[ -n ${out// /} ]] || out="（沒有結果）"
     local _h _w; read -r _h _w < <(_cx_fit 22 96)
     _cx_dlg --title "$title" --scrolltext --msgbox "$out" "$_h" "$_w" 1>&8 2>&9 || true
+}
+
+# volume 的用量要把 docker system df 的表格過濾成這個專案的列。
+# 拆成獨立函式而不是塞進 _tui_shell_page 的字串裡 —— 那樣就不必 eval。
+_tui_volume_report() {              # _tui_volume_report <compose project>
+    local proj=$1
+    docker volume ls --filter "label=com.docker.compose.project=$proj" \
+        --format 'table {{.Name}}\t{{.Driver}}'
+    printf '\n── 佔用空間 ──\n'
+    docker system df -v 2>/dev/null \
+        | awk -v p="$proj" '/^VOLUME NAME/{f=1} f && ($1 ~ p || /^VOLUME NAME/) {print}'
 }
 
 # 埠段是每個模式一組而且可以被覆寫，所以「前端在哪」不是背得起來的東西。

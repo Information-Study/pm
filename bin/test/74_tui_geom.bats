@@ -93,3 +93,29 @@ geom() {                            # geom <函式名> <參數...>
         "$CX_TEST_REAL_ROOT/bin/cmd/tui.sh" "$CX_TEST_REAL_ROOT/bin/lib/ui.sh" || true)
     [ -z "$hits" ] || _fail_with "還有寫死且超過 80 欄的尺寸：$hits"
 }
+
+# ── 注入面：選單不可以用 eval 組指令 ───────────────────────────────────────
+#
+# _tui_shell_page 的第一版是 `out=$(eval "$cmd")`，而呼叫端內插了
+# $(cx_project_for) 與 $(cx_image_prefix)。那兩個值最終來自 .cxroot 的
+# CX_PROJECT_NAME 與 .env 的 IMAGE_PREFIX，而**讀取時都沒有驗證**
+#（cx rename 對新名字有 ^[a-z][a-z0-9_-]{1,30}$，但那只管寫入端；
+#  .env 由 cx setup env 從**進版控的** .env.example 產生）。
+#
+# 實際嚴重度不高（.cxroot 本來就會被 source），但 eval 在這裡完全不必要 ——
+# 這個檔案別處一律用陣列 + cx_run。少一個 eval 就少一條要推理的路徑。
+
+@test "tui.sh 不可以出現 eval（指令一律用陣列傳）" {
+    run grep -nE '^[^#]*\beval\b' "$CX_TEST_REAL_ROOT/bin/cmd/tui.sh"
+    [ "$status" -ne 0 ] \
+        || _fail_with "tui.sh 出現了 eval —— 指令請用陣列傳給 _tui_shell_page：
+$output"
+}
+
+@test "_tui_shell_page 的參數是指令陣列，不是要被展開的字串" {
+    # 契約：第一個參數是標題，其餘原樣當成指令執行（"$@"）。
+    run grep -A6 '^_tui_shell_page()' "$CX_TEST_REAL_ROOT/bin/cmd/tui.sh"
+    assert_rc 0
+    [[ $output == *'out=$( "$@" 2>&1 )'* ]] \
+        || _fail_with "_tui_shell_page 不是用 \"\$@\" 執行：$output"
+}
