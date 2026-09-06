@@ -565,6 +565,10 @@ _fresh_dir_ready() {                # _fresh_dir_ready <path>
 
 _fresh_rebuild_frontend() {
     local dir="$CX_ROOT/src/frontend"
+    # 同 _fresh_rebuild_backend：相對路徑從 $dir 推導。
+    # native 那條一直是對的（它直接用 $dir），docker 那條在 2026-09-06 之前
+    # 寫死 `frontend` —— 四條重建路徑裡只有一條在 v3 遷移時被改到。
+    local rel=${dir#"$CX_ROOT"/}
     cx_step "重建前端（Vue 3 + Nuxt 4）"
     _fresh_dir_ready "$dir" || return 1
 
@@ -591,7 +595,7 @@ _fresh_rebuild_frontend() {
                 -v "$CX_ROOT:/w" -w /w \
                 -e HOME=/tmp \
                 "$CX_IMG_NODE" \
-                npx --yes nuxi@"$CX_NUXI_VERSION" init frontend \
+                npx --yes nuxi@"$CX_NUXI_VERSION" init "$rel" \
                 --template "${CX_NUXT_TEMPLATE:-minimal}" \
                 --packageManager npm --no-install --no-gitInit --force </dev/null \
                 || { cx_error "nuxi init 失敗（容器）"; return 1; }
@@ -608,6 +612,19 @@ _fresh_rebuild_frontend() {
 
 _fresh_rebuild_backend() {
     local dir="$CX_ROOT/src/backend"
+    # 相對於 CX_ROOT 的路徑，**從 $dir 推導**，不要再寫一次字面值。
+    #
+    # ⚠ 2026-09-06 之前這裡是寫死的 `backend` —— v2 版面的路徑，而 $dir 早就是
+    #   v3 的 src/backend。後果不是「建錯地方」這麼輕：create-project 把骨架
+    #   建到 $CX_ROOT/backend，下一步的 `env -C "$dir"` 立刻死在
+    #   「cannot change directory ... No such file or directory」。
+    #   而重建是排在 _fresh_delete **之後**的 —— .git、.gitmodules、src/、
+    #   README.md 全部已經刪掉了。也就是說 cx init 會先把樹毀掉，然後才失敗。
+    #
+    #   LAY-legacy 抓不到它：那條檢查認的是「路徑字面值」與「用裸名字組路徑」，
+    #   而這裡的 backend 是 composer 的**位置參數**，長得跟一般的引數沒兩樣。
+    #   唯一會踩到的測試（80_init.bats 的完整 init）平常被 CX_TEST_NETWORK 擋著。
+    local rel=${dir#"$CX_ROOT"/}
     cx_step "重建後端（Laravel 13 + Filament v5 + Larastan）"
     # composer create-project 不接受「已存在且非空」的目標，空目錄則沒問題。
     _fresh_dir_ready "$dir" || return 1
@@ -634,8 +651,12 @@ _fresh_rebuild_backend() {
     esac
 
 
-    cx_info "composer create-project laravel/laravel"
-    cx_run "${run[@]}" composer create-project laravel/laravel backend \
+    # src/ 在 _fresh_delete 就整個刪掉了（FRESH_DELETE 含 src），
+    # 而 create-project 的目標父目錄必須存在。
+    cx_run mkdir -p "$(dirname "$dir")"
+
+    cx_info "composer create-project laravel/laravel $rel"
+    cx_run "${run[@]}" composer create-project laravel/laravel "$rel" \
         --no-interaction --prefer-dist </dev/null \
         || { cx_error "create-project 失敗"; return 1; }
 
@@ -644,7 +665,7 @@ _fresh_rebuild_backend() {
         native) runb=(env -C "$dir") ;;
         docker) runb=(docker run --rm -u "$(id -u):$(id -g)"
                       -e HOME=/tmp
-                      -v "$CX_ROOT:/w" -w /w/backend
+                      -v "$CX_ROOT:/w" -w "/w/$rel"
                       "$CX_IMG_COMPOSER") ;;
     esac
 
@@ -711,14 +732,14 @@ _fresh_carryover() {
 
 _fresh_rebuild() {                  # _fresh_rebuild <mode> <archive_dir>
     local mode=$1 A=$2
-    # dry-run 之下前面的刪除沒有真的發生，所以 backend/ 與 frontend/ 還是滿的，
+    # dry-run 之下前面的刪除沒有真的發生，所以 src/backend 與 src/frontend 還是滿的，
     # 重建一定會撞到「目錄不是空的」。那不是缺陷，是 dry-run 的必然結果 ——
     # 但它不該被報成失敗，否則 `cx --dry-run fresh` 永遠跑不完整條流程。
     if (( CX_DRY_RUN )); then
         cx_step "重建（dry-run：略過）"
         cx_dim "  [dry-run] mode=$mode —— 實際執行時會："
-        cx_dim "    composer create-project laravel/laravel backend（+ filament/filament、larastan）"
-        cx_dim "    npx nuxi init frontend --template minimal"
+        cx_dim "    composer create-project laravel/laravel src/backend（+ filament/filament、larastan）"
+        cx_dim "    npx nuxi init src/frontend --template minimal"
         [[ $mode == carryover ]] && cx_dim "    再從 $A 的 src-*.tar.gz 疊回應用層目錄"
         return 0
     fi

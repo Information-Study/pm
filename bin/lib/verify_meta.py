@@ -1307,6 +1307,64 @@ def check_layout_version():
         row("PASS", "LAY-version", "版面版號雙向一致", f"v{m1.group(1)}")
 
 
+def check_layout_scaffold():
+    """cx fresh 重建骨架時，產生器的目標路徑必須是 v3 版面。
+
+    2026-09-06 實測：四條重建路徑裡有三條還停在 v2 —— 產生器的目標與 docker 的
+    workdir 都寫成**裸的子模組名字**（v2 版面的路徑），只有前端的 native 那條
+    直接用 "$dir" 所以是對的。
+    （這段刻意不把那三個舊路徑照抄出來：LAY-legacy 掃的就是那種字面值，
+      寫進註解會讓這個檔自己變成命中點。實例見 git show 的修正 commit。）
+
+    後果不是「建錯地方」而已：重建排在 _fresh_delete **之後**，所以 cx init
+    會先把 .git、.gitmodules、src/、README.md 刪光，再死在
+    `env -C "$CX_ROOT/src/backend"` 的 No such file or directory。
+    樹毀了，然後才失敗。
+
+    LAY-legacy 看不到這一類。它認的是兩種形狀：帶子路徑的字面值，以及用裸名字
+    去**組**路徑（見 LEGACY_PATTERNS）。而這裡的裸名字是 composer / nuxi 的
+    **位置參數** —— 它沒有被拿去組任何路徑，長得跟一般引數沒兩樣。
+    唯一會踩到的測試是 80_init.bats 的完整 init，而它平常被 CX_TEST_NETWORK 擋著 ——
+    也就是說這個缺陷可以在「全綠」的狀態下存在任意久。
+    """
+    s = read("bin/cmd/fresh.sh")
+    if not s:
+        row("SKIP", "LAY-scaffold", "重建骨架的目標路徑是 v3 版面", "讀不到 fresh.sh")
+        return
+
+    subs = ("backend", "frontend")
+    bad, seen = [], 0
+
+    for fn in re.finditer(r"^(_fresh_rebuild_(?:backend|frontend))\(\)\s*\{(.*?)^\}",
+                          s, re.S | re.M):
+        name, body = fn.group(1), fn.group(2)
+        for line in body.splitlines():
+            code = line.split("#", 1)[0]
+            # ① 產生器的目標（位置參數）
+            for m in re.finditer(
+                    r"(?:composer\s+create-project\s+\S+|nuxi@\S+\s+init)\s+(\S+)", code):
+                seen += 1
+                t = m.group(1).strip('"\'')
+                if t.strip("${}") in subs:
+                    bad.append(f"{name}: 產生器目標是裸的 {t}（v2 路徑）")
+            # ② docker 的 workdir
+            for m in re.finditer(r"-w\s+\"?(/w/\S*?)\"?(?:\s|$)", code):
+                seen += 1
+                w = m.group(1).rstrip('"')
+                tail = w[len("/w/"):] if w.startswith("/w/") else ""
+                if tail.strip("${}") in subs:
+                    bad.append(f"{name}: docker -w 是 {w}（v2 路徑）")
+
+    if not seen:
+        row("FAIL", "LAY-scaffold", "重建骨架的目標路徑是 v3 版面",
+            "一個產生器目標都沒抓到 —— regex 與 fresh.sh 已經對不上，"
+            "這條檢查等於停止驗證了")
+    elif bad:
+        row("FAIL", "LAY-scaffold", "重建骨架的目標路徑是 v3 版面", "；".join(sorted(set(bad))))
+    else:
+        row("PASS", "LAY-scaffold", "重建骨架的目標路徑是 v3 版面", f"檢查了 {seen} 個目標")
+
+
 def check_ansible_split():
     """A15：migration 的 gate 與 deploy_backend 的 gate 必須是同一個群組。
 
@@ -1615,6 +1673,7 @@ def main():
         check_layout_legacy()
         check_layout_ignore()
         check_layout_version()
+        check_layout_scaffold()
     if "tui" in families:
         check_tui()
     if "docs" in families:

@@ -220,3 +220,68 @@ PHP
         || _fail_with "範本擋不住這些祕密檔（cx git push 也掃不到它們）：
 $staged"
 }
+
+# ── LAY-scaffold：cx fresh 重建骨架的目標路徑 ─────────────────────────────
+#
+# 2026-09-06 的實測結果：v3 遷移時四條重建路徑只改到一條，另外三條還在寫
+# 裸的子模組名字。而重建排在 _fresh_delete **之後**，所以 cx init 會先把
+# .git / .gitmodules / src/ / README.md 刪光，再死在
+# `env -C "$CX_ROOT/src/backend"` 的 No such file or directory —— 樹毀了才失敗。
+#
+# 這個缺陷在「全綠」的狀態下存在了整個 v3 週期，原因有二：
+#   ① LAY-legacy 認的是「路徑字面值」與「用裸名字組路徑」，
+#      而這裡的裸名字是 composer / nuxi 的**位置參數**，沒有被拿去組路徑。
+#   ② 唯一會踩到它的 80_init.bats 完整 init 平常被 CX_TEST_NETWORK 擋著。
+#
+# 所以這條檢查是靜態的、永遠會跑的那一道。
+
+@test "LAY-scaffold 抓得到重建目標退回 v2 裸名字" {
+    run bash -c "
+        cd '$CX_TEST_REAL_ROOT'
+        tmp=\$(mktemp -d); mkdir -p \"\$tmp/bin/cmd\" \"\$tmp/bin/lib\"
+        cp -r bin/lib \"\$tmp/bin/\"; cp .cxroot \"\$tmp/\"
+        cp bin/cmd/fresh.sh \"\$tmp/bin/cmd/fresh.sh\"
+        # 把 backend 的產生器目標退回裸名字（v2）
+        sed -i 's|composer create-project laravel/laravel \"\\\$rel\"|composer create-project laravel/laravel backend|' \\
+            \"\$tmp/bin/cmd/fresh.sh\"
+        CX_ROOT=\"\$tmp\" CX_PROJECT_NAME=pm python3 bin/lib/verify_meta.py cli
+        rm -rf \"\$tmp\"
+    "
+    [[ $output == *"FAIL|LAY-scaffold"* ]] \
+        || _fail_with "重建目標退回 v2 卻沒有變紅：$output"
+    [[ $output == *"_fresh_rebuild_backend"* ]] \
+        || _fail_with "沒有指出是哪一個函式：$output"
+}
+
+@test "LAY-scaffold 也抓得到 docker 的 workdir 退回 v2" {
+    run bash -c "
+        cd '$CX_TEST_REAL_ROOT'
+        tmp=\$(mktemp -d); mkdir -p \"\$tmp/bin/cmd\"
+        cp -r bin/lib \"\$tmp/bin/\"; cp .cxroot \"\$tmp/\"
+        cp bin/cmd/fresh.sh \"\$tmp/bin/cmd/fresh.sh\"
+        sed -i 's|-w \"/w/\\\$rel\"|-w /w/backend|' \"\$tmp/bin/cmd/fresh.sh\"
+        CX_ROOT=\"\$tmp\" CX_PROJECT_NAME=pm python3 bin/lib/verify_meta.py cli
+        rm -rf \"\$tmp\"
+    "
+    [[ $output == *"FAIL|LAY-scaffold"* ]] \
+        || _fail_with "docker workdir 退回 v2 卻沒有變紅：$output"
+}
+
+@test "LAY-scaffold 在 regex 與 fresh.sh 對不上時要 FAIL（不可以安靜地什麼都不驗）" {
+    # 「抓到 0 個目標」與「0 個目標有問題」在輸出上長得一模一樣。
+    # 這條案例釘住的是：前者必須是 FAIL，不是 PASS。
+    run bash -c "
+        cd '$CX_TEST_REAL_ROOT'
+        tmp=\$(mktemp -d); mkdir -p \"\$tmp/bin/cmd\"
+        cp -r bin/lib \"\$tmp/bin/\"; cp .cxroot \"\$tmp/\"
+        # 把兩個重建函式整個換掉，讓 regex 一個都抓不到
+        printf '_fresh_rebuild_backend() {\n    :\n}\n_fresh_rebuild_frontend() {\n    :\n}\n' \\
+            > \"\$tmp/bin/cmd/fresh.sh\"
+        CX_ROOT=\"\$tmp\" CX_PROJECT_NAME=pm python3 bin/lib/verify_meta.py cli
+        rm -rf \"\$tmp\"
+    "
+    [[ $output == *"FAIL|LAY-scaffold"* ]] \
+        || _fail_with "一個目標都沒抓到卻 PASS —— 檢查已停止驗證：$output"
+    [[ $output == *"停止驗證"* ]] \
+        || _fail_with "訊息沒有說明這是「檢查壞了」而不是「程式碼壞了」：$output"
+}

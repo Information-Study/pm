@@ -37,6 +37,7 @@ cx verify all                    # 以上再加 runtime waf acl
 | `LAY-legacy` | 全樹沒有殘留的舊版面路徑（**三類**，見下） | 漏改一處不會有人告訴你 |
 | `LAY-ignore` | `src/` 不可被 ignore、祕密檔必須被 ignore、**`cx fresh` 用的範本也擋得住同樣的東西** | **SSH 公鑰／vault 密碼／主機清單進 PUBLIC 歷史**（gitleaks 抓不到這一類） |
 | `LAY-version` | `.cxroot` 與 `common.sh` 的版號雙向一致 | 版號退回裝飾 |
+| `LAY-scaffold` | `cx fresh` 重建骨架時，產生器的目標與 docker workdir 是 v3 路徑 | **`cx init` 先把樹刪光，再失敗** |
 
 ### `LAY-legacy` 抓的三類，以及為什麼要三類
 
@@ -65,6 +66,42 @@ cx verify all                    # 以上再加 runtime waf acl
 > ② 與 ③ 刻意不掃 `.md` 與註解：它們偵測的是**程式碼裡的路徑用法**，
 > 而描述這個問題本身的文字（`docs/cx/layout.md`、`verify_meta.py` 上方的
 > 註解、這一節）必須寫得出舊形式。①（會誤導讀者的字面）才需要掃文件。
+
+### `LAY-scaffold` 為什麼不能靠 `LAY-legacy` 代勞
+
+2026-09-06 的 init 實跑（拋棄式副本，`cx init test --org Information-Study`）
+發現 v3 遷移時**四條重建路徑只改到一條**：
+
+| 函式 | runner | 目標 | |
+|---|---|---|---|
+| `_fresh_rebuild_backend` | native | 產生器的位置參數是裸的子模組名 | ✘ |
+| `_fresh_rebuild_backend` | docker | docker `-w` 是裸的子模組名 | ✘ |
+| `_fresh_rebuild_frontend` | native | 直接用 `"$dir"` | ✔ |
+| `_fresh_rebuild_frontend` | docker | 產生器的位置參數是裸的子模組名 | ✘ |
+
+後果不是「建錯地方」而已。重建排在 `_fresh_delete` **之後**，所以實跑的結果是：
+
+```
+▸ composer require filament/filament:^5.0
+env: cannot change directory to '…/pm/src/backend': No such file or directory
+✘ 安裝 Filament 失敗
+```
+
+此時 `.git`、`.gitmodules`、`src/`、`README.md` 都已經刪掉了 ——
+**樹毀了，然後才失敗**（封存還在，`cx fresh --rollback` 救得回來）。
+
+`LAY-legacy` 看不到這一類。它認的是兩種形狀：帶子路徑的字面值，
+以及用裸名字去**組**路徑。而這裡的裸名字是 composer / nuxi 的**位置參數** ——
+它沒有被拿去組任何路徑，長得跟一般引數沒兩樣。
+
+唯一會踩到這個缺陷的是 `80_init.bats` 的完整 init，
+而它平常被 `CX_TEST_NETWORK` 擋著 ——
+也就是說這個缺陷可以在「全綠」的狀態下存在整個 v3 週期，而它確實存在了。
+
+修法是讓相對路徑**從 `$dir` 推導**（`local rel=${dir#"$CX_ROOT"/}`），
+而不是再寫一次字面值 —— 一個版面事實只有一個來源。
+`80_verify.bats` 有三條反向案例，第三條釘的是
+「regex 與 fresh.sh 對不上 → 抓到 0 個目標」必須 FAIL 而不是 PASS。
 
 ### `LAY-ignore` 為什麼要同時驗**範本**
 

@@ -48,7 +48,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
 | `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`（另有**應用層 hard guard**：任何非 sqlite 的目標都 fail-fast，退出碼 3）；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
-| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**169 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
+| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**172 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |
@@ -390,6 +390,87 @@ backend/frontend 加進清單**。
 > 與 `75_tui_run.bats`（在真 pty 裡把選單跑起來）都是同一個教訓的產物。
 
 ---
+
+## 2026-09-06 的 init 實跑 —— `cx init` 在 v3 上是壞的
+
+### 怎麼做的
+
+先做完整備份（三個 `git bundle` + 整棵樹的 tar，放在 `/home/sixtou/pm-backups/`，
+**在專案外**），而且**真的解出來跑過一次**才算數：HEAD 對得上、工作區 0 變更、
+子模組的 `gitdir:` 指標正確重定位到還原後的 `.git/modules`、`cx status` 跑得動。
+
+然後把樹複製到 `/home/sixtou/pm-init-test/`，在**副本**上跑
+`cx init test --org Information-Study`。
+
+> ⚠ 副本上跑 cx 有一個陷阱值得記：`cx` 的根目錄解析（`cx:84-91`）是
+> **先從呼叫者的 cwd 往上找 `.cxroot`，找不到才退回 cx 自己所在的目錄**，
+> 而 `~/.local/bin/cx` 是指向正本的 symlink。所以在正本目錄裡執行副本的 `cx`，
+> 被摧毀的是**正本**。而 init 的閘門字串是 `INIT test`，不含路徑 ——
+> 畫面上看不出自己正在毀哪一棵樹。
+> 一律 `cd "$副本" && ./cx --root "$副本" …`，兩個都給，而且在同一個指令裡。
+> 動手前先跑 `cx --dry-run fresh` 看 `PF-02 CX_ROOT=` 印的是不是副本。
+
+### 結果：先把樹刪光，然後失敗
+
+```
+▸ composer require filament/filament:^5.0
+env: cannot change directory to '…/pm/src/backend': No such file or directory
+✘ 安裝 Filament 失敗
+```
+
+v3 遷移時四條重建路徑**只改到一條**：產生器的目標與 docker 的 `-w` 都還是
+裸的子模組名字（v2 路徑），只有前端的 native 那條因為直接用 `"$dir"` 而是對的。
+於是 `composer create-project` 把骨架建到 `$CX_ROOT/<裸名字>`，
+下一步的 `env -C "$dir"` 立刻死掉。
+
+而重建排在 `_fresh_delete` **之後** —— 失敗的當下 `.git`、`.gitmodules`、
+`src/`、`README.md` 都已經不在了。封存還在，`cx fresh --rollback` 救得回來，
+但「exit 非 0」在這條流程上**不代表沒動過**：
+`cx init` 的順序是 gate → rename → fresh，而**所有 preflight 都在 fresh 裡面**。
+
+### 為什麼全綠了整個 v3 週期
+
+* `LAY-legacy` 認的是「帶子路徑的字面值」與「用裸名字**組**路徑」。
+  這裡的裸名字是 composer / nuxi 的**位置參數**，沒有被拿去組路徑。
+* 唯一會踩到它的 `80_init.bats` 完整 init 平常被 `CX_TEST_NETWORK` 擋著。
+
+補了 `LAY-scaffold`（純靜態、永遠會跑）與 `80_verify.bats` 三條反向案例，
+第三條釘的是「抓到 0 個目標」必須 FAIL —— 那與「0 個目標有問題」在輸出上
+長得一模一樣。
+
+### 修好之後的實跑
+
+```
+cx init test --org Information-Study      rc=0
+  src/backend/artisan、src/frontend/nuxt.config.ts   都在
+  沒有殘留的 <裸名字>/ 目錄
+  .cxroot        CX_PROJECT_NAME=test・CX_GH_ORG=Information-Study
+  .gitmodules    url=../test-backend.git（submodule **名字**仍是 backend）
+  三個 repo      各 1 個 commit・main + dev・舊歷史不可達
+  carryover      Filament provider／routes/api.php／DatabaseSafetyGuard／app.vue 都疊回來了
+  verify         41 列全 PASS・0 FAIL・0 SKIP・ID 集合與正本一字不差
+  正本            HEAD + 子模組 + 頂層清單的 sha256 一字未動
+cx test cli（CX_TEST_NETWORK=1）           172 全過・0 skip
+```
+
+> 判準是**列數 + FAIL + SKIP 三條同時看**，不是退出碼。
+> `cx verify` 的退出碼只看 FAIL，而 `verify_meta.py` 整個崩潰時
+> `_verify_meta` 會讀到空輸入、回傳 0，報告印「通過 0 ・ 失敗 0」——
+> 零列等於零 FAIL 等於通過。所以要比對 ID 集合，消失的列當失敗處理。
+
+### 順帶記下：專案名叫 `test` 的兩個真實碰撞
+
+1. **`env/ansible/roles/mysql/defaults/main.yml` 把 `mysql_test_db_name` 寫死成
+   `test`**，而改名後應用程式資料庫也叫 `test`。同一支 `tasks/databases.yml`
+   先建立它、稍後又對它下 `state: absent`。`mysql_drop_test_db` 預設 `false`
+   是唯一擋著的東西，而 `production.yml.example` 的措辭正好會誘導人打開它。
+   沒有任何 preflight 斷言 `mysql_app_db_name != mysql_test_db_name`。
+2. **docker 命名空間對人眼失去分辨力**：三個模式變成 `test_dev` / `test_test` /
+   `test_prod`。cx 自己不受影響（所有 docker 查詢都用
+   `label=com.docker.compose.project=` 精確比對，沒有任何地方把
+   `<專案>_<模式>` 反解回兩段），風險只在人工 `docker ps | grep test`。
+
+`cx rename` 全庫沒有保留字檢查 —— `test` / `dev` / `prod` 都當得成專案名。
 
 ## 仍未驗證的項目
 
