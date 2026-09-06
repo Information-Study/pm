@@ -30,7 +30,37 @@ cx test cli --strict     # 有 skip 就當失敗（CI 用）
 | `make_submodule_repo` | **真的**指標檔 + `.git/modules/` + `dev` 分支 | gitflow、feature/hotfix/release |
 
 輔助：`add_compose_skeleton`（要測 compose 的案例自己叫）、
-`line_sha <repo> <ref> <子模組路徑>`、`tree_digest`。
+`line_sha <repo> <ref> <子模組路徑>`、`tree_digest`、
+`tui_screen`（見下）。
+
+## `tui_screen` —— 在真 pty 裡把選單跑起來
+
+`TUI-resolve` 與 `TUI-coverage` 是**靜態 regex 剖析**。它們證明得了
+「選單項目指得到真的動詞」與「三個模式的聯集涵蓋每個動詞」，
+但證明不了「這個選單**真的畫得出來**」。
+
+2026-09-05 的 commit `16d28ba`（對話框尺寸寫死）就是一個
+**所有靜態檢查都全綠、而選單畫不出來**的缺陷。
+`bin/test/75_tui_run.bats` 補的就是那一半。
+
+```bash
+tui_screen --mode test          # 跑完之後看 $TUI_RC 與 $TUI_TEXT
+[[ $TUI_TEXT == *"DevSecOps"* ]]
+```
+
+三個實作細節，每一個都是踩過才知道的：
+
+* **whiptail 需要真 tty** → 用 `script -qec` 開 pty（`tui.sh` 自己跑子行程也是這樣）
+* **輸入必須延遲餵進去**。一次寫完就 EOF 的話 whiptail 還沒準備好讀，
+  於是它會一直等下去 —— 實測：不延遲的 ESC 一律 timeout（rc=124）
+* **ESC 要送兩次**才會取消 whiptail 的 `--menu`
+
+畫面是逸出序列包著文字，`tui_screen` 會 strip 過再放進 `$TUI_TEXT`。
+
+> 這個 helper 最有價值的用途是**模式門檻**：`check_tui` 看不到 `$_TUI_MODE`，
+> 所以「dev 模式下實際畫出來的選單裡有沒有掃描」只有真的畫一次才知道。
+> 反向驗證過兩種缺陷：拿掉模式門檻 → 對應的案例失敗；
+> 把對話框尺寸寫死成畫不出來的值 → 「主選單畫得出來」失敗。
 
 ### `make_root` 刻意保持最小
 

@@ -261,3 +261,28 @@ tree_digest() {                     # tree_digest [目錄]
         find "$r" \( -name .git -o -name .cx \) -prune -o ! -type d -printf 'f %p %s\n' 2>/dev/null
     } | sort | sha256sum | cut -d' ' -f1
 }
+
+# ── 在真 pty 裡把 TUI 跑起來，回傳畫面上的文字 ─────────────────────────────
+#
+# 為什麼需要這個：TUI-resolve 與 TUI-coverage 是**靜態 regex 剖析**，
+# 它們證明得了「選單項目指得到真的動詞」與「三個模式的聯集涵蓋每個動詞」，
+# 但證明不了「這個選單真的畫得出來」。2026-09-05 的 commit 16d28ba
+#（對話框尺寸寫死）就是一個所有靜態檢查都全綠、而選單畫不出來的缺陷。
+#
+# 機制：
+#   * whiptail 需要真 tty，所以用 script -qec 開 pty（tui.sh 自己也是這樣跑子行程）
+#   * 輸入必須**延遲**餵進去。一次寫完就 EOF 的話 whiptail 還沒準備好讀，
+#     於是它會一直等下去（實測：不延遲的 ESC 一律 timeout）
+#   * ESC 要送兩次才會取消 whiptail 的 --menu
+#   * 畫面是逸出序列包著文字，要 strip 過才比對得了
+tui_screen() {                      # tui_screen [額外的 cx 旗標...]
+    local out; out=$(mktemp)
+    { sleep 2; printf '\033'; sleep 1; printf '\033'; sleep 1; } \
+        | timeout 25 script -qec "$CX_TEST_ROOT/cx --root $CX_TEST_ROOT $* tui" /dev/null \
+        > "$out" 2>&1
+    TUI_RC=$?
+    # 逸出序列：CSI、字集切換、以及 DEC 的 > = 兩種
+    TUI_TEXT=$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[()][AB0]//g; s/\x1b[>=]//g' "$out")
+    rm -f "$out"
+    export TUI_RC TUI_TEXT
+}
