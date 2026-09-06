@@ -1454,6 +1454,58 @@ def check_ansible_dbname():
             f"要打開它之前必須先給 mysql_test_db_name 一個不撞名的值")
 
 
+def check_ansible_assert_ref():
+    """「<某個 yml> 的 A<編號>」這種指路，必須真的指得到。
+
+    抓兩類**斷掉的指路**：被指名的檔不存在、或那個編號不在那個檔裡。
+
+    ⚠ **它抓不到「指到同一個檔裡的錯編號」** —— 這一點必須寫清楚，
+      否則下一個人會以為這條全綠就代表所有交叉引用都對。
+
+      2026-09-06 的實例正好是抓不到的那一種：`cx rename test` 的警告原本把
+      mysql role 那個 assert.yml 的編號寫成 A16，而該講的是 A22。
+      A16 在那個檔裡**真的存在**（max_allowed_packet 必須大於上傳上限），
+      只是跟資料庫撞名毫無關係 —— 使用者照著去看，會找到一段看起來很正經、
+      卻答非所問的東西。那次是人讀輸出時發現的，不是檢查抓到的，
+      而且沒有任何靜態檢查能知道「我指的是哪一條」。
+
+      所以這條的價值範圍是「指路有沒有斷」，不是「指路對不對」。
+    """
+    import glob as _glob
+    root = str(ROOT)
+    refs, bad, seen = [], [], 0
+    files = []
+    for pat in ("bin/**/*.sh", "bin/**/*.py", "docs/**/*.md", "claude.md", "README.md"):
+        files += _glob.glob(str(ROOT / pat), recursive=True)
+
+    rx = re.compile(r"([A-Za-z0-9_./-]+\.ya?ml)\s*的\s*(A\d+)")
+    for f in files:
+        try:
+            txt = pathlib.Path(f).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel_src = str(pathlib.Path(f).relative_to(ROOT))
+        for m in rx.finditer(txt):
+            target, aid = m.group(1), m.group(2)
+            seen += 1
+            # 文字裡的路徑可能相對於 CX_ROOT，也可能相對於 env/ansible/
+            cands = [ROOT / target, ROOT / "env" / "ansible" / target]
+            hit = next((c for c in cands if c.is_file()), None)
+            if hit is None:
+                bad.append(f"{rel_src}: 指向不存在的檔 {target}")
+                continue
+            if aid not in hit.read_text(encoding="utf-8", errors="replace"):
+                bad.append(f"{rel_src}: {target} 裡沒有 {aid}")
+
+    if not seen:
+        row("SKIP", "ANS-assert-ref", "「某個 yml 的 A<編號>」指得到",
+            "全樹沒有這種寫法")
+    elif bad:
+        row("FAIL", "ANS-assert-ref", "「某個 yml 的 A<編號>」指得到", "；".join(sorted(set(bad))))
+    else:
+        row("PASS", "ANS-assert-ref", "「某個 yml 的 A<編號>」指得到", f"檢查了 {seen} 處")
+
+
 def check_doc_index():
     """宣稱是「完整清單」的文件索引，必須真的完整。
 
@@ -1734,6 +1786,7 @@ def main():
         check_docs()
         check_ansible_split()
         check_ansible_dbname()
+        check_ansible_assert_ref()
         check_doc_index()
         check_doc_filemap()
         check_doc_verify_scopes()

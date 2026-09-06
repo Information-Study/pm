@@ -343,3 +343,52 @@ _dbname_fixture() {                 # _dbname_fixture <專案名> <drop:true|fal
     [[ $output == *"FAIL|ANS-dbname"* && $output == *"停止驗證"* ]] \
         || _fail_with "值不見了卻沒說檢查壞掉：$(grep -i dbname <<<"$output")"
 }
+
+# ── ANS-assert-ref：指路有沒有斷 ─────────────────────────────────────────
+#
+# ⚠ 這條檢查的能力邊界要一起釘住：它抓「指到不存在的檔」與「編號不在那個檔裡」，
+#   但**抓不到「指到同一個檔裡的錯編號」**。2026-09-06 真正發生的就是後者
+#   （寫 A16、該寫 A22，而 A16 在那個檔裡真的存在），是人讀輸出發現的。
+#   第三條案例就是把這個邊界寫成測試 —— 免得有人以為全綠代表交叉引用都對。
+#
+# ⚠ fixture 必須含 env/ansible/site.yml：bin/lib/inventory.py 有一處正當的
+#   「site.yml 的 A15」引用。少了它，前兩條案例會因為**那個**引用而變紅 ——
+#   看起來過了，其實驗的不是自己要驗的東西。這個坑實際踩過。
+_assertref_fixture() {              # _assertref_fixture → 印出 tmp 路徑
+    local t; t=$(mktemp -d "$BATS_TEST_TMPDIR/aref-XXXX")
+    mkdir -p "$t/bin/cmd" "$t/env/ansible/roles/m/tasks"
+    cp -r "$CX_TEST_REAL_ROOT/bin/lib" "$t/bin/"
+    cp "$CX_TEST_REAL_ROOT/.cxroot" "$t/"
+    printf -- '- name: A15 —— 讓 inventory.py 那處正當引用解得開\n' > "$t/env/ansible/site.yml"
+    printf -- '- name: A16 —— 上傳上限\n- name: A22 —— 資料庫撞名\n' \
+        > "$t/env/ansible/roles/m/tasks/assert.yml"
+    printf '%s' "$t"
+}
+
+@test "ANS-assert-ref：指到不存在的檔要 FAIL" {
+    local t; t=$(_assertref_fixture)
+    printf 'x() { : ; }\n# 見 roles/nope/tasks/assert.yml 的 A22\n' > "$t/bin/cmd/x.sh"
+    run bash -c "CX_ROOT='$t' python3 '$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py' docs"
+    [[ $output == *"FAIL|ANS-assert-ref"* ]] \
+        || _fail_with "指到不存在的檔卻沒紅：$(grep -i assert-ref <<<"$output")"
+    # 必須是**我們造的**那一處，不是別的引用順便讓它紅
+    [[ $output == *"roles/nope/tasks/assert.yml"* ]] \
+        || _fail_with "紅的不是我們造的那一處：$(grep -i assert-ref <<<"$output")"
+}
+
+@test "ANS-assert-ref：編號不在被指名的檔裡要 FAIL" {
+    local t; t=$(_assertref_fixture)
+    printf 'x() { : ; }\n# 見 roles/m/tasks/assert.yml 的 A99\n' > "$t/bin/cmd/x.sh"
+    run bash -c "CX_ROOT='$t' python3 '$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py' docs"
+    [[ $output == *"FAIL|ANS-assert-ref"* && $output == *"沒有 A99"* ]] \
+        || _fail_with "編號不在那個檔裡卻沒紅：$(grep -i assert-ref <<<"$output")"
+}
+
+@test "ANS-assert-ref：同檔錯編號抓不到 —— 這是已知邊界，不是缺陷" {
+    local t; t=$(_assertref_fixture)
+    # 指到 A16，但該指的是 A22 —— 兩個都在同一個檔裡，所以這條檢查看不出來
+    printf 'x() { : ; }\n# 見 roles/m/tasks/assert.yml 的 A16\n' > "$t/bin/cmd/x.sh"
+    run bash -c "CX_ROOT='$t' python3 '$CX_TEST_REAL_ROOT/bin/lib/verify_meta.py' docs"
+    [[ $output == *"PASS|ANS-assert-ref"* ]] \
+        || _fail_with "這條案例的用途是釘住能力邊界，它應該 PASS：$(grep -i assert-ref <<<"$output")"
+}

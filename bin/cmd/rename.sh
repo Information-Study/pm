@@ -80,8 +80,11 @@ _rename_reserved_warn() {           # _rename_reserved_warn <新名稱>
     if [[ $n == test ]]; then
         cx_dim "  另外：roles/mysql 的 mysql_test_db_name 寫死是 test，而應用程式資料庫"
         cx_dim "  改名後也叫 test —— 同一支 databases.yml 會先建立它、稍後又對它"
-        cx_dim "  下 state: absent。roles/mysql/tasks/assert.yml 的 A16 會擋下這個組合；"
-        cx_dim "  真要用 test 當專案名，就在 group_vars 把 mysql_test_db_name 改掉。"
+        cx_dim "  下 state: absent。**但只有在 mysql_drop_test_db 打開時才危險** ——"
+        cx_dim "  它預設是 false，所以撞名本身無害。要打開它之前，先在 group_vars"
+        cx_dim "  給 mysql_test_db_name 一個不撞名的值。"
+        cx_dim "  三道防線：cx verify docs 的 ANS-dbname、"
+        cx_dim "  roles/mysql/tasks/assert.yml 的 A22、以及該 role 裡 DROP task 自己的 when。"
     fi
     return 0
 }
