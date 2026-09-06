@@ -48,7 +48,7 @@ cx verify all      # 加上執行期驗收（需要三個模式都 up）
 | `dev` `prod` `up` `down` `restart` `ps` `logs` `sh` `build` `config` `dc` | ✅ | 全部經 `cx_compose_init`，四個 compose 陷阱集中處理 |
 | `test`（compose 動作） | ✅ | `cx test up` 等同 `cx --mode test up` |
 | `test back/front/all/coverage/larastan` | ✅ | 後端走 sqlite `:memory:`（另有**應用層 hard guard**：任何非 sqlite 的目標都 fail-fast，退出碼 3）；前端的 `nuxt typecheck` 原本缺 `tsconfig.json` 與 vue-tsc/typescript/@types/node，已補齊 |
-| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**151 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
+| `test cli` | ✅ | `cx` 自己的行為測試（bats-core，**152 個案例**）。bats 把 skip 算成成功，與本專案 SKIP≠PASS 的教條衝突，所以 `_test_cli` 會另外把跳過數印出來，並支援 `CX_TEST_STRICT=1` |
 | `db` | ✅ | status / shell / wait / migrate / fresh / seed / dump / restore / admin |
 | `scan` | ✅ | code / sast / sca / dast / secrets / all |
 | `sonar` | ✅ | up / down / status / logs / token / url / wait |
@@ -357,6 +357,37 @@ cx --ui dialog tui   （機器上沒裝 dialog）→ 零輸出、exit 0
 **可以**拆的是資料庫層：多台 `web` + 其中一台兼 `db_primary`
 （A15 要求 `db_primary` 剛好一台且必須也在 `web`，因為 migration 掛在 `web` 的 gate 上）。
 `cx deploy hosts check` 會擋下違反，並提醒多台 web 要一併處理的四件事。
+
+---
+
+## 2026-09-06 的雲端複審 —— 八處 v3 漏網
+
+v3 版面遷移完成、`LAY-legacy` 全綠、`cx verify all` 103/0/2 之後，
+雲端複審在完整 diff 上還抓到**八處**那條檢查完全看不到的漏網。
+根因不是「這八處剛好漏掉」，是 `LAY-legacy` 只認「帶子路徑」的字面
+（`docker` 接 `/compose/`），而且 Phase 3.2（`src/`）時**忘了把
+backend/frontend 加進清單**。
+
+| 檔案 | 後果 |
+|---|---|
+| `verify_checks.py` ×2 | `Path(root,"docker").rglob` → **兩個檢查掃到 0 個 Dockerfile 卻回報 PASS**。`sec-ignore` 是為了「`.env` 曾經漏進 test/prod 映像」而存在的守門，在 v3 上已經是 no-op |
+| 同檔的 COPY regex | 字元類少了 `/`，即使修好路徑仍然比對不到 `COPY src/backend/ ./` —— 兩個都修才有用 |
+| `scaffold_patch.py` ×3 | 三個 `patch_*` 全部早退 → `cx fresh` 之後測試資料庫防護、Filament panel、Sanctum、ESLint 全部沒裝回去，**而流程回報成功** |
+| `fresh.sh` carryover | tar 內容是 `src/<c>/…`，迴圈找 `$tmp/<c>/…` → 每次都 continue，使用者的程式碼只留在封存裡 |
+| `archive.sh` restore | `targets` 用 v2 路徑 → 「先移到 `.cx-restore-backup/`」整段跳過，而 tar 直接疊上去。確認對話框的承諾對**唯一裝著使用者程式碼的兩個目錄**是假的 |
+| `acl.sh` ×13 | 每個迴圈都 skip → `cx acl user add` 說成功但什麼都沒設 |
+| `acl.sh` 的 `_acl_paths` | 混雜清單（三個帶子路徑的改對了、兩個裸的留著）—— **連複審都沒抓到，是擴充後的檢查自己找出來的** |
+| `.dockerignore`、`trivy.yaml`、`.semgrepignore` | build context 變大、掃描器走進 upstream fixtures |
+
+**`LAY-legacy` 現在抓三類**（① 帶子路徑的字面、② 裸名字組出來的路徑、
+③ 混雜與迴圈變數的有狀態掃描），逐類雙向對照過。
+細節與「為什麼第三類不能用單行 regex」見
+[`cx/verify-checks.md`](cx/verify-checks.md)。
+
+> 這一輪最值得記的不是那八處，是**「檢查全綠」與「檢查有在做事」是兩件事**。
+> `sec-ignore` 在 v3 上掃到 0 個檔案，然後 PASS。
+> 新增的 `cx verify smoke` 範圍（真的把唯讀動詞叫起來、並檢查 stderr）
+> 與 `75_tui_run.bats`（在真 pty 裡把選單跑起來）都是同一個教訓的產物。
 
 ---
 

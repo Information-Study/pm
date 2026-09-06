@@ -56,3 +56,22 @@ setup() {
     [ -d "$CX_TEST_ROOT/.cx-restore-backup" ] \
         || _fail_with "被覆蓋的內容沒有留下備份"
 }
+
+@test "還原的備份涵蓋 src/ 底下的子專案（不只是 .git）" {
+    # cx_restore 的 targets 是**樹上的路徑**，不是封存檔名。v3 之前那裡寫的是
+    # "backend"/"frontend"，而 $CX_ROOT/backend 在 v3 永遠不存在 →
+    # existing 只有 .git → 「先移到 .cx-restore-backup/」整段被跳過，
+    # 而 tar 直接疊在既有的 src/backend 上。確認對話框卻承諾會先備份 ——
+    # 那個承諾對**唯一裝著使用者程式碼的兩個目錄**是假的。
+    echo 'my work' > "$CX_TEST_ROOT/src/backend/uncommitted.txt"
+
+    run cx_bin --yes fresh --rollback --from "$ARC"
+    assert_rc 0
+
+    local bak="$CX_TEST_ROOT/.cx-restore-backup"
+    [ -d "$bak" ] || _fail_with "沒有備份目錄"
+    # 被覆蓋的 src/backend 必須整個在備份裡
+    find "$bak" -name uncommitted.txt | grep -q . \
+        || _fail_with "src/backend 沒有被備份 —— 覆蓋前的內容沒救了。備份目錄內容：
+$(find "$bak" -maxdepth 3 | head -20)"
+}
